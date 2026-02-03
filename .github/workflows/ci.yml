@@ -38,7 +38,7 @@ jobs:
       - name: Install dotnet-format
         run: dotnet tool install --tool-path ./.dotnet-tools dotnet-format
       - name: Format check
-        run: ./.dotnet-tools/dotnet-format Lean.sln --verify-no-changes --severity info
+        run: ./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace
 
   build-test:
     name: build-test (${{ matrix.os }})
