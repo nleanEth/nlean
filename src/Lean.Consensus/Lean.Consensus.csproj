@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Lean.Consensus</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Lean.Ssz\Lean.Ssz.csproj" />
+    <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
+    <ProjectReference Include="..\Lean.Storage\Lean.Storage.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

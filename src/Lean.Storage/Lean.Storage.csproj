@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Lean.Storage</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RocksDbSharp" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,13 @@
+shuffle: roundrobin
+deployment_mode: local
+config:
+  activeEpoch: 18
+  keyType: hash-sig
+validators:
+  - name: lean_client_0
+    privkey: 
+    enrFields:
+      ip: 127.0.0.1
+      quic: 9001
+    metricsPort: 8081
+    count: 1

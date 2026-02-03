@@ -1,0 +1,15 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Build outputs
+**/bin/
+**/obj/
+**/target/
+**/runtimes/**/native/*
+
+# Rider
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
