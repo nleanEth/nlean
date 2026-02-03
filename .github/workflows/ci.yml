@@ -10,13 +10,47 @@ permissions:
   contents: read
 
 jobs:
+  format:
+    name: format-check
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/lean-crypto-ffi
+      - name: Install dotnet-format
+        run: dotnet tool install --tool-path ./.dotnet-tools dotnet-format
+      - name: Format check
+        run: ./.dotnet-tools/dotnet-format Lean.sln --verify-no-changes --severity info
+
   build-test:
     name: build-test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
     env:
       CI: true
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
@@ -41,3 +75,10 @@ jobs:
           workspaces: native/lean-crypto-ffi
       - name: Test
         run: dotnet test tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj -c Release
+      - name: Publish
+        run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o ${{ github.workspace }}/artifacts/lean-client-${{ matrix.rid }} /p:ContinuousIntegrationBuild=true
+      - name: Upload publish artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-client-${{ matrix.rid }}
+          path: artifacts/lean-client-${{ matrix.rid }}
