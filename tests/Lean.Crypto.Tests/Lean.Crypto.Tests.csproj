@@ -9,11 +9,10 @@
     <PackageReference Include="NUnit3TestAdapter" />
   </ItemGroup>
 
-  <ItemGroup>
-    <NativeRuntimeFiles Include="$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes/**/native/*.*" />
-  </ItemGroup>
-
   <Target Name="CopyNativeRuntimeFiles" AfterTargets="Build" Condition="Exists('$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes')">
+    <ItemGroup>
+      <NativeRuntimeFiles Include="$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes/**/native/*.*" />
+    </ItemGroup>
     <Copy
       SourceFiles="@(NativeRuntimeFiles)"
       DestinationFiles="@(NativeRuntimeFiles->'$(OutDir)runtimes/%(RecursiveDir)%(Filename)%(Extension)')"
