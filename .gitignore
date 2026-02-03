@@ -10,6 +10,7 @@
 .DS_Store
 .idea/
 .vscode/
+.dotnet-tools/
 
 # Build results
 [Dd]ebug/

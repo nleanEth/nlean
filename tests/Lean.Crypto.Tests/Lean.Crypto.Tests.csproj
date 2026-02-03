@@ -10,13 +10,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <NativeRuntimeFiles Include="..\..\src\Lean.Client\runtimes\**\native\*.*" />
+    <NativeRuntimeFiles Include="$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes/**/native/*.*" />
   </ItemGroup>
 
-  <Target Name="CopyNativeRuntimeFiles" AfterTargets="Build" Condition="Exists('..\..\src\Lean.Client\runtimes')">
+  <Target Name="CopyNativeRuntimeFiles" AfterTargets="Build" Condition="Exists('$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes')">
     <Copy
       SourceFiles="@(NativeRuntimeFiles)"
-      DestinationFiles="@(NativeRuntimeFiles->'$(OutDir)runtimes\%(RecursiveDir)%(Filename)%(Extension)')"
+      DestinationFiles="@(NativeRuntimeFiles->'$(OutDir)runtimes/%(RecursiveDir)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
   </Target>
 </Project>
