@@ -20,6 +20,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Metrics", "src/Lean.Me
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Crypto.Tests", "tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj", "{5EC55032-B8ED-4028-9E1F-5D796041C51A}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Consensus.Tests", "tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj", "{D65E62A9-07D7-4C7D-8B9F-9F8D5F66E0E7}"
+EndProject
 Global
   GlobalSection(SolutionConfigurationPlatforms) = preSolution
     Debug|Any CPU = Debug|Any CPU
@@ -62,5 +64,9 @@ Global
     {5EC55032-B8ED-4028-9E1F-5D796041C51A}.Debug|Any CPU.Build.0 = Debug|Any CPU
     {5EC55032-B8ED-4028-9E1F-5D796041C51A}.Release|Any CPU.ActiveCfg = Release|Any CPU
     {5EC55032-B8ED-4028-9E1F-5D796041C51A}.Release|Any CPU.Build.0 = Release|Any CPU
+    {D65E62A9-07D7-4C7D-8B9F-9F8D5F66E0E7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    {D65E62A9-07D7-4C7D-8B9F-9F8D5F66E0E7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    {D65E62A9-07D7-4C7D-8B9F-9F8D5F66E0E7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    {D65E62A9-07D7-4C7D-8B9F-9F8D5F66E0E7}.Release|Any CPU.Build.0 = Release|Any CPU
   EndGlobalSection
 EndGlobal
