@@ -74,7 +74,7 @@ jobs:
         with:
           workspaces: native/lean-crypto-ffi
       - name: Test
-        run: dotnet test tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj -c Release
+        run: dotnet test Lean.sln -c Release
       - name: Publish
         run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o ${{ github.workspace }}/artifacts/lean-client-${{ matrix.rid }} /p:ContinuousIntegrationBuild=true
       - name: Upload publish artifact
