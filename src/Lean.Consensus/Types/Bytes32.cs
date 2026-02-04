@@ -21,6 +21,8 @@ public readonly struct Bytes32 : IEquatable<Bytes32>
 
     public ReadOnlySpan<byte> AsSpan() => _bytes;
 
+    public byte[] HashTreeRoot() => SszInterop.HashBytes32(_bytes);
+
     public bool Equals(Bytes32 other) => _bytes.SequenceEqual(other._bytes);
 
     public override bool Equals(object? obj) => obj is Bytes32 other && Equals(other);

@@ -1,3 +1,5 @@
+using System.Linq;
+
 namespace Lean.Consensus.Types;
 
 public sealed class AggregationBits
@@ -53,5 +55,10 @@ public sealed class AggregationBits
         }
 
         return indices;
+    }
+
+    public byte[] HashTreeRoot()
+    {
+        return SszInterop.HashBitlist(_bits);
     }
 }
