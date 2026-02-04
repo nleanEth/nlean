@@ -1,8 +1,6 @@
 using System;
 using System.Security.Cryptography;
 using System.Linq;
-using Lean.Ssz;
-
 namespace Lean.Consensus.Types;
 
 public readonly struct Bytes32 : IEquatable<Bytes32>
@@ -11,7 +9,7 @@ public readonly struct Bytes32 : IEquatable<Bytes32>
 
     public Bytes32(byte[] bytes)
     {
-        if (bytes.Length != Ssz.BytesPerChunk)
+        if (bytes.Length != 32)
         {
             throw new ArgumentException("Bytes32 must be exactly 32 bytes.");
         }
@@ -19,11 +17,9 @@ public readonly struct Bytes32 : IEquatable<Bytes32>
         _bytes = bytes.ToArray();
     }
 
-    public static Bytes32 Zero() => new(new byte[Ssz.BytesPerChunk]);
+    public static Bytes32 Zero() => new(new byte[32]);
 
     public ReadOnlySpan<byte> AsSpan() => _bytes;
-
-    public byte[] HashTreeRoot() => Ssz.HashTreeRootBytes32(_bytes);
 
     public bool Equals(Bytes32 other) => _bytes.SequenceEqual(other._bytes);
 

@@ -10,8 +10,6 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Consensus", "src/Lean.
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Network", "src/Lean.Network/Lean.Network.csproj", "{48C9D7F9-0E1E-4DA8-8894-33D3897C600D}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Ssz", "src/Lean.Ssz/Lean.Ssz.csproj", "{95366D21-0892-486A-BB9E-CF2A40E3F9F1}"
-EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Crypto", "src/Lean.Crypto/Lean.Crypto.csproj", "{D9F86B8C-B8A3-43B2-A051-5A86EFEEA398}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Lean.Storage", "src/Lean.Storage/Lean.Storage.csproj", "{F6C6BD65-40A7-465B-901F-21B2CFBF862A}"
@@ -44,10 +42,6 @@ Global
     {48C9D7F9-0E1E-4DA8-8894-33D3897C600D}.Debug|Any CPU.Build.0 = Debug|Any CPU
     {48C9D7F9-0E1E-4DA8-8894-33D3897C600D}.Release|Any CPU.ActiveCfg = Release|Any CPU
     {48C9D7F9-0E1E-4DA8-8894-33D3897C600D}.Release|Any CPU.Build.0 = Release|Any CPU
-    {95366D21-0892-486A-BB9E-CF2A40E3F9F1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-    {95366D21-0892-486A-BB9E-CF2A40E3F9F1}.Debug|Any CPU.Build.0 = Debug|Any CPU
-    {95366D21-0892-486A-BB9E-CF2A40E3F9F1}.Release|Any CPU.ActiveCfg = Release|Any CPU
-    {95366D21-0892-486A-BB9E-CF2A40E3F9F1}.Release|Any CPU.Build.0 = Release|Any CPU
     {D9F86B8C-B8A3-43B2-A051-5A86EFEEA398}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
     {D9F86B8C-B8A3-43B2-A051-5A86EFEEA398}.Debug|Any CPU.Build.0 = Debug|Any CPU
     {D9F86B8C-B8A3-43B2-A051-5A86EFEEA398}.Release|Any CPU.ActiveCfg = Release|Any CPU

@@ -9,7 +9,6 @@
     <ProjectReference Include="..\Lean.Validator\Lean.Validator.csproj" />
     <ProjectReference Include="..\Lean.Metrics\Lean.Metrics.csproj" />
     <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
-    <ProjectReference Include="..\Lean.Ssz\Lean.Ssz.csproj" />
 
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />

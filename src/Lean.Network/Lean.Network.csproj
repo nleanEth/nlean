@@ -3,7 +3,6 @@
     <AssemblyName>Lean.Network</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Lean.Ssz\Lean.Ssz.csproj" />
     <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
     <ProjectReference Include="..\Lean.Metrics\Lean.Metrics.csproj" />
   </ItemGroup>
