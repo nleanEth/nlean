@@ -22,6 +22,8 @@ public sealed record Attestation(ulong ValidatorId, AttestationData Data)
     }
 }
 
+public sealed record SignedAttestation(ulong ValidatorId, AttestationData Message, XmssSignature Signature);
+
 public sealed record AggregatedAttestation(AggregationBits AggregationBits, AttestationData Data)
 {
     public byte[] HashTreeRoot()

@@ -26,6 +26,12 @@ internal static class SszInterop
         return ToBytes(root);
     }
 
+    public static byte[] HashBytesVector(ReadOnlySpan<byte> value)
+    {
+        Merkle.Merkleize(out UInt256 root, value);
+        return ToBytes(root);
+    }
+
     public static byte[] HashBitlist(bool[] bits)
     {
         var bitArray = new BitArray(bits);

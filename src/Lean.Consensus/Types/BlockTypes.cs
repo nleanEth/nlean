@@ -59,14 +59,14 @@ public sealed record BlockWithAttestation(Block Block, Attestation ProposerAttes
 
 public sealed record BlockSignatures(
     IReadOnlyList<AggregatedSignatureProof> AttestationSignatures,
-    byte[] ProposerSignature)
+    XmssSignature ProposerSignature)
 {
     public byte[] HashTreeRoot()
     {
         var attestationRoots = AttestationSignatures.Select(sig => sig.HashTreeRoot()).ToList();
         return SszInterop.HashContainer(
             SszInterop.HashList(attestationRoots, (ulong)AttestationSignatures.Count),
-            SszInterop.HashBytes(ProposerSignature));
+            ProposerSignature.HashTreeRoot());
     }
 }
 

@@ -15,11 +15,21 @@ This repo contains a .NET 10+ Lean consensus client scaffold with Rust FFI bindi
 ## Crypto binding tests
 
 ```bash
-# One-line: builds native FFI and runs tests
+# One-line: builds native FFI and runs crypto tests
 dotnet test tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj -c Release
+
+# Consensus tests
+dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj -c Release
+
+# Full solution tests
+dotnet test Lean.sln -c Release
+
+# Single test (example)
+dotnet test tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj -c Release --filter FullyQualifiedName~LeanSigXmssInteropTests
 ```
 
 If `dotnet` is not on PATH, use `~/.dotnet/dotnet` instead. The test build expects a Rust toolchain (`cargo`) to be available.
+If you hit local socket permission errors in CI or sandboxed shells, retry with `--disable-build-servers /m:1 /nodeReuse:false`.
 
 ## Docker
 
