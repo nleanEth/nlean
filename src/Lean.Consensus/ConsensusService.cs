@@ -11,6 +11,7 @@ public sealed class ConsensusService : IConsensusService
     private readonly INetworkService _networkService;
     private readonly SignedBlockWithAttestationGossipDecoder _gossipDecoder;
     private readonly IConsensusStateStore _stateStore;
+    private readonly ForkChoiceStore _forkChoice;
     private readonly ConsensusConfig _config;
     private readonly object _stateLock = new();
     private readonly object _lifecycleLock = new();
@@ -26,12 +27,14 @@ public sealed class ConsensusService : IConsensusService
         INetworkService networkService,
         SignedBlockWithAttestationGossipDecoder gossipDecoder,
         IConsensusStateStore stateStore,
+        ForkChoiceStore forkChoice,
         ConsensusConfig config)
     {
         _logger = logger;
         _networkService = networkService;
         _gossipDecoder = gossipDecoder;
         _stateStore = stateStore;
+        _forkChoice = forkChoice;
         _config = config;
     }
 
@@ -69,17 +72,18 @@ public sealed class ConsensusService : IConsensusService
 
         if (_stateStore.TryLoad(out var persistedState))
         {
+            _forkChoice.InitializeHead(persistedState);
             lock (_stateLock)
             {
-                _headSlot = persistedState.HeadSlot;
-                _headRoot = persistedState.HeadRoot;
+                _headSlot = _forkChoice.HeadSlot;
+                _headRoot = _forkChoice.HeadRoot.AsSpan().ToArray();
             }
 
-            LeanMetrics.ConsensusHeadSlot.Set(persistedState.HeadSlot);
+            LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
             _logger.LogInformation(
                 "Loaded persisted consensus head state. HeadSlot: {HeadSlot}, HeadRoot: {HeadRoot}",
-                persistedState.HeadSlot,
-                Convert.ToHexString(persistedState.HeadRoot));
+                _forkChoice.HeadSlot,
+                Convert.ToHexString(_forkChoice.HeadRoot.AsSpan()));
         }
 
         if (_config.EnableGossipProcessing)
@@ -205,7 +209,7 @@ public sealed class ConsensusService : IConsensusService
     private void ProcessBlockGossip(byte[] payload)
     {
         var decodeResult = _gossipDecoder.DecodeAndValidate(payload);
-        if (!decodeResult.IsSuccess || decodeResult.SignedBlock is null || decodeResult.BlockMessageRoot is null)
+        if (!decodeResult.IsSuccess || decodeResult.SignedBlock is null)
         {
             _logger.LogWarning(
                 "Discarding invalid block gossip message. Failure: {Failure}, Reason: {Reason}",
@@ -214,18 +218,27 @@ public sealed class ConsensusService : IConsensusService
             return;
         }
 
-        var blockSlot = decodeResult.SignedBlock.Message.Block.Slot.Value;
-        var root = decodeResult.BlockMessageRoot.Value.AsSpan().ToArray();
+        var blockRoot = new Bytes32(decodeResult.SignedBlock.Message.Block.HashTreeRoot());
+        var applyResult = _forkChoice.ApplyBlock(decodeResult.SignedBlock, blockRoot);
+        if (!applyResult.Accepted)
+        {
+            _logger.LogWarning(
+                "Discarding block after fork-choice checks. RejectReason: {RejectReason}, Reason: {Reason}",
+                applyResult.RejectReason,
+                applyResult.Reason);
+            return;
+        }
 
+        var headRoot = applyResult.HeadRoot.AsSpan().ToArray();
         ulong headSlot;
         lock (_stateLock)
         {
-            _headSlot = blockSlot;
-            _headRoot = root;
+            _headSlot = applyResult.HeadSlot;
+            _headRoot = headRoot;
             headSlot = _headSlot;
         }
 
-        _stateStore.Save(new ConsensusHeadState(headSlot, root));
+        _stateStore.Save(new ConsensusHeadState(headSlot, headRoot));
         LeanMetrics.ConsensusBlocksTotal.Inc();
         LeanMetrics.ConsensusHeadSlot.Set(headSlot);
 
@@ -235,7 +248,7 @@ public sealed class ConsensusService : IConsensusService
                 "Processed block gossip message. Size: {PayloadSize}, HeadSlot: {HeadSlot}, HeadRoot: {HeadRoot}",
                 payload.Length,
                 headSlot,
-                Convert.ToHexString(root));
+                Convert.ToHexString(headRoot));
         }
     }
 }
