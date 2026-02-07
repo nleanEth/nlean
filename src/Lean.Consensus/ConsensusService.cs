@@ -219,7 +219,7 @@ public sealed class ConsensusService : IConsensusService
         }
 
         var blockRoot = new Bytes32(decodeResult.SignedBlock.Message.Block.HashTreeRoot());
-        var applyResult = _forkChoice.ApplyBlock(decodeResult.SignedBlock, blockRoot);
+        var applyResult = _forkChoice.ApplyBlock(decodeResult.SignedBlock, blockRoot, CurrentSlot);
         if (!applyResult.Accepted)
         {
             _logger.LogWarning(

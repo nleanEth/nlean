@@ -7,7 +7,10 @@ public enum ForkChoiceRejectReason
     None = 0,
     DuplicateBlock = 1,
     UnknownParent = 2,
-    InvalidAttestation = 3
+    FutureSlot = 3,
+    InvalidSlot = 4,
+    ProposerMismatch = 5,
+    InvalidAttestation = 6
 }
 
 public sealed class ForkChoiceApplyResult

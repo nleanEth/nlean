@@ -82,9 +82,9 @@ public class ConsensusServiceTests
             new SignedBlockWithAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
-            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
 
-        var signedBlock = CreateSignedBlock(1, Bytes32.Zero());
+        var signedBlock = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
         var blockPayload = SszEncoding.Encode(signedBlock);
         var expectedRoot = signedBlock.Message.Block.HashTreeRoot();
 
@@ -130,9 +130,9 @@ public class ConsensusServiceTests
             new SignedBlockWithAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
-            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
 
-        var signedBlock = CreateSignedBlock(7, Bytes32.Zero());
+        var signedBlock = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
         var blockPayload = SszEncoding.Encode(signedBlock);
 
         await service.StartAsync(CancellationToken.None);
@@ -141,7 +141,7 @@ public class ConsensusServiceTests
 
         Assert.That(stateStore.TryLoad(out var persisted), Is.True);
         Assert.That(persisted, Is.Not.Null);
-        Assert.That(persisted!.HeadSlot, Is.EqualTo(7));
+        Assert.That(persisted!.HeadSlot, Is.EqualTo(1));
         Assert.That(persisted.HeadRoot, Is.EqualTo(signedBlock.Message.Block.HashTreeRoot()));
     }
 
@@ -180,7 +180,7 @@ public class ConsensusServiceTests
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
 
         var unknownParent = new Bytes32(Enumerable.Repeat((byte)0x77, 32).ToArray());
-        var signedBlock = CreateSignedBlock(1, unknownParent);
+        var signedBlock = CreateSignedBlock(1, unknownParent, 1, Bytes32.Zero(), 0);
 
         await service.StartAsync(CancellationToken.None);
         network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(signedBlock));
@@ -201,14 +201,16 @@ public class ConsensusServiceTests
             new SignedBlockWithAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
-            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
 
-        var blockOne = CreateSignedBlock(1, Bytes32.Zero());
+        var blockOne = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
         var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
-        var blockTwo = CreateSignedBlock(2, blockOneRoot);
+        var blockTwo = CreateSignedBlock(2, blockOneRoot, 1, Bytes32.Zero(), 0);
         var blockTwoRoot = blockTwo.Message.Block.HashTreeRoot();
 
         await service.StartAsync(CancellationToken.None);
+        var advanced = await WaitUntilAsync(() => service.CurrentSlot >= 1, TimeSpan.FromSeconds(3));
+        Assert.That(advanced, Is.True);
         network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(blockOne));
         network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(blockTwo));
         await service.StopAsync(CancellationToken.None);
@@ -217,13 +219,41 @@ public class ConsensusServiceTests
         Assert.That(service.HeadRoot, Is.EqualTo(blockTwoRoot));
     }
 
-    private static SignedBlockWithAttestation CreateSignedBlock(ulong blockSlot, Bytes32 parentRoot)
+    [Test]
+    public async Task BlockGossip_FutureSlot_DoesNotAdvanceHead()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+
+        var futureBlock = CreateSignedBlock(3, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+
+        await service.StartAsync(CancellationToken.None);
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(futureBlock));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(service.HeadSlot, Is.EqualTo(0));
+        Assert.That(stateStore.TryLoad(out _), Is.False);
+    }
+
+    private static SignedBlockWithAttestation CreateSignedBlock(
+        ulong blockSlot,
+        Bytes32 parentRoot,
+        ulong parentSlot,
+        Bytes32 sourceRoot,
+        ulong sourceSlot)
     {
         var proposerAttestationData = new AttestationData(
             new Slot(blockSlot),
-            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)1, 32).ToArray()), new Slot(9)),
-            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)2, 32).ToArray()), new Slot(10)),
-            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)3, 32).ToArray()), new Slot(8)));
+            new Checkpoint(parentRoot, new Slot(parentSlot)),
+            new Checkpoint(parentRoot, new Slot(parentSlot)),
+            new Checkpoint(sourceRoot, new Slot(sourceSlot)));
 
         var aggregatedAttestation = new AggregatedAttestation(
             new AggregationBits(new[] { true, false, true, true }),
@@ -238,7 +268,7 @@ public class ConsensusServiceTests
 
         var blockWithAttestation = new BlockWithAttestation(
             block,
-            new Attestation(42, proposerAttestationData));
+            new Attestation(7, proposerAttestationData));
 
         var signatures = new BlockSignatures(
             new[]
@@ -250,6 +280,22 @@ public class ConsensusServiceTests
             XmssSignature.Empty());
 
         return new SignedBlockWithAttestation(blockWithAttestation, signatures);
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var startedAt = DateTime.UtcNow;
+        while (!condition())
+        {
+            if (DateTime.UtcNow - startedAt > timeout)
+            {
+                return false;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25));
+        }
+
+        return true;
     }
 
     private sealed class FakeNetworkService : INetworkService
