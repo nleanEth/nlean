@@ -245,16 +245,7 @@ public static class SszEncoding
         }
 
         var elements = signatures.Select(Encode).ToList();
-        var total = elements.Sum(b => b.Length);
-        var buffer = new byte[total];
-        var offset = 0;
-        foreach (var element in elements)
-        {
-            element.CopyTo(buffer.AsSpan(offset, element.Length));
-            offset += element.Length;
-        }
-
-        return buffer;
+        return EncodeVariableSizeList(elements);
     }
 
     public static byte[] Encode(IReadOnlyList<AggregatedAttestation> attestations)
@@ -265,16 +256,7 @@ public static class SszEncoding
         }
 
         var elements = attestations.Select(Encode).ToList();
-        var total = elements.Sum(b => b.Length);
-        var buffer = new byte[total];
-        var offset = 0;
-        foreach (var element in elements)
-        {
-            element.CopyTo(buffer.AsSpan(offset, element.Length));
-            offset += element.Length;
-        }
-
-        return buffer;
+        return EncodeVariableSizeList(elements);
     }
 
     public static byte[] Encode(AggregatedAttestation value)
@@ -460,5 +442,33 @@ public static class SszEncoding
     private static void WriteOffset(byte[] buffer, int offset, int value)
     {
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(offset, UInt32Length), (uint)value);
+    }
+
+    private static byte[] EncodeVariableSizeList(IReadOnlyList<byte[]> elements)
+    {
+        if (elements.Count == 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        var fixedSize = UInt32Length * elements.Count;
+        var total = fixedSize + elements.Sum(b => b.Length);
+        var buffer = new byte[total];
+
+        var offset = fixedSize;
+        for (var i = 0; i < elements.Count; i++)
+        {
+            WriteOffset(buffer, i * UInt32Length, offset);
+            offset += elements[i].Length;
+        }
+
+        var writeOffset = fixedSize;
+        foreach (var element in elements)
+        {
+            element.CopyTo(buffer.AsSpan(writeOffset, element.Length));
+            writeOffset += element.Length;
+        }
+
+        return buffer;
     }
 }

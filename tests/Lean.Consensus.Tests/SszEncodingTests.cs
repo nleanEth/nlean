@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Lean.Consensus.Types;
 using Nethermind.Serialization.Ssz;
 using NUnit.Framework;
@@ -105,6 +106,91 @@ public sealed class SszEncodingTests
         Assert.That(encoded, Is.EqualTo(expected));
     }
 
+    [Test]
+    public void AggregatedSignatureProofListEncodingUsesOffsets()
+    {
+        var proofA = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, false, true }),
+            new byte[] { 1, 2 });
+        var proofB = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false, true, false, true, false, true, true }),
+            new byte[] { 3, 4, 5, 6 });
+
+        var proofs = new List<AggregatedSignatureProof> { proofA, proofB };
+
+        var encoded = SszEncoding.Encode(proofs);
+        var expectedElements = proofs.Select(SszEncoding.Encode).ToList();
+        var expected = EncodeVariableSizeList(expectedElements);
+
+        Assert.That(encoded, Is.EqualTo(expected));
+    }
+
+    [Test]
+    public void AggregatedAttestationListEncodingUsesOffsets()
+    {
+        var data = new AttestationData(
+            new Slot(1),
+            new Checkpoint(new Bytes32(new byte[32]), new Slot(2)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)4, 32).ToArray()), new Slot(3)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)7, 32).ToArray()), new Slot(4)));
+
+        var attestationA = new AggregatedAttestation(
+            new AggregationBits(new[] { true, false, true }),
+            data);
+        var attestationB = new AggregatedAttestation(
+            new AggregationBits(new[] { true, true, false, true, false, true, false, true, true }),
+            data);
+
+        var attestations = new List<AggregatedAttestation> { attestationA, attestationB };
+
+        var encoded = SszEncoding.Encode(attestations);
+        var expectedElements = attestations.Select(SszEncoding.Encode).ToList();
+        var expected = EncodeVariableSizeList(expectedElements);
+
+        Assert.That(encoded, Is.EqualTo(expected));
+    }
+
+    [Test]
+    public void AggregatedSignatureProofListMatchesReamVector()
+    {
+        const string expectedHex = "080000001300000008000000090000000d0102080000000a000000ab0303040506";
+
+        var proofA = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, false, true }),
+            new byte[] { 1, 2 });
+        var proofB = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false, true, false, true, false, true, true }),
+            new byte[] { 3, 4, 5, 6 });
+
+        var encoded = SszEncoding.Encode(new List<AggregatedSignatureProof> { proofA, proofB });
+
+        Assert.That(encoded, Is.EqualTo(Convert.FromHexString(expectedHex)));
+    }
+
+    [Test]
+    public void AggregatedAttestationListMatchesReamVector()
+    {
+        const string expectedHex =
+            "080000008d0000008400000001000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000004040404040404040404040404040404040404040404040404040404040404040300000000000000070707070707070707070707070707070707070707070707070707070707070704000000000000000d840000000100000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000404040404040404040404040404040404040404040404040404040404040404030000000000000007070707070707070707070707070707070707070707070707070707070707070400000000000000ab03";
+
+        var data = new AttestationData(
+            new Slot(1),
+            new Checkpoint(new Bytes32(new byte[32]), new Slot(2)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)4, 32).ToArray()), new Slot(3)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)7, 32).ToArray()), new Slot(4)));
+
+        var attestationA = new AggregatedAttestation(
+            new AggregationBits(new[] { true, false, true }),
+            data);
+        var attestationB = new AggregatedAttestation(
+            new AggregationBits(new[] { true, true, false, true, false, true, false, true, true }),
+            data);
+
+        var encoded = SszEncoding.Encode(new List<AggregatedAttestation> { attestationA, attestationB });
+
+        Assert.That(encoded, Is.EqualTo(Convert.FromHexString(expectedHex)));
+    }
+
     private static int WriteBytes32(byte[] buffer, int offset, Bytes32 value)
     {
         Ssz.Encode(buffer.AsSpan(offset, SszEncoding.Bytes32Length), value.AsSpan());
@@ -125,5 +211,33 @@ public sealed class SszEncodingTests
         offset = WriteCheckpoint(buffer, offset, data.Head);
         offset = WriteCheckpoint(buffer, offset, data.Target);
         return WriteCheckpoint(buffer, offset, data.Source);
+    }
+
+    private static byte[] EncodeVariableSizeList(IReadOnlyList<byte[]> elements)
+    {
+        if (elements.Count == 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        var fixedSize = SszEncoding.UInt32Length * elements.Count;
+        var total = fixedSize + elements.Sum(b => b.Length);
+        var buffer = new byte[total];
+
+        var offset = fixedSize;
+        for (var i = 0; i < elements.Count; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(i * SszEncoding.UInt32Length, SszEncoding.UInt32Length), (uint)offset);
+            offset += elements[i].Length;
+        }
+
+        var writeOffset = fixedSize;
+        foreach (var element in elements)
+        {
+            element.CopyTo(buffer.AsSpan(writeOffset, element.Length));
+            writeOffset += element.Length;
+        }
+
+        return buffer;
     }
 }

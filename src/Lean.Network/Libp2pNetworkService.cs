@@ -50,13 +50,35 @@ public sealed class Libp2pNetworkService : INetworkService
             await _pubsubRouter.StartAsync(peer, token: cancellationToken);
         }
 
+        await ConnectBootstrapPeersAsync(peer, cancellationToken);
+
         _logger.LogInformation("libp2p listening on {Addresses}", string.Join(", ", peer.ListenAddresses));
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         _topics.Clear();
-        return Task.CompletedTask;
+
+        if (_pubsubRouter is IDisposable pubsubDisposable)
+        {
+            pubsubDisposable.Dispose();
+        }
+
+        if (_mdnsDiscovery is IDisposable mdnsDisposable)
+        {
+            mdnsDisposable.Dispose();
+        }
+
+        if (_peer is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (_peer is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        _peer = null;
     }
 
     public Task PublishAsync(string topic, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
@@ -93,5 +115,33 @@ public sealed class Libp2pNetworkService : INetworkService
         var created = _pubsubRouter.GetTopic(topic);
         _topics[topic] = created;
         return created;
+    }
+
+    private async Task ConnectBootstrapPeersAsync(ILocalPeer peer, CancellationToken cancellationToken)
+    {
+        foreach (var bootstrapPeer in _config.BootstrapPeers)
+        {
+            Multiformats.Address.Multiaddress address;
+            try
+            {
+                address = Multiformats.Address.Multiaddress.Decode(bootstrapPeer);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Skipping invalid bootstrap peer address: {Address}", bootstrapPeer);
+                continue;
+            }
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _ = await peer.DialAsync(address);
+                _logger.LogInformation("Connected to bootstrap peer {Address}", bootstrapPeer);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to connect to bootstrap peer {Address}", bootstrapPeer);
+            }
+        }
     }
 }

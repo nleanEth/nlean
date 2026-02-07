@@ -8,6 +8,7 @@ public sealed class ValidatorService : IValidatorService
     private readonly ILogger<ValidatorService> _logger;
     private readonly ILeanSig _leanSig;
     private readonly ILeanMultiSig _leanMultiSig;
+    private bool _started;
 
     public ValidatorService(ILogger<ValidatorService> logger, ILeanSig leanSig, ILeanMultiSig leanMultiSig)
     {
@@ -18,12 +19,24 @@ public sealed class ValidatorService : IValidatorService
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Validator service started - stub. TODO: implement duty scheduling and signing.");
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_started)
+        {
+            return Task.CompletedTask;
+        }
+
+        // Initialize native proving/verifying contexts once at service start.
+        _leanMultiSig.SetupProver();
+        _leanMultiSig.SetupVerifier();
+
+        _started = true;
+        _logger.LogInformation("Validator service started.");
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        _started = false;
         _logger.LogInformation("Validator service stopped.");
         return Task.CompletedTask;
     }
