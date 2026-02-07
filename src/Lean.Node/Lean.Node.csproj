@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Lean.Node</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Lean.Consensus\Lean.Consensus.csproj" />
+    <ProjectReference Include="..\Lean.Network\Lean.Network.csproj" />
+    <ProjectReference Include="..\Lean.Storage\Lean.Storage.csproj" />
+    <ProjectReference Include="..\Lean.Validator\Lean.Validator.csproj" />
+    <ProjectReference Include="..\Lean.Metrics\Lean.Metrics.csproj" />
+    <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
+
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="YamlDotNet" />
+    <PackageReference Include="Nethermind.Libp2p" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,31 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+
+    <PackageVersion Include="Nethermind.Libp2p" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.Pubsub" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.MDns" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.Quic" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.Noise" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.Yamux" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.Identify" Version="1.0.0-preview.51" />
+    <PackageVersion Include="Nethermind.Libp2p.Protocols.RequestResponse" Version="1.0.0-preview.51" />
+
+    <PackageVersion Include="RocksDbSharp" Version="6.2.2" />
+
+    <PackageVersion Include="prometheus-net" Version="8.0.0" />
+    <PackageVersion Include="prometheus-net.AspNetCore" Version="8.0.0" />
+    <PackageVersion Include="YamlDotNet" Version="15.1.2" />
+
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageVersion Include="NUnit" Version="4.4.0" />
+    <PackageVersion Include="NUnit3TestAdapter" Version="5.2.0" />
+  </ItemGroup>
+</Project>

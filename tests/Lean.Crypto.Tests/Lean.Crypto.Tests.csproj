@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lean.Crypto\Lean.Crypto.csproj" />
+    <ProjectReference Include="..\..\src\Lean.Consensus\Lean.Consensus.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="NUnit" />
+    <PackageReference Include="NUnit3TestAdapter" />
+  </ItemGroup>
+
+  <Target Name="CopyNativeRuntimeFiles" AfterTargets="Build" Condition="Exists('$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes')">
+    <ItemGroup>
+      <NativeRuntimeFiles Include="$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes/**/native/*.*" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(NativeRuntimeFiles)"
+      DestinationFiles="@(NativeRuntimeFiles->'$(OutDir)runtimes/%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+</Project>

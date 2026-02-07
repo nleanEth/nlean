@@ -1,0 +1,3 @@
+[submodule "vendor/nethermind"]
+	path = vendor/nethermind
+	url = https://github.com/NethermindEth/nethermind.git

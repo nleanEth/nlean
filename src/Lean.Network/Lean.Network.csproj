@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Lean.Network</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
+    <ProjectReference Include="..\Lean.Metrics\Lean.Metrics.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Nethermind.Libp2p" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.Pubsub" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.MDns" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.Quic" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.Noise" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.Yamux" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.Identify" />
+    <PackageReference Include="Nethermind.Libp2p.Protocols.RequestResponse" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

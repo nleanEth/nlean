@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Lean.Crypto</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <BuildNativeCrypto Condition="'$(BuildNativeCrypto)' == ''">true</BuildNativeCrypto>
+  </PropertyGroup>
+
+  <Target Name="BuildLeanCryptoNative" BeforeTargets="Build" Condition="'$(BuildNativeCrypto)' == 'true'">
+    <PropertyGroup>
+      <NativeBuildScript Condition="'$(OS)' == 'Windows_NT'">powershell -ExecutionPolicy Bypass -File $(MSBuildProjectDirectory)/../../scripts/build-native.ps1</NativeBuildScript>
+      <NativeBuildScript Condition="'$(OS)' != 'Windows_NT'">bash $(MSBuildProjectDirectory)/../../scripts/build-native.sh</NativeBuildScript>
+    </PropertyGroup>
+    <Exec Command="$(NativeBuildScript)" />
+  </Target>
+</Project>

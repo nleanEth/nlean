@@ -1,0 +1,15 @@
+{
+  "dataDir": "./data",
+  "network": "devnet2",
+  "metrics": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8008
+  },
+  "libp2p": {
+    "listenAddresses": ["/ip4/0.0.0.0/tcp/0"],
+    "enableMdns": true,
+    "enablePubsub": true,
+    "enableQuic": true
+  }
+}
