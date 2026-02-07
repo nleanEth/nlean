@@ -1,6 +1,7 @@
-using System.Security.Cryptography;
 using Lean.Consensus;
+using Lean.Consensus.Types;
 using Lean.Network;
+using Lean.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using NUnit.Framework;
 
@@ -13,9 +14,12 @@ public class ConsensusServiceTests
     public async Task StartAsync_SubscribesToExpectedTopics()
     {
         var network = new FakeNetworkService();
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
         var service = new ConsensusService(
             NullLogger<ConsensusService>.Instance,
             network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
 
         await service.StartAsync(CancellationToken.None);
@@ -30,9 +34,12 @@ public class ConsensusServiceTests
     public async Task StartAsync_IsIdempotent()
     {
         var network = new FakeNetworkService();
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
         var service = new ConsensusService(
             NullLogger<ConsensusService>.Instance,
             network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
 
         await service.StartAsync(CancellationToken.None);
@@ -46,9 +53,12 @@ public class ConsensusServiceTests
     public async Task SlotTicker_AdvancesCurrentSlot()
     {
         var network = new FakeNetworkService();
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
         var service = new ConsensusService(
             NullLogger<ConsensusService>.Instance,
             network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false });
 
         await service.StartAsync(CancellationToken.None);
@@ -62,13 +72,17 @@ public class ConsensusServiceTests
     public async Task BlockGossip_UpdatesHeadSlotAndRoot()
     {
         var network = new FakeNetworkService();
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
         var service = new ConsensusService(
             NullLogger<ConsensusService>.Instance,
             network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
 
-        var blockPayload = new byte[] { 0x01, 0x02, 0x03, 0x04, 0xAA };
-        var expectedRoot = SHA256.HashData(blockPayload);
+        var signedBlock = CreateSignedBlock(1);
+        var blockPayload = SszEncoding.Encode(signedBlock);
+        var expectedRoot = signedBlock.Message.HashTreeRoot();
 
         await service.StartAsync(CancellationToken.None);
         network.PublishToTopic(GossipTopics.Blocks, blockPayload);
@@ -76,6 +90,108 @@ public class ConsensusServiceTests
 
         Assert.That(service.HeadSlot, Is.EqualTo(1));
         Assert.That(service.HeadRoot, Is.EqualTo(expectedRoot));
+    }
+
+    [Test]
+    public async Task StartAsync_LoadsPersistedHeadState()
+    {
+        var persistedHead = new ConsensusHeadState(99, Enumerable.Repeat((byte)0xAB, 32).ToArray());
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        stateStore.Save(persistedHead);
+
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
+            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = false });
+
+        await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(service.HeadSlot, Is.EqualTo(99));
+        Assert.That(service.HeadRoot, Is.EqualTo(persistedHead.HeadRoot));
+    }
+
+    [Test]
+    public async Task BlockGossip_PersistsHeadState()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
+            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+
+        var signedBlock = CreateSignedBlock(7);
+        var blockPayload = SszEncoding.Encode(signedBlock);
+
+        await service.StartAsync(CancellationToken.None);
+        network.PublishToTopic(GossipTopics.Blocks, blockPayload);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(stateStore.TryLoad(out var persisted), Is.True);
+        Assert.That(persisted, Is.Not.Null);
+        Assert.That(persisted!.HeadSlot, Is.EqualTo(7));
+        Assert.That(persisted.HeadRoot, Is.EqualTo(signedBlock.Message.HashTreeRoot()));
+    }
+
+    [Test]
+    public async Task InvalidBlockGossip_DoesNotAdvanceHead()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
+            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+
+        await service.StartAsync(CancellationToken.None);
+        network.PublishToTopic(GossipTopics.Blocks, new byte[] { 0x01, 0x02, 0x03 });
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(service.HeadSlot, Is.EqualTo(0));
+        Assert.That(stateStore.TryLoad(out _), Is.False);
+    }
+
+    private static SignedBlockWithAttestation CreateSignedBlock(ulong blockSlot)
+    {
+        var proposerAttestationData = new AttestationData(
+            new Slot(blockSlot),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)1, 32).ToArray()), new Slot(9)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)2, 32).ToArray()), new Slot(10)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)3, 32).ToArray()), new Slot(8)));
+
+        var aggregatedAttestation = new AggregatedAttestation(
+            new AggregationBits(new[] { true, false, true, true }),
+            proposerAttestationData);
+
+        var block = new Block(
+            new Slot(blockSlot),
+            7,
+            new Bytes32(Enumerable.Repeat((byte)4, 32).ToArray()),
+            new Bytes32(Enumerable.Repeat((byte)5, 32).ToArray()),
+            new BlockBody(new[] { aggregatedAttestation }));
+
+        var blockWithAttestation = new BlockWithAttestation(
+            block,
+            new Attestation(42, proposerAttestationData));
+
+        var signatures = new BlockSignatures(
+            new[]
+            {
+                new AggregatedSignatureProof(
+                    new AggregationBits(new[] { true, true, false, true }),
+                    new byte[] { 0xAA, 0xBB, 0xCC })
+            },
+            XmssSignature.Empty());
+
+        return new SignedBlockWithAttestation(blockWithAttestation, signatures);
     }
 
     private sealed class FakeNetworkService : INetworkService

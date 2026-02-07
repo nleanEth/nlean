@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+using Lean.Consensus.Types;
 using Lean.Metrics;
 using Lean.Network;
 using Microsoft.Extensions.Logging;
@@ -9,6 +9,8 @@ public sealed class ConsensusService : IConsensusService
 {
     private readonly ILogger<ConsensusService> _logger;
     private readonly INetworkService _networkService;
+    private readonly SignedBlockWithAttestationGossipDecoder _gossipDecoder;
+    private readonly IConsensusStateStore _stateStore;
     private readonly ConsensusConfig _config;
     private readonly object _stateLock = new();
     private readonly object _lifecycleLock = new();
@@ -22,10 +24,14 @@ public sealed class ConsensusService : IConsensusService
     public ConsensusService(
         ILogger<ConsensusService> logger,
         INetworkService networkService,
+        SignedBlockWithAttestationGossipDecoder gossipDecoder,
+        IConsensusStateStore stateStore,
         ConsensusConfig config)
     {
         _logger = logger;
         _networkService = networkService;
+        _gossipDecoder = gossipDecoder;
+        _stateStore = stateStore;
         _config = config;
     }
 
@@ -59,6 +65,21 @@ public sealed class ConsensusService : IConsensusService
         if (Interlocked.Exchange(ref _started, 1) == 1)
         {
             return;
+        }
+
+        if (_stateStore.TryLoad(out var persistedState))
+        {
+            lock (_stateLock)
+            {
+                _headSlot = persistedState.HeadSlot;
+                _headRoot = persistedState.HeadRoot;
+            }
+
+            LeanMetrics.ConsensusHeadSlot.Set(persistedState.HeadSlot);
+            _logger.LogInformation(
+                "Loaded persisted consensus head state. HeadSlot: {HeadSlot}, HeadRoot: {HeadRoot}",
+                persistedState.HeadSlot,
+                Convert.ToHexString(persistedState.HeadRoot));
         }
 
         if (_config.EnableGossipProcessing)
@@ -183,15 +204,28 @@ public sealed class ConsensusService : IConsensusService
 
     private void ProcessBlockGossip(byte[] payload)
     {
-        var root = SHA256.HashData(payload);
+        var decodeResult = _gossipDecoder.DecodeAndValidate(payload);
+        if (!decodeResult.IsSuccess || decodeResult.SignedBlock is null || decodeResult.BlockMessageRoot is null)
+        {
+            _logger.LogWarning(
+                "Discarding invalid block gossip message. Failure: {Failure}, Reason: {Reason}",
+                decodeResult.Failure,
+                decodeResult.Reason);
+            return;
+        }
+
+        var blockSlot = decodeResult.SignedBlock.Message.Block.Slot.Value;
+        var root = decodeResult.BlockMessageRoot.Value.AsSpan().ToArray();
+
         ulong headSlot;
         lock (_stateLock)
         {
-            _headSlot++;
+            _headSlot = blockSlot;
             _headRoot = root;
             headSlot = _headSlot;
         }
 
+        _stateStore.Save(new ConsensusHeadState(headSlot, root));
         LeanMetrics.ConsensusBlocksTotal.Inc();
         LeanMetrics.ConsensusHeadSlot.Set(headSlot);
 

@@ -1,3 +1,4 @@
+using Lean.Consensus;
 using Lean.Crypto;
 using Lean.Validator;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,13 +11,17 @@ public sealed class ValidatorServiceTests
     [Test]
     public async Task StartAsync_InitializesLeanMultiSigContexts()
     {
+        var consensus = new FakeConsensusService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
+            consensus,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
             new FakeLeanSig(),
             multiSig);
 
         await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
 
         Assert.That(multiSig.SetupProverCalls, Is.EqualTo(1));
         Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(1));
@@ -25,34 +30,135 @@ public sealed class ValidatorServiceTests
     [Test]
     public async Task StartAsync_IsIdempotent_WhileRunning()
     {
+        var consensus = new FakeConsensusService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
+            consensus,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
             new FakeLeanSig(),
             multiSig);
 
         await service.StartAsync(CancellationToken.None);
         await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
 
         Assert.That(multiSig.SetupProverCalls, Is.EqualTo(1));
         Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(1));
     }
 
     [Test]
+    public async Task DutyLoop_TicksUntilStop()
+    {
+        var consensus = new FakeConsensusService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+
+        var observedDutyTick = await WaitUntilAsync(
+            () => consensus.CurrentSlotReadCalls > 0,
+            TimeSpan.FromSeconds(3));
+        Assert.That(observedDutyTick, Is.True);
+
+        await service.StopAsync(CancellationToken.None);
+        var readCallsAtStop = consensus.CurrentSlotReadCalls;
+        await Task.Delay(TimeSpan.FromMilliseconds(1200));
+
+        Assert.That(consensus.CurrentSlotReadCalls, Is.EqualTo(readCallsAtStop));
+    }
+
+    [Test]
     public async Task StopAsync_AllowsStartToInitializeAgain()
     {
+        var consensus = new FakeConsensusService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
+            consensus,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
             new FakeLeanSig(),
             multiSig);
 
         await service.StartAsync(CancellationToken.None);
-        await service.StopAsync(CancellationToken.None);
-        await service.StartAsync(CancellationToken.None);
+        var firstLifecycleTicked = await WaitUntilAsync(
+            () => consensus.CurrentSlotReadCalls > 0,
+            TimeSpan.FromSeconds(3));
+        Assert.That(firstLifecycleTicked, Is.True);
 
+        await service.StopAsync(CancellationToken.None);
+        var readCallsAfterFirstLifecycle = consensus.CurrentSlotReadCalls;
+        await service.StartAsync(CancellationToken.None);
+        var secondLifecycleTicked = await WaitUntilAsync(
+            () => consensus.CurrentSlotReadCalls > readCallsAfterFirstLifecycle,
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(secondLifecycleTicked, Is.True);
         Assert.That(multiSig.SetupProverCalls, Is.EqualTo(2));
         Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task StopAsync_IsIdempotent()
+    {
+        var consensus = new FakeConsensusService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Test]
+    public async Task StopAsync_WithCancelledToken_StillStopsDutyLoop()
+    {
+        var consensus = new FakeConsensusService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        var observedDutyTick = await WaitUntilAsync(
+            () => consensus.CurrentSlotReadCalls > 0,
+            TimeSpan.FromSeconds(3));
+        Assert.That(observedDutyTick, Is.True);
+
+        using var cancelledStopToken = new CancellationTokenSource();
+        cancelledStopToken.Cancel();
+        await service.StopAsync(cancelledStopToken.Token);
+
+        var readCallsAtStop = consensus.CurrentSlotReadCalls;
+        await Task.Delay(TimeSpan.FromMilliseconds(1200));
+        Assert.That(consensus.CurrentSlotReadCalls, Is.EqualTo(readCallsAtStop));
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var startedAt = DateTime.UtcNow;
+        while (!condition())
+        {
+            if (DateTime.UtcNow - startedAt > timeout)
+            {
+                return false;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25));
+        }
+
+        return true;
     }
 
     private sealed class FakeLeanSig : ILeanSig
@@ -70,6 +176,32 @@ public sealed class ValidatorServiceTests
         public bool Verify(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
         {
             return true;
+        }
+    }
+
+    private sealed class FakeConsensusService : IConsensusService
+    {
+        private long _currentSlotReadCalls;
+
+        public long CurrentSlotReadCalls => Interlocked.Read(ref _currentSlotReadCalls);
+
+        public ulong CurrentSlot
+        {
+            get
+            {
+                Interlocked.Increment(ref _currentSlotReadCalls);
+                return 0;
+            }
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
         }
     }
 
