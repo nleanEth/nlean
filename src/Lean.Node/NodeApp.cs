@@ -28,6 +28,7 @@ public static class NodeApp
             {
                 services.AddSingleton(options);
                 services.AddSingleton(options.Libp2p);
+                services.AddSingleton(options.Consensus);
                 services.AddSingleton(options.Metrics);
                 services.AddSingleton(options.Storage);
 

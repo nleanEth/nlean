@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Lean.Consensus;
 using Lean.Metrics;
 using Lean.Network;
 using Lean.Storage;
@@ -13,6 +14,7 @@ public sealed class NodeOptions
     public string? ValidatorConfigPath { get; set; }
     public string? NodeName { get; set; }
     public Libp2pConfig Libp2p { get; set; } = new();
+    public ConsensusConfig Consensus { get; set; } = new();
     public MetricsConfig Metrics { get; set; } = new();
     public StorageConfig Storage { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
@@ -38,6 +40,7 @@ public sealed class NodeOptions
         }
 
         options.Libp2p ??= new Libp2pConfig();
+        options.Consensus ??= new ConsensusConfig();
         options.Metrics ??= new MetricsConfig();
         options.Storage ??= new StorageConfig();
         options.Logging ??= new LoggingConfig();

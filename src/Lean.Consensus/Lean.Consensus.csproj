@@ -4,9 +4,12 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
+    <ProjectReference Include="..\Lean.Metrics\Lean.Metrics.csproj" />
+    <ProjectReference Include="..\Lean.Network\Lean.Network.csproj" />
     <ProjectReference Include="..\Lean.Storage\Lean.Storage.csproj" />
     <ProjectReference Include="..\..\vendor\nethermind\src\Nethermind\Nethermind.Serialization.Ssz\Nethermind.Serialization.Ssz.csproj" />
     <ProjectReference Include="..\..\vendor\nethermind\src\Nethermind\Nethermind.Merkleization\Nethermind.Merkleization.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="prometheus-net" />
   </ItemGroup>
 </Project>
