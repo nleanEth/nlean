@@ -33,6 +33,7 @@ public static class NodeApp
                 services.AddSingleton(options.Storage);
                 services.AddSingleton<IKeyValueStore>(_ => new RocksDbKeyValueStore(options.Storage, "consensus"));
                 services.AddSingleton<IConsensusStateStore, ConsensusStateStore>();
+                services.AddSingleton<IBlockByRootStore, BlockByRootStore>();
                 services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
                 services.AddSingleton<IForkChoiceStateTransition, DefaultForkChoiceStateTransition>();

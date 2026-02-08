@@ -191,6 +191,36 @@ public class ConsensusServiceTests
     }
 
     [Test]
+    public async Task BlockGossip_PersistsBlockPayloadByRoot()
+    {
+        var keyValueStore = new InMemoryKeyValueStore();
+        var stateStore = new ConsensusStateStore(keyValueStore);
+        var blockStore = new BlockByRootStore(keyValueStore);
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true },
+            blockStore);
+
+        var block = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
+        var payload = SszEncoding.Encode(block);
+
+        await service.StartAsync(CancellationToken.None);
+        network.PublishToTopic(GossipTopics.Blocks, payload);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(blockStore.TryLoad(blockRoot, out var storedPayload), Is.True);
+        Assert.That(storedPayload, Is.Not.Null);
+        Assert.That(storedPayload!, Is.EqualTo(payload));
+    }
+
+    [Test]
     public async Task InvalidBlockGossip_DoesNotAdvanceHead()
     {
         var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());

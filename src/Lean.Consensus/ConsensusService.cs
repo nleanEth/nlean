@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Lean.Consensus.Types;
 using Lean.Metrics;
 using Lean.Network;
@@ -12,6 +13,7 @@ public sealed class ConsensusService : IConsensusService
     private readonly SignedBlockWithAttestationGossipDecoder _gossipDecoder;
     private readonly SignedAttestationGossipDecoder _attestationDecoder;
     private readonly IConsensusStateStore _stateStore;
+    private readonly IBlockByRootStore _blockStore;
     private readonly ForkChoiceStore _forkChoice;
     private readonly ConsensusConfig _config;
     private readonly object _stateLock = new();
@@ -34,13 +36,15 @@ public sealed class ConsensusService : IConsensusService
         SignedAttestationGossipDecoder attestationDecoder,
         IConsensusStateStore stateStore,
         ForkChoiceStore forkChoice,
-        ConsensusConfig config)
+        ConsensusConfig config,
+        IBlockByRootStore? blockStore = null)
     {
         _logger = logger;
         _networkService = networkService;
         _gossipDecoder = gossipDecoder;
         _attestationDecoder = attestationDecoder;
         _stateStore = stateStore;
+        _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
         _forkChoice = forkChoice;
         _config = config;
     }
@@ -258,7 +262,12 @@ public sealed class ConsensusService : IConsensusService
             return;
         }
 
-        if (!TryApplyBlock(decodeResult.SignedBlock, queueOnUnknownParent: true, payload.Length, out var blockRoot))
+        if (!TryApplyBlock(
+                decodeResult.SignedBlock,
+                queueOnUnknownParent: true,
+                payload.Length,
+                payload,
+                out var blockRoot))
         {
             return;
         }
@@ -270,6 +279,7 @@ public sealed class ConsensusService : IConsensusService
         SignedBlockWithAttestation signedBlock,
         bool queueOnUnknownParent,
         int payloadSize,
+        ReadOnlyMemory<byte> rawPayload,
         out Bytes32 appliedRoot)
     {
         appliedRoot = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
@@ -340,6 +350,15 @@ public sealed class ConsensusService : IConsensusService
             _stateStore.Save(stateToPersist);
         }
 
+        if (rawPayload.IsEmpty)
+        {
+            _blockStore.Save(appliedRoot, SszEncoding.Encode(signedBlock));
+        }
+        else
+        {
+            _blockStore.Save(appliedRoot, rawPayload.Span);
+        }
+
         LeanMetrics.ConsensusBlocksTotal.Inc();
         UpdateForkChoiceMetrics();
 
@@ -363,7 +382,12 @@ public sealed class ConsensusService : IConsensusService
         var recovered = 0;
         while (pending.TryDequeue(out var orphan))
         {
-            if (!TryApplyBlock(orphan, queueOnUnknownParent: true, payloadSize: 0, out var appliedRoot))
+            if (!TryApplyBlock(
+                    orphan,
+                    queueOnUnknownParent: true,
+                    payloadSize: 0,
+                    ReadOnlyMemory<byte>.Empty,
+                    out var appliedRoot))
             {
                 continue;
             }
@@ -540,5 +564,20 @@ public sealed class ConsensusService : IConsensusService
                left.LatestJustifiedRoot.AsSpan().SequenceEqual(right.LatestJustifiedRoot) &&
                left.LatestFinalizedRoot.AsSpan().SequenceEqual(right.LatestFinalizedRoot) &&
                left.SafeTargetRoot.AsSpan().SequenceEqual(right.SafeTargetRoot);
+    }
+
+    private sealed class NoOpBlockByRootStore : IBlockByRootStore
+    {
+        public static readonly NoOpBlockByRootStore Instance = new();
+
+        public void Save(Bytes32 blockRoot, ReadOnlySpan<byte> payload)
+        {
+        }
+
+        public bool TryLoad(Bytes32 blockRoot, [NotNullWhen(true)] out byte[]? payload)
+        {
+            payload = null;
+            return false;
+        }
     }
 }
