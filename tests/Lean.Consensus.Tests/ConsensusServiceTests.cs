@@ -238,6 +238,40 @@ public class ConsensusServiceTests
     }
 
     [Test]
+    public async Task BlockGossip_RecoversQueuedOrphanWhenParentArrives()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true, MaxOrphanBlocks = 64 });
+
+        var parentBlock = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var parentRoot = new Bytes32(parentBlock.Message.Block.HashTreeRoot());
+        var orphanChild = CreateSignedBlock(2, parentRoot, 1, Bytes32.Zero(), 0);
+        var orphanChildRoot = orphanChild.Message.Block.HashTreeRoot();
+
+        await service.StartAsync(CancellationToken.None);
+        var advanced = await WaitUntilAsync(() => service.CurrentSlot >= 1, TimeSpan.FromSeconds(3));
+        Assert.That(advanced, Is.True);
+
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(orphanChild));
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(parentBlock));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(service.HeadSlot, Is.EqualTo(2));
+        Assert.That(service.HeadRoot, Is.EqualTo(orphanChildRoot));
+        Assert.That(stateStore.TryLoad(out var persisted), Is.True);
+        Assert.That(persisted, Is.Not.Null);
+        Assert.That(persisted!.HeadSlot, Is.EqualTo(2));
+    }
+
+    [Test]
     public async Task BlockGossip_ChainExtension_UpdatesHeadToHighestSlot()
     {
         var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());

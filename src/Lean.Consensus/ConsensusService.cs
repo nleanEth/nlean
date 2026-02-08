@@ -23,6 +23,9 @@ public sealed class ConsensusService : IConsensusService
     private ulong _headSlot;
     private byte[] _headRoot = Array.Empty<byte>();
     private ConsensusHeadState? _lastPersistedState;
+    private readonly Dictionary<string, List<SignedBlockWithAttestation>> _orphanBlocksByParent = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _orphanBlockRoots = new(StringComparer.Ordinal);
+    private int _orphanBlockCount;
 
     public ConsensusService(
         ILogger<ConsensusService> logger,
@@ -124,6 +127,7 @@ public sealed class ConsensusService : IConsensusService
             "Consensus service started. SecondsPerSlot: {SecondsPerSlot}, GossipProcessing: {GossipProcessing}",
             _config.SecondsPerSlot,
             _config.EnableGossipProcessing);
+        LeanMetrics.ConsensusOrphanBlocksPending.Set(_orphanBlockCount);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -254,12 +258,30 @@ public sealed class ConsensusService : IConsensusService
             return;
         }
 
-        var blockRoot = new Bytes32(decodeResult.SignedBlock.Message.Block.HashTreeRoot());
+        if (!TryApplyBlock(decodeResult.SignedBlock, queueOnUnknownParent: true, payload.Length, out var blockRoot))
+        {
+            return;
+        }
+
+        ProcessQueuedOrphans(blockRoot);
+    }
+
+    private bool TryApplyBlock(
+        SignedBlockWithAttestation signedBlock,
+        bool queueOnUnknownParent,
+        int payloadSize,
+        out Bytes32 appliedRoot)
+    {
+        appliedRoot = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+        var blockRootKey = Convert.ToHexString(appliedRoot.AsSpan());
         ForkChoiceApplyResult applyResult;
         ConsensusHeadState? stateToPersist = null;
+        var orphanQueued = false;
+        var orphanPendingCount = -1;
+
         lock (_stateLock)
         {
-            applyResult = _forkChoice.ApplyBlock(decodeResult.SignedBlock, blockRoot, CurrentSlot);
+            applyResult = _forkChoice.ApplyBlock(signedBlock, appliedRoot, CurrentSlot);
             if (applyResult.Accepted)
             {
                 _headSlot = applyResult.HeadSlot;
@@ -270,15 +292,47 @@ public sealed class ConsensusService : IConsensusService
                     stateToPersist = snapshot;
                 }
             }
+            else if (queueOnUnknownParent && applyResult.RejectReason == ForkChoiceRejectReason.UnknownParent)
+            {
+                orphanQueued = QueueOrphanBlockLocked(signedBlock, blockRootKey);
+                orphanPendingCount = _orphanBlockCount;
+            }
+        }
+
+        if (orphanPendingCount >= 0)
+        {
+            LeanMetrics.ConsensusOrphanBlocksPending.Set(orphanPendingCount);
         }
 
         if (!applyResult.Accepted)
         {
+            if (applyResult.RejectReason == ForkChoiceRejectReason.UnknownParent)
+            {
+                if (orphanQueued)
+                {
+                    LeanMetrics.ConsensusOrphanBlocksQueuedTotal.Inc();
+                    _logger.LogInformation(
+                        "Queued orphan block. ParentRoot: {ParentRoot}, BlockRoot: {BlockRoot}, Pending: {Pending}",
+                        Convert.ToHexString(signedBlock.Message.Block.ParentRoot.AsSpan()),
+                        blockRootKey,
+                        orphanPendingCount);
+                }
+                else if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Dropped orphan block (duplicate or queue full). ParentRoot: {ParentRoot}, BlockRoot: {BlockRoot}.",
+                        Convert.ToHexString(signedBlock.Message.Block.ParentRoot.AsSpan()),
+                        blockRootKey);
+                }
+
+                return false;
+            }
+
             _logger.LogWarning(
                 "Discarding block after fork-choice checks. RejectReason: {RejectReason}, Reason: {Reason}",
                 applyResult.RejectReason,
                 applyResult.Reason);
-            return;
+            return false;
         }
 
         if (stateToPersist is not null)
@@ -287,19 +341,123 @@ public sealed class ConsensusService : IConsensusService
         }
 
         LeanMetrics.ConsensusBlocksTotal.Inc();
-        LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
-        LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
-        LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
-        LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
+        UpdateForkChoiceMetrics();
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
                 "Processed block gossip message. Size: {PayloadSize}, HeadSlot: {HeadSlot}, HeadRoot: {HeadRoot}",
-                payload.Length,
+                payloadSize,
                 _headSlot,
                 Convert.ToHexString(_headRoot));
         }
+
+        return true;
+    }
+
+    private void ProcessQueuedOrphans(Bytes32 parentRoot)
+    {
+        var pending = new Queue<SignedBlockWithAttestation>();
+        EnqueueQueuedChildren(parentRoot, pending);
+
+        var recovered = 0;
+        while (pending.TryDequeue(out var orphan))
+        {
+            if (!TryApplyBlock(orphan, queueOnUnknownParent: true, payloadSize: 0, out var appliedRoot))
+            {
+                continue;
+            }
+
+            recovered++;
+            EnqueueQueuedChildren(appliedRoot, pending);
+        }
+
+        if (recovered > 0)
+        {
+            LeanMetrics.ConsensusOrphanBlocksRecoveredTotal.Inc(recovered);
+        }
+    }
+
+    private void EnqueueQueuedChildren(Bytes32 parentRoot, Queue<SignedBlockWithAttestation> pending)
+    {
+        List<SignedBlockWithAttestation>? children;
+        var orphanPendingCount = -1;
+        lock (_stateLock)
+        {
+            children = TakeQueuedChildrenLocked(parentRoot);
+            if (children is not null)
+            {
+                orphanPendingCount = _orphanBlockCount;
+            }
+        }
+
+        if (children is null)
+        {
+            return;
+        }
+
+        if (orphanPendingCount >= 0)
+        {
+            LeanMetrics.ConsensusOrphanBlocksPending.Set(orphanPendingCount);
+        }
+
+        foreach (var child in children.OrderBy(block => block.Message.Block.Slot.Value))
+        {
+            pending.Enqueue(child);
+        }
+    }
+
+    private bool QueueOrphanBlockLocked(SignedBlockWithAttestation signedBlock, string blockRootKey)
+    {
+        if (_orphanBlockRoots.Contains(blockRootKey))
+        {
+            return false;
+        }
+
+        var maxOrphans = Math.Max(1, _config.MaxOrphanBlocks);
+        if (_orphanBlockCount >= maxOrphans)
+        {
+            return false;
+        }
+
+        var parentKey = Convert.ToHexString(signedBlock.Message.Block.ParentRoot.AsSpan());
+        if (!_orphanBlocksByParent.TryGetValue(parentKey, out var siblings))
+        {
+            siblings = new List<SignedBlockWithAttestation>();
+            _orphanBlocksByParent[parentKey] = siblings;
+        }
+
+        siblings.Add(signedBlock);
+        _orphanBlockRoots.Add(blockRootKey);
+        _orphanBlockCount++;
+        return true;
+    }
+
+    private List<SignedBlockWithAttestation>? TakeQueuedChildrenLocked(Bytes32 parentRoot)
+    {
+        var parentKey = Convert.ToHexString(parentRoot.AsSpan());
+        if (!_orphanBlocksByParent.TryGetValue(parentKey, out var children))
+        {
+            return null;
+        }
+
+        _orphanBlocksByParent.Remove(parentKey);
+        _orphanBlockCount -= children.Count;
+        foreach (var child in children)
+        {
+            var childRoot = Convert.ToHexString(child.Message.Block.HashTreeRoot());
+            _orphanBlockRoots.Remove(childRoot);
+        }
+
+        return children;
+    }
+
+    private void UpdateForkChoiceMetrics()
+    {
+        LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
+        LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
+        LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
+        LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
     }
 
     private void ProcessAttestationGossip(byte[] payload)

@@ -28,6 +28,18 @@ public static class LeanMetrics
         "lean_consensus_blocks_total",
         "Total number of block gossip messages processed.");
 
+    public static readonly Counter ConsensusOrphanBlocksQueuedTotal = Prometheus.Metrics.CreateCounter(
+        "lean_consensus_orphan_blocks_queued_total",
+        "Total number of orphan blocks queued due to unknown parent.");
+
+    public static readonly Counter ConsensusOrphanBlocksRecoveredTotal = Prometheus.Metrics.CreateCounter(
+        "lean_consensus_orphan_blocks_recovered_total",
+        "Total number of orphan blocks later recovered after parent arrival.");
+
+    public static readonly Gauge ConsensusOrphanBlocksPending = Prometheus.Metrics.CreateGauge(
+        "lean_consensus_orphan_blocks_pending",
+        "Current number of orphan blocks waiting for parents.");
+
     public static readonly Counter ConsensusAttestationsTotal = Prometheus.Metrics.CreateCounter(
         "lean_consensus_attestations_total",
         "Total number of attestation gossip messages processed.");
