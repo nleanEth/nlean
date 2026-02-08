@@ -1,5 +1,7 @@
 using Lean.Consensus;
+using Lean.Consensus.Types;
 using Lean.Crypto;
+using Lean.Network;
 using Lean.Validator;
 using Microsoft.Extensions.Logging.Abstractions;
 using NUnit.Framework;
@@ -12,11 +14,14 @@ public sealed class ValidatorServiceTests
     public async Task StartAsync_InitializesLeanMultiSigContexts()
     {
         var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
             consensus,
+            network,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
             new FakeLeanSig(),
             multiSig);
 
@@ -31,11 +36,14 @@ public sealed class ValidatorServiceTests
     public async Task StartAsync_IsIdempotent_WhileRunning()
     {
         var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
             consensus,
+            network,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
             new FakeLeanSig(),
             multiSig);
 
@@ -51,10 +59,13 @@ public sealed class ValidatorServiceTests
     public async Task DutyLoop_TicksUntilStop()
     {
         var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
             consensus,
+            network,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
             new FakeLeanSig(),
             new FakeLeanMultiSig());
 
@@ -73,14 +84,41 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_PublishesAttestationAndAggregate()
+    {
+        var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        var published = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(published, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.True);
+    }
+
+    [Test]
     public async Task StopAsync_AllowsStartToInitializeAgain()
     {
         var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
             consensus,
+            network,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
             new FakeLeanSig(),
             multiSig);
 
@@ -107,10 +145,13 @@ public sealed class ValidatorServiceTests
     public async Task StopAsync_IsIdempotent()
     {
         var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
             consensus,
+            network,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
             new FakeLeanSig(),
             new FakeLeanMultiSig());
 
@@ -123,10 +164,13 @@ public sealed class ValidatorServiceTests
     public async Task StopAsync_WithCancelledToken_StillStopsDutyLoop()
     {
         var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
             consensus,
+            network,
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
             new FakeLeanSig(),
             new FakeLeanMultiSig());
 
@@ -165,12 +209,14 @@ public sealed class ValidatorServiceTests
     {
         public LeanSigKeyPair GenerateKeyPair(uint activationEpoch, uint numActiveEpochs)
         {
-            return new LeanSigKeyPair(Array.Empty<byte>(), Array.Empty<byte>());
+            return new LeanSigKeyPair(
+                Enumerable.Repeat((byte)0x11, 64).ToArray(),
+                Enumerable.Repeat((byte)0x22, 128).ToArray());
         }
 
         public byte[] Sign(ReadOnlySpan<byte> secretKey, uint epoch, ReadOnlySpan<byte> message)
         {
-            return Array.Empty<byte>();
+            return Enumerable.Repeat((byte)0x33, XmssSignature.Length).ToArray();
         }
 
         public bool Verify(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
@@ -190,9 +236,13 @@ public sealed class ValidatorServiceTests
             get
             {
                 Interlocked.Increment(ref _currentSlotReadCalls);
-                return 0;
+                return 1;
             }
         }
+
+        public ulong HeadSlot => 1;
+
+        public byte[] HeadRoot => Enumerable.Repeat((byte)0x44, 32).ToArray();
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
@@ -225,7 +275,7 @@ public sealed class ValidatorServiceTests
             ReadOnlySpan<byte> message,
             uint epoch)
         {
-            return Array.Empty<byte>();
+            return new byte[] { 0xAA, 0xBB, 0xCC };
         }
 
         public bool VerifyAggregate(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
@@ -234,6 +284,37 @@ public sealed class ValidatorServiceTests
             uint epoch)
         {
             return true;
+        }
+    }
+
+    private sealed class FakeNetworkService : INetworkService
+    {
+        public List<(string Topic, byte[] Payload)> PublishedMessages { get; } = new();
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task PublishAsync(string topic, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
+        {
+            PublishedMessages.Add((topic, payload.ToArray()));
+            return Task.CompletedTask;
+        }
+
+        public Task SubscribeAsync(string topic, Action<byte[]> handler, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<byte[]?>(null);
         }
     }
 }

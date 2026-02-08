@@ -5,6 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Lean.Consensus\Lean.Consensus.csproj" />
     <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
+    <ProjectReference Include="..\Lean.Network\Lean.Network.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 </Project>

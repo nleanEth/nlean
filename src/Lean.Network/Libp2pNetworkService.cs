@@ -1,3 +1,5 @@
+using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
 using Microsoft.Extensions.Logging;
 using Nethermind.Libp2p.Core;
 using Nethermind.Libp2p.Protocols;
@@ -7,6 +9,7 @@ namespace Lean.Network;
 
 public sealed class Libp2pNetworkService : INetworkService
 {
+    private const int BlockRootLength = 32;
     private readonly ILogger<Libp2pNetworkService> _logger;
     private readonly IPeerFactory _peerFactory;
     private readonly PubsubRouter _pubsubRouter;
@@ -103,6 +106,63 @@ public sealed class Libp2pNetworkService : INetworkService
         var topicHandle = GetOrCreateTopic(topic);
         topicHandle.OnMessage += handler;
         return Task.CompletedTask;
+    }
+
+    public async Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
+    {
+        if (_peer is null || blockRoot.Length != BlockRootLength)
+        {
+            return null;
+        }
+
+        var request = new BytesValue { Value = ByteString.CopyFrom(blockRoot.Span) };
+        foreach (var bootstrapPeer in _config.BootstrapPeers)
+        {
+            Multiformats.Address.Multiaddress address;
+            try
+            {
+                address = Multiformats.Address.Multiaddress.Decode(bootstrapPeer);
+            }
+            catch
+            {
+                continue;
+            }
+
+            ISession? session = null;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                session = await _peer.DialAsync(address, cancellationToken);
+                var response = await session.DialAsync<RequestResponseProtocol<BytesValue, BytesValue>, BytesValue, BytesValue>(
+                    request,
+                    cancellationToken);
+                var payload = response.Value.ToByteArray();
+                if (payload.Length > 0)
+                {
+                    return payload;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed blocks-by-root request against bootstrap peer {Address}.", bootstrapPeer);
+            }
+            finally
+            {
+                if (session is not null)
+                {
+                    try
+                    {
+                        await session.DisconnectAsync();
+                    }
+                    catch
+                    {
+                        // Ignore disconnect errors.
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     private ITopic GetOrCreateTopic(string topic)

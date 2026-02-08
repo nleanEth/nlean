@@ -221,6 +221,41 @@ public class ConsensusServiceTests
     }
 
     [Test]
+    public async Task StartAsync_BindsBlocksByRootRpcHandler()
+    {
+        var keyValueStore = new InMemoryKeyValueStore();
+        var stateStore = new ConsensusStateStore(keyValueStore);
+        var blockStore = new BlockByRootStore(keyValueStore);
+        var rpcRouter = new BlocksByRootRpcRouter();
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true },
+            blockStore,
+            rpcRouter);
+
+        var block = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
+        var payload = SszEncoding.Encode(block);
+
+        await service.StartAsync(CancellationToken.None);
+        network.PublishToTopic(GossipTopics.Blocks, payload);
+
+        var resolved = await rpcRouter.ResolveAsync(blockRoot.AsSpan().ToArray(), CancellationToken.None);
+        Assert.That(resolved, Is.Not.Null);
+        Assert.That(resolved!, Is.EqualTo(payload));
+
+        await service.StopAsync(CancellationToken.None);
+        var afterStop = await rpcRouter.ResolveAsync(blockRoot.AsSpan().ToArray(), CancellationToken.None);
+        Assert.That(afterStop, Is.Null);
+    }
+
+    [Test]
     public async Task InvalidBlockGossip_DoesNotAdvanceHead()
     {
         var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
@@ -476,6 +511,11 @@ public class ConsensusServiceTests
             }
 
             return Task.CompletedTask;
+        }
+
+        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<byte[]?>(null);
         }
 
         public void PublishToTopic(string topic, byte[] payload)

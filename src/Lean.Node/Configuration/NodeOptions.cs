@@ -99,4 +99,10 @@ public sealed class ValidatorRuntimeConfig
 {
     public bool Enabled { get; set; } = true;
     public string? KeystorePath { get; set; }
+    public string? PublicKeyHex { get; set; }
+    public string? SecretKeyHex { get; set; }
+    public ulong ValidatorIndex { get; set; }
+    public uint ActivationEpoch { get; set; }
+    public uint NumActiveEpochs { get; set; } = 1024;
+    public bool PublishAggregates { get; set; } = true;
 }

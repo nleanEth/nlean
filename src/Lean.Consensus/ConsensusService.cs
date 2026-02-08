@@ -14,6 +14,7 @@ public sealed class ConsensusService : IConsensusService
     private readonly SignedAttestationGossipDecoder _attestationDecoder;
     private readonly IConsensusStateStore _stateStore;
     private readonly IBlockByRootStore _blockStore;
+    private readonly IBlocksByRootRpcRouter _blocksByRootRpcRouter;
     private readonly ForkChoiceStore _forkChoice;
     private readonly ConsensusConfig _config;
     private readonly object _stateLock = new();
@@ -37,7 +38,8 @@ public sealed class ConsensusService : IConsensusService
         IConsensusStateStore stateStore,
         ForkChoiceStore forkChoice,
         ConsensusConfig config,
-        IBlockByRootStore? blockStore = null)
+        IBlockByRootStore? blockStore = null,
+        IBlocksByRootRpcRouter? blocksByRootRpcRouter = null)
     {
         _logger = logger;
         _networkService = networkService;
@@ -45,6 +47,7 @@ public sealed class ConsensusService : IConsensusService
         _attestationDecoder = attestationDecoder;
         _stateStore = stateStore;
         _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
+        _blocksByRootRpcRouter = blocksByRootRpcRouter ?? NoOpBlocksByRootRpcRouter.Instance;
         _forkChoice = forkChoice;
         _config = config;
     }
@@ -80,6 +83,8 @@ public sealed class ConsensusService : IConsensusService
         {
             return;
         }
+
+        _blocksByRootRpcRouter.SetHandler(ResolveBlockByRootAsync);
 
         if (_stateStore.TryLoad(out var persistedState))
         {
@@ -140,6 +145,8 @@ public sealed class ConsensusService : IConsensusService
         {
             return;
         }
+
+        _blocksByRootRpcRouter.SetHandler(null);
 
         CancellationTokenSource? slotLoopCts;
         Task? slotLoopTask;
@@ -566,6 +573,18 @@ public sealed class ConsensusService : IConsensusService
                left.SafeTargetRoot.AsSpan().SequenceEqual(right.SafeTargetRoot);
     }
 
+    private ValueTask<byte[]?> ResolveBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken)
+    {
+        if (blockRoot.Length != SszEncoding.Bytes32Length)
+        {
+            return ValueTask.FromResult<byte[]?>(null);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var root = new Bytes32(blockRoot.ToArray());
+        return ValueTask.FromResult(_blockStore.TryLoad(root, out var payload) ? payload : null);
+    }
+
     private sealed class NoOpBlockByRootStore : IBlockByRootStore
     {
         public static readonly NoOpBlockByRootStore Instance = new();
@@ -578,6 +597,20 @@ public sealed class ConsensusService : IConsensusService
         {
             payload = null;
             return false;
+        }
+    }
+
+    private sealed class NoOpBlocksByRootRpcRouter : IBlocksByRootRpcRouter
+    {
+        public static readonly NoOpBlocksByRootRpcRouter Instance = new();
+
+        public void SetHandler(Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<byte[]?>>? handler)
+        {
+        }
+
+        public ValueTask<byte[]?> ResolveAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult<byte[]?>(null);
         }
     }
 }

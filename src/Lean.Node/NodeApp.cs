@@ -5,10 +5,12 @@ using Lean.Network;
 using Lean.Node.Configuration;
 using Lean.Storage;
 using Lean.Validator;
+using Google.Protobuf;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Nethermind.Libp2p;
+using Nethermind.Libp2p.Protocols;
 
 namespace Lean.Node;
 
@@ -31,16 +33,39 @@ public static class NodeApp
                 services.AddSingleton(options.Consensus);
                 services.AddSingleton(options.Metrics);
                 services.AddSingleton(options.Storage);
+                services.AddSingleton(new ValidatorDutyConfig
+                {
+                    PublicKeyHex = options.Validator.PublicKeyHex,
+                    SecretKeyHex = options.Validator.SecretKeyHex,
+                    ValidatorIndex = options.Validator.ValidatorIndex,
+                    ActivationEpoch = options.Validator.ActivationEpoch,
+                    NumActiveEpochs = options.Validator.NumActiveEpochs,
+                    PublishAggregates = options.Validator.PublishAggregates
+                });
                 services.AddSingleton<IKeyValueStore>(_ => new RocksDbKeyValueStore(options.Storage, "consensus"));
                 services.AddSingleton<IConsensusStateStore, ConsensusStateStore>();
                 services.AddSingleton<IBlockByRootStore, BlockByRootStore>();
+                services.AddSingleton<IBlocksByRootRpcRouter, BlocksByRootRpcRouter>();
                 services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
-                services.AddSingleton<IForkChoiceStateTransition, DefaultForkChoiceStateTransition>();
+                services.AddSingleton<IForkChoiceStateTransition, Devnet2ForkChoiceStateTransition>();
                 services.AddSingleton<ForkChoiceStore>();
 
                 services.AddLibp2p(libp2pBuilder =>
                 {
+                    var blocksByRootRouter = libp2pBuilder.ServiceProvider.GetRequiredService<IBlocksByRootRpcRouter>();
+                    libp2pBuilder.AddRequestResponseProtocol<Google.Protobuf.WellKnownTypes.BytesValue, Google.Protobuf.WellKnownTypes.BytesValue>(
+                        RpcProtocols.BlocksByRoot,
+                        async (request, _) =>
+                        {
+                            var payload = await blocksByRootRouter.ResolveAsync(request.Value.ToByteArray(), CancellationToken.None);
+                            return new Google.Protobuf.WellKnownTypes.BytesValue
+                            {
+                                Value = payload is null ? ByteString.Empty : ByteString.CopyFrom(payload)
+                            };
+                        },
+                        isExposed: true);
+
                     if (options.Libp2p.EnablePubsub)
                     {
                         libp2pBuilder.WithPubsub();

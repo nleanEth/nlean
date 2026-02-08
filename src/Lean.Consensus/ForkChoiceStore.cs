@@ -20,7 +20,7 @@ public sealed class ForkChoiceStore
     private ulong _safeTargetSlot;
 
     public ForkChoiceStore()
-        : this(new DefaultForkChoiceStateTransition())
+        : this(new Devnet2ForkChoiceStateTransition(new ConsensusConfig()))
     {
     }
 
