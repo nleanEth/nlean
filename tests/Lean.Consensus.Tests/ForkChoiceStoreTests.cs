@@ -73,6 +73,34 @@ public sealed class ForkChoiceStoreTests
     }
 
     [Test]
+    public void InitializeHead_RestoresCheckpointsAndSafeTarget()
+    {
+        var store = new ForkChoiceStore();
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x21, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x31, 32).ToArray());
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x41, 32).ToArray());
+        var safeTargetRoot = new Bytes32(Enumerable.Repeat((byte)0x51, 32).ToArray());
+        store.InitializeHead(new ConsensusHeadState(
+            headSlot: 50,
+            headRoot: headRoot.AsSpan(),
+            latestJustifiedSlot: 32,
+            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestFinalizedSlot: 24,
+            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            safeTargetSlot: 40,
+            safeTargetRoot: safeTargetRoot.AsSpan()));
+
+        Assert.That(store.HeadSlot, Is.EqualTo(50));
+        Assert.That(store.HeadRoot, Is.EqualTo(headRoot));
+        Assert.That(store.LatestJustified.Slot.Value, Is.EqualTo(32));
+        Assert.That(store.LatestJustified.Root, Is.EqualTo(justifiedRoot));
+        Assert.That(store.LatestFinalized.Slot.Value, Is.EqualTo(24));
+        Assert.That(store.LatestFinalized.Root, Is.EqualTo(finalizedRoot));
+        Assert.That(store.SafeTargetSlot, Is.EqualTo(40));
+        Assert.That(store.SafeTarget, Is.EqualTo(safeTargetRoot));
+    }
+
+    [Test]
     public void ApplyBlock_RejectsFutureSlot()
     {
         var store = new ForkChoiceStore();
@@ -83,6 +111,35 @@ public sealed class ForkChoiceStoreTests
 
         Assert.That(result.Accepted, Is.False);
         Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.FutureSlot));
+    }
+
+    [Test]
+    public void ApplyBlock_UsesInjectedStateTransitionOutput()
+    {
+        var transition = new StubTransition();
+        var store = new ForkChoiceStore(transition);
+        var block = CreateSignedBlock(1, Bytes32.Zero(), parentSlot: 0, sourceRoot: Bytes32.Zero(), sourceSlot: 0);
+        var root = new Bytes32(block.Message.Block.HashTreeRoot());
+
+        var result = store.ApplyBlock(block, root, currentSlot: 1);
+
+        Assert.That(result.Accepted, Is.True);
+        Assert.That(transition.Calls, Is.EqualTo(1));
+        Assert.That(store.LatestJustified.Slot.Value, Is.EqualTo(1));
+        Assert.That(store.LatestFinalized.Slot.Value, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void ApplyBlock_RejectsWhenTransitionFails()
+    {
+        var store = new ForkChoiceStore(new FailingTransition());
+        var block = CreateSignedBlock(1, Bytes32.Zero(), parentSlot: 0, sourceRoot: Bytes32.Zero(), sourceSlot: 0);
+        var root = new Bytes32(block.Message.Block.HashTreeRoot());
+
+        var result = store.ApplyBlock(block, root, currentSlot: 1);
+
+        Assert.That(result.Accepted, Is.False);
+        Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.StateTransitionFailed));
     }
 
     [Test]
@@ -172,6 +229,54 @@ public sealed class ForkChoiceStoreTests
         Assert.That(store.SafeTargetSlot, Is.GreaterThanOrEqualTo(0));
     }
 
+    [Test]
+    public void ApplyGossipAttestation_AcceptsValidVote()
+    {
+        var store = new ForkChoiceStore();
+        var blockOne = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+        Assert.That(store.ApplyBlock(blockOne, blockOneRoot, currentSlot: 1).Accepted, Is.True);
+
+        var signedAttestation = CreateSignedAttestation(
+            validatorId: 1,
+            attestationSlot: 1,
+            sourceRoot: Bytes32.Zero(),
+            sourceSlot: 0,
+            targetRoot: blockOneRoot,
+            targetSlot: 1,
+            headRoot: blockOneRoot,
+            headSlot: 1);
+
+        var result = store.ApplyGossipAttestation(signedAttestation, currentSlot: 1);
+
+        Assert.That(result.Accepted, Is.True);
+        Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.None));
+    }
+
+    [Test]
+    public void ApplyGossipAttestation_RejectsOutOfRangeValidator()
+    {
+        var store = new ForkChoiceStore();
+        var blockOne = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+        Assert.That(store.ApplyBlock(blockOne, blockOneRoot, currentSlot: 1).Accepted, Is.True);
+
+        var signedAttestation = CreateSignedAttestation(
+            validatorId: 1024,
+            attestationSlot: 1,
+            sourceRoot: Bytes32.Zero(),
+            sourceSlot: 0,
+            targetRoot: blockOneRoot,
+            targetSlot: 1,
+            headRoot: blockOneRoot,
+            headSlot: 1);
+
+        var result = store.ApplyGossipAttestation(signedAttestation, currentSlot: 1);
+
+        Assert.That(result.Accepted, Is.False);
+        Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.InvalidAttestation));
+    }
+
     private static SignedBlockWithAttestation CreateSignedBlock(
         ulong blockSlot,
         Bytes32 parentRoot,
@@ -220,5 +325,56 @@ public sealed class ForkChoiceStoreTests
             XmssSignature.Empty());
 
         return new SignedBlockWithAttestation(blockWithAttestation, signatures);
+    }
+
+    private static SignedAttestation CreateSignedAttestation(
+        ulong validatorId,
+        ulong attestationSlot,
+        Bytes32 sourceRoot,
+        ulong sourceSlot,
+        Bytes32 targetRoot,
+        ulong targetSlot,
+        Bytes32 headRoot,
+        ulong headSlot)
+    {
+        var data = new AttestationData(
+            new Slot(attestationSlot),
+            new Checkpoint(headRoot, new Slot(headSlot)),
+            new Checkpoint(targetRoot, new Slot(targetSlot)),
+            new Checkpoint(sourceRoot, new Slot(sourceSlot)));
+
+        return new SignedAttestation(validatorId, data, XmssSignature.Empty());
+    }
+
+    private sealed class StubTransition : IForkChoiceStateTransition
+    {
+        public int Calls { get; private set; }
+
+        public bool TryTransition(
+            ForkChoiceNodeState parentState,
+            SignedBlockWithAttestation signedBlock,
+            out ForkChoiceNodeState postState,
+            out string reason)
+        {
+            Calls++;
+            var checkpoint = new Checkpoint(parentState.LatestJustified.Root, signedBlock.Message.Block.Slot);
+            postState = new ForkChoiceNodeState(checkpoint, checkpoint, parentState.ValidatorCount + 1);
+            reason = string.Empty;
+            return true;
+        }
+    }
+
+    private sealed class FailingTransition : IForkChoiceStateTransition
+    {
+        public bool TryTransition(
+            ForkChoiceNodeState parentState,
+            SignedBlockWithAttestation signedBlock,
+            out ForkChoiceNodeState postState,
+            out string reason)
+        {
+            postState = parentState;
+            reason = "transition failed";
+            return false;
+        }
     }
 }

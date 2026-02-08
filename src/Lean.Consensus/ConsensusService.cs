@@ -10,6 +10,7 @@ public sealed class ConsensusService : IConsensusService
     private readonly ILogger<ConsensusService> _logger;
     private readonly INetworkService _networkService;
     private readonly SignedBlockWithAttestationGossipDecoder _gossipDecoder;
+    private readonly SignedAttestationGossipDecoder _attestationDecoder;
     private readonly IConsensusStateStore _stateStore;
     private readonly ForkChoiceStore _forkChoice;
     private readonly ConsensusConfig _config;
@@ -21,11 +22,13 @@ public sealed class ConsensusService : IConsensusService
     private long _currentSlot;
     private ulong _headSlot;
     private byte[] _headRoot = Array.Empty<byte>();
+    private ConsensusHeadState? _lastPersistedState;
 
     public ConsensusService(
         ILogger<ConsensusService> logger,
         INetworkService networkService,
         SignedBlockWithAttestationGossipDecoder gossipDecoder,
+        SignedAttestationGossipDecoder attestationDecoder,
         IConsensusStateStore stateStore,
         ForkChoiceStore forkChoice,
         ConsensusConfig config)
@@ -33,6 +36,7 @@ public sealed class ConsensusService : IConsensusService
         _logger = logger;
         _networkService = networkService;
         _gossipDecoder = gossipDecoder;
+        _attestationDecoder = attestationDecoder;
         _stateStore = stateStore;
         _forkChoice = forkChoice;
         _config = config;
@@ -72,14 +76,17 @@ public sealed class ConsensusService : IConsensusService
 
         if (_stateStore.TryLoad(out var persistedState))
         {
-            _forkChoice.InitializeHead(persistedState);
             lock (_stateLock)
             {
+                _forkChoice.InitializeHead(persistedState);
                 _headSlot = _forkChoice.HeadSlot;
                 _headRoot = _forkChoice.HeadRoot.AsSpan().ToArray();
+                Interlocked.Exchange(ref _currentSlot, (long)_headSlot);
+                _lastPersistedState = _forkChoice.CreateHeadState();
             }
 
             LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
+            LeanMetrics.ConsensusCurrentSlot.Set(CurrentSlot);
             LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
             LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
             LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
@@ -168,6 +175,32 @@ public sealed class ConsensusService : IConsensusService
             {
                 var slot = Interlocked.Increment(ref _currentSlot);
                 LeanMetrics.ConsensusCurrentSlot.Set(slot);
+                ForkChoiceApplyResult tickResult;
+                ConsensusHeadState? stateToPersist = null;
+                lock (_stateLock)
+                {
+                    tickResult = _forkChoice.OnSlotTick((ulong)slot);
+                    if (tickResult.HeadChanged)
+                    {
+                        _headSlot = tickResult.HeadSlot;
+                        _headRoot = tickResult.HeadRoot.AsSpan().ToArray();
+                    }
+
+                    var snapshot = _forkChoice.CreateHeadState();
+                    if (ShouldPersistState(snapshot))
+                    {
+                        stateToPersist = snapshot;
+                    }
+                }
+
+                LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
+                LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
+                LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
+                LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
+                if (stateToPersist is not null)
+                {
+                    _stateStore.Save(stateToPersist);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -194,7 +227,7 @@ public sealed class ConsensusService : IConsensusService
 
             if (topic == GossipTopics.Attestations)
             {
-                LeanMetrics.ConsensusAttestationsTotal.Inc();
+                ProcessAttestationGossip(payload);
                 return;
             }
 
@@ -222,7 +255,23 @@ public sealed class ConsensusService : IConsensusService
         }
 
         var blockRoot = new Bytes32(decodeResult.SignedBlock.Message.Block.HashTreeRoot());
-        var applyResult = _forkChoice.ApplyBlock(decodeResult.SignedBlock, blockRoot, CurrentSlot);
+        ForkChoiceApplyResult applyResult;
+        ConsensusHeadState? stateToPersist = null;
+        lock (_stateLock)
+        {
+            applyResult = _forkChoice.ApplyBlock(decodeResult.SignedBlock, blockRoot, CurrentSlot);
+            if (applyResult.Accepted)
+            {
+                _headSlot = applyResult.HeadSlot;
+                _headRoot = applyResult.HeadRoot.AsSpan().ToArray();
+                var snapshot = _forkChoice.CreateHeadState();
+                if (ShouldPersistState(snapshot))
+                {
+                    stateToPersist = snapshot;
+                }
+            }
+        }
+
         if (!applyResult.Accepted)
         {
             _logger.LogWarning(
@@ -232,18 +281,13 @@ public sealed class ConsensusService : IConsensusService
             return;
         }
 
-        var headRoot = applyResult.HeadRoot.AsSpan().ToArray();
-        ulong headSlot;
-        lock (_stateLock)
+        if (stateToPersist is not null)
         {
-            _headSlot = applyResult.HeadSlot;
-            _headRoot = headRoot;
-            headSlot = _headSlot;
+            _stateStore.Save(stateToPersist);
         }
 
-        _stateStore.Save(new ConsensusHeadState(headSlot, headRoot));
         LeanMetrics.ConsensusBlocksTotal.Inc();
-        LeanMetrics.ConsensusHeadSlot.Set(headSlot);
+        LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
         LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
         LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
         LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
@@ -253,8 +297,90 @@ public sealed class ConsensusService : IConsensusService
             _logger.LogDebug(
                 "Processed block gossip message. Size: {PayloadSize}, HeadSlot: {HeadSlot}, HeadRoot: {HeadRoot}",
                 payload.Length,
-                headSlot,
-                Convert.ToHexString(headRoot));
+                _headSlot,
+                Convert.ToHexString(_headRoot));
         }
+    }
+
+    private void ProcessAttestationGossip(byte[] payload)
+    {
+        var decodeResult = _attestationDecoder.DecodeAndValidate(payload);
+        if (!decodeResult.IsSuccess || decodeResult.Attestation is null)
+        {
+            _logger.LogWarning(
+                "Discarding invalid attestation gossip message. Failure: {Failure}, Reason: {Reason}",
+                decodeResult.Failure,
+                decodeResult.Reason);
+            return;
+        }
+
+        ForkChoiceApplyResult applyResult;
+        ConsensusHeadState? stateToPersist = null;
+        lock (_stateLock)
+        {
+            applyResult = _forkChoice.ApplyGossipAttestation(decodeResult.Attestation, CurrentSlot);
+            if (applyResult.Accepted)
+            {
+                var snapshot = _forkChoice.CreateHeadState();
+                if (ShouldPersistState(snapshot))
+                {
+                    stateToPersist = snapshot;
+                }
+            }
+        }
+
+        if (!applyResult.Accepted)
+        {
+            _logger.LogWarning(
+                "Discarding gossip attestation after fork-choice checks. RejectReason: {RejectReason}, Reason: {Reason}",
+                applyResult.RejectReason,
+                applyResult.Reason);
+            return;
+        }
+
+        LeanMetrics.ConsensusAttestationsTotal.Inc();
+        LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
+        if (stateToPersist is not null)
+        {
+            _stateStore.Save(stateToPersist);
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Processed attestation gossip message. ValidatorId: {ValidatorId}, Slot: {Slot}, TargetSlot: {TargetSlot}",
+                decodeResult.Attestation.ValidatorId,
+                decodeResult.Attestation.Message.Slot.Value,
+                decodeResult.Attestation.Message.Target.Slot.Value);
+        }
+    }
+
+    private bool ShouldPersistState(ConsensusHeadState snapshot)
+    {
+        if (_lastPersistedState is null)
+        {
+            _lastPersistedState = snapshot;
+            return true;
+        }
+
+        if (StatesEqual(_lastPersistedState, snapshot))
+        {
+            return false;
+        }
+
+        _lastPersistedState = snapshot;
+        return true;
+    }
+
+    private static bool StatesEqual(ConsensusHeadState left, ConsensusHeadState right)
+    {
+        return left.HeadSlot == right.HeadSlot &&
+               left.LatestJustifiedSlot == right.LatestJustifiedSlot &&
+               left.LatestFinalizedSlot == right.LatestFinalizedSlot &&
+               left.SafeTargetSlot == right.SafeTargetSlot &&
+               left.HeadRoot.AsSpan().SequenceEqual(right.HeadRoot) &&
+               left.LatestJustifiedRoot.AsSpan().SequenceEqual(right.LatestJustifiedRoot) &&
+               left.LatestFinalizedRoot.AsSpan().SequenceEqual(right.LatestFinalizedRoot) &&
+               left.SafeTargetRoot.AsSpan().SequenceEqual(right.SafeTargetRoot);
     }
 }

@@ -19,6 +19,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
@@ -40,6 +41,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
@@ -60,6 +62,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false });
@@ -80,6 +83,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
@@ -108,6 +112,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = false });
@@ -117,6 +122,7 @@ public class ConsensusServiceTests
 
         Assert.That(service.HeadSlot, Is.EqualTo(99));
         Assert.That(service.HeadRoot, Is.EqualTo(persistedHead.HeadRoot));
+        Assert.That(service.CurrentSlot, Is.EqualTo(99));
     }
 
     [Test]
@@ -128,6 +134,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
@@ -146,6 +153,44 @@ public class ConsensusServiceTests
     }
 
     [Test]
+    public async Task BlockGossip_PersistsCheckpointState()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
+
+        var blockOne = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+        var blockTwo = CreateSignedBlock(2, blockOneRoot, 1, blockOneRoot, 1);
+        var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+
+        await service.StartAsync(CancellationToken.None);
+        var advanced = await WaitUntilAsync(() => service.CurrentSlot >= 1, TimeSpan.FromSeconds(3));
+        Assert.That(advanced, Is.True);
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(blockOne));
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(blockTwo));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(stateStore.TryLoad(out var persisted), Is.True);
+        Assert.That(persisted, Is.Not.Null);
+        Assert.That(persisted!.HeadSlot, Is.EqualTo(2));
+        Assert.That(persisted.HeadRoot, Is.EqualTo(blockTwoRoot.AsSpan().ToArray()));
+        Assert.That(persisted.LatestJustifiedSlot, Is.EqualTo(1));
+        Assert.That(persisted.LatestJustifiedRoot, Is.EqualTo(blockOneRoot.AsSpan().ToArray()));
+        Assert.That(persisted.LatestFinalizedSlot, Is.EqualTo(1));
+        Assert.That(persisted.LatestFinalizedRoot, Is.EqualTo(blockOneRoot.AsSpan().ToArray()));
+        Assert.That(persisted.SafeTargetRoot.Length, Is.EqualTo(32));
+        Assert.That(persisted.SafeTargetSlot, Is.LessThanOrEqualTo(persisted.HeadSlot));
+    }
+
+    [Test]
     public async Task InvalidBlockGossip_DoesNotAdvanceHead()
     {
         var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
@@ -154,6 +199,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
@@ -175,6 +221,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
@@ -199,6 +246,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true });
@@ -228,6 +276,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
@@ -251,6 +300,7 @@ public class ConsensusServiceTests
             NullLogger<ConsensusService>.Instance,
             network,
             new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
             stateStore,
             new ForkChoiceStore(),
             new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });

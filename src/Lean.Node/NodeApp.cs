@@ -34,6 +34,8 @@ public static class NodeApp
                 services.AddSingleton<IKeyValueStore>(_ => new RocksDbKeyValueStore(options.Storage, "consensus"));
                 services.AddSingleton<IConsensusStateStore, ConsensusStateStore>();
                 services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
+                services.AddSingleton<SignedAttestationGossipDecoder>();
+                services.AddSingleton<IForkChoiceStateTransition, DefaultForkChoiceStateTransition>();
                 services.AddSingleton<ForkChoiceStore>();
 
                 services.AddLibp2p(libp2pBuilder =>
