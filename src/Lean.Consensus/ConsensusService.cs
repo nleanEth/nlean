@@ -269,27 +269,37 @@ public sealed class ConsensusService : IConsensusService
             return;
         }
 
-        if (!TryApplyBlock(
-                decodeResult.SignedBlock,
-                queueOnUnknownParent: true,
-                payload.Length,
-                payload,
-                out var blockRoot))
+        var outcome = TryApplyBlock(
+            decodeResult.SignedBlock,
+            queueOnUnknownParent: true,
+            payload.Length,
+            payload,
+            out var blockRoot,
+            out var missingParentRoot);
+
+        if (outcome == BlockApplyOutcome.Accepted)
         {
+            ProcessQueuedOrphans(blockRoot);
             return;
         }
 
-        ProcessQueuedOrphans(blockRoot);
+        if (outcome == BlockApplyOutcome.QueuedUnknownParent)
+        {
+            _ = TryRecoverMissingParents(missingParentRoot);
+            return;
+        }
     }
 
-    private bool TryApplyBlock(
+    private BlockApplyOutcome TryApplyBlock(
         SignedBlockWithAttestation signedBlock,
         bool queueOnUnknownParent,
         int payloadSize,
         ReadOnlyMemory<byte> rawPayload,
-        out Bytes32 appliedRoot)
+        out Bytes32 appliedRoot,
+        out Bytes32 missingParentRoot)
     {
         appliedRoot = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+        missingParentRoot = Bytes32.Zero();
         var blockRootKey = Convert.ToHexString(appliedRoot.AsSpan());
         ForkChoiceApplyResult applyResult;
         ConsensusHeadState? stateToPersist = null;
@@ -325,6 +335,7 @@ public sealed class ConsensusService : IConsensusService
         {
             if (applyResult.RejectReason == ForkChoiceRejectReason.UnknownParent)
             {
+                missingParentRoot = signedBlock.Message.Block.ParentRoot;
                 if (orphanQueued)
                 {
                     LeanMetrics.ConsensusOrphanBlocksQueuedTotal.Inc();
@@ -342,14 +353,14 @@ public sealed class ConsensusService : IConsensusService
                         blockRootKey);
                 }
 
-                return false;
+                return BlockApplyOutcome.QueuedUnknownParent;
             }
 
             _logger.LogWarning(
                 "Discarding block after fork-choice checks. RejectReason: {RejectReason}, Reason: {Reason}",
                 applyResult.RejectReason,
                 applyResult.Reason);
-            return false;
+            return BlockApplyOutcome.Rejected;
         }
 
         if (stateToPersist is not null)
@@ -378,7 +389,72 @@ public sealed class ConsensusService : IConsensusService
                 Convert.ToHexString(_headRoot));
         }
 
-        return true;
+        return BlockApplyOutcome.Accepted;
+    }
+
+    private bool TryRecoverMissingParents(Bytes32 missingParentRoot)
+    {
+        var pending = new Queue<Bytes32>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        pending.Enqueue(missingParentRoot);
+
+        var recovered = false;
+        while (pending.TryDequeue(out var candidateRoot))
+        {
+            var candidateKey = Convert.ToHexString(candidateRoot.AsSpan());
+            if (!seen.Add(candidateKey))
+            {
+                continue;
+            }
+
+            byte[]? payload;
+            try
+            {
+                payload = _networkService.RequestBlockByRootAsync(candidateRoot.AsSpan().ToArray()).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Blocks-by-root request failed for {BlockRoot}.", candidateKey);
+                continue;
+            }
+
+            if (payload is null || payload.Length == 0)
+            {
+                continue;
+            }
+
+            var decodeResult = _gossipDecoder.DecodeAndValidate(payload);
+            if (!decodeResult.IsSuccess || decodeResult.SignedBlock is null)
+            {
+                _logger.LogWarning(
+                    "Discarding invalid blocks-by-root response. Failure: {Failure}, Reason: {Reason}, BlockRoot: {BlockRoot}",
+                    decodeResult.Failure,
+                    decodeResult.Reason,
+                    candidateKey);
+                continue;
+            }
+
+            var outcome = TryApplyBlock(
+                decodeResult.SignedBlock,
+                queueOnUnknownParent: true,
+                payload.Length,
+                payload,
+                out var appliedRoot,
+                out var missingParent);
+            if (outcome == BlockApplyOutcome.Accepted)
+            {
+                recovered = true;
+                ProcessQueuedOrphans(appliedRoot);
+                continue;
+            }
+
+            if (outcome == BlockApplyOutcome.QueuedUnknownParent)
+            {
+                pending.Enqueue(missingParent);
+            }
+        }
+
+        return recovered;
     }
 
     private void ProcessQueuedOrphans(Bytes32 parentRoot)
@@ -389,12 +465,13 @@ public sealed class ConsensusService : IConsensusService
         var recovered = 0;
         while (pending.TryDequeue(out var orphan))
         {
-            if (!TryApplyBlock(
+            if (TryApplyBlock(
                     orphan,
                     queueOnUnknownParent: true,
                     payloadSize: 0,
                     ReadOnlyMemory<byte>.Empty,
-                    out var appliedRoot))
+                    out var appliedRoot,
+                    out _) != BlockApplyOutcome.Accepted)
             {
                 continue;
             }
@@ -612,5 +689,12 @@ public sealed class ConsensusService : IConsensusService
         {
             return ValueTask.FromResult<byte[]?>(null);
         }
+    }
+
+    private enum BlockApplyOutcome
+    {
+        Accepted = 0,
+        QueuedUnknownParent = 1,
+        Rejected = 2
     }
 }

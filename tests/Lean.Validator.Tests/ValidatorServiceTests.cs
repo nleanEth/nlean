@@ -108,6 +108,63 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_PublishedAttestationIsConsensusDecodable()
+    {
+        var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig(),
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        var published = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(published, Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Attestations).Payload;
+        var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
+        Assert.That(decodeResult.IsSuccess, Is.True);
+        Assert.That(decodeResult.Attestation, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task DutyLoop_SecretOnlyConfiguration_DisablesAggregatePublishing()
+    {
+        var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
+        var multiSig = new FakeLeanMultiSig();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false },
+            new ValidatorDutyConfig
+            {
+                SecretKeyHex = "0x" + new string('A', 64),
+                PublishAggregates = true
+            },
+            new FakeLeanSig(),
+            multiSig);
+
+        await service.StartAsync(CancellationToken.None);
+        var published = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(published, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.False);
+        Assert.That(multiSig.AggregateCalls, Is.EqualTo(0));
+    }
+
+    [Test]
     public async Task StopAsync_AllowsStartToInitializeAgain()
     {
         var consensus = new FakeConsensusService();
@@ -259,6 +316,7 @@ public sealed class ValidatorServiceTests
     {
         public int SetupProverCalls { get; private set; }
         public int SetupVerifierCalls { get; private set; }
+        public int AggregateCalls { get; private set; }
 
         public void SetupProver()
         {
@@ -275,6 +333,7 @@ public sealed class ValidatorServiceTests
             ReadOnlySpan<byte> message,
             uint epoch)
         {
+            AggregateCalls++;
             return new byte[] { 0xAA, 0xBB, 0xCC };
         }
 

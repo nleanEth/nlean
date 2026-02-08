@@ -303,6 +303,43 @@ public class ConsensusServiceTests
     }
 
     [Test]
+    public async Task BlockGossip_UnknownParent_RequestsBlocksByRootAndRecovers()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            new SignedAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = true, MaxOrphanBlocks = 64 });
+
+        var parentBlock = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var parentRoot = new Bytes32(parentBlock.Message.Block.HashTreeRoot());
+        var childBlock = CreateSignedBlock(2, parentRoot, 1, Bytes32.Zero(), 0);
+        var childRoot = childBlock.Message.Block.HashTreeRoot();
+
+        network.SetBlockByRootResponse(parentRoot, SszEncoding.Encode(parentBlock));
+
+        await service.StartAsync(CancellationToken.None);
+        var advanced = await WaitUntilAsync(() => service.CurrentSlot >= 2, TimeSpan.FromSeconds(4));
+        Assert.That(advanced, Is.True);
+
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(childBlock));
+        var recovered = await WaitUntilAsync(() => service.HeadSlot == 2, TimeSpan.FromSeconds(3));
+        Assert.That(recovered, Is.True);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(service.HeadRoot, Is.EqualTo(childRoot));
+        Assert.That(network.BlockByRootRequestCount, Is.GreaterThan(0));
+        Assert.That(stateStore.TryLoad(out var persisted), Is.True);
+        Assert.That(persisted, Is.Not.Null);
+        Assert.That(persisted!.HeadSlot, Is.EqualTo(2));
+    }
+
+    [Test]
     public async Task BlockGossip_RecoversQueuedOrphanWhenParentArrives()
     {
         var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
@@ -474,9 +511,12 @@ public class ConsensusServiceTests
     private sealed class FakeNetworkService : INetworkService
     {
         private readonly Dictionary<string, List<Action<byte[]>>> _subscriptions = new();
+        private readonly Dictionary<string, byte[]> _blockByRoot = new(StringComparer.Ordinal);
         private readonly object _lock = new();
+        private int _blockByRootRequestCount;
 
         public int SubscribeCalls { get; private set; }
+        public int BlockByRootRequestCount => _blockByRootRequestCount;
         public List<string> SubscribedTopics { get; } = new();
 
         public Task StartAsync(CancellationToken cancellationToken)
@@ -515,7 +555,20 @@ public class ConsensusServiceTests
 
         public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<byte[]?>(null);
+            Interlocked.Increment(ref _blockByRootRequestCount);
+            lock (_lock)
+            {
+                var key = Convert.ToHexString(blockRoot.Span);
+                return Task.FromResult(_blockByRoot.TryGetValue(key, out var payload) ? payload : null);
+            }
+        }
+
+        public void SetBlockByRootResponse(Bytes32 root, byte[] payload)
+        {
+            lock (_lock)
+            {
+                _blockByRoot[Convert.ToHexString(root.AsSpan())] = payload;
+            }
         }
 
         public void PublishToTopic(string topic, byte[] payload)

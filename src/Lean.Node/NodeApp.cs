@@ -28,20 +28,13 @@ public static class NodeApp
             })
             .ConfigureServices(services =>
             {
+                var validatorDutyConfig = BuildValidatorDutyConfig(options);
                 services.AddSingleton(options);
                 services.AddSingleton(options.Libp2p);
                 services.AddSingleton(options.Consensus);
                 services.AddSingleton(options.Metrics);
                 services.AddSingleton(options.Storage);
-                services.AddSingleton(new ValidatorDutyConfig
-                {
-                    PublicKeyHex = options.Validator.PublicKeyHex,
-                    SecretKeyHex = options.Validator.SecretKeyHex,
-                    ValidatorIndex = options.Validator.ValidatorIndex,
-                    ActivationEpoch = options.Validator.ActivationEpoch,
-                    NumActiveEpochs = options.Validator.NumActiveEpochs,
-                    PublishAggregates = options.Validator.PublishAggregates
-                });
+                services.AddSingleton(validatorDutyConfig);
                 services.AddSingleton<IKeyValueStore>(_ => new RocksDbKeyValueStore(options.Storage, "consensus"));
                 services.AddSingleton<IConsensusStateStore, ConsensusStateStore>();
                 services.AddSingleton<IBlockByRootStore, BlockByRootStore>();
@@ -89,5 +82,36 @@ public static class NodeApp
             });
 
         return builder.Build();
+    }
+
+    private static ValidatorDutyConfig BuildValidatorDutyConfig(NodeOptions options)
+    {
+        var secretKeyHex = options.Validator.SecretKeyHex;
+        if (string.IsNullOrWhiteSpace(secretKeyHex) && !string.IsNullOrWhiteSpace(options.ValidatorConfigPath))
+        {
+            try
+            {
+                var validatorConfig = ValidatorConfig.Load(options.ValidatorConfigPath);
+                var nodeConfig = validatorConfig.FindNode(options.NodeName);
+                if (!string.IsNullOrWhiteSpace(nodeConfig?.Privkey))
+                {
+                    secretKeyHex = nodeConfig.Privkey;
+                }
+            }
+            catch
+            {
+                // Runtime startup will surface config loading errors in NodeService logs.
+            }
+        }
+
+        return new ValidatorDutyConfig
+        {
+            PublicKeyHex = options.Validator.PublicKeyHex,
+            SecretKeyHex = secretKeyHex,
+            ValidatorIndex = options.Validator.ValidatorIndex,
+            ActivationEpoch = options.Validator.ActivationEpoch,
+            NumActiveEpochs = options.Validator.NumActiveEpochs,
+            PublishAggregates = options.Validator.PublishAggregates
+        };
     }
 }

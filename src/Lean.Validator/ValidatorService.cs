@@ -30,6 +30,7 @@ public sealed class ValidatorService : IValidatorService
     private byte[] _validatorPublicKey = Array.Empty<byte>();
     private byte[] _validatorSecretKey = Array.Empty<byte>();
     private ulong _validatorId;
+    private bool _aggregateEnabled;
 
     public ValidatorService(
         ILogger<ValidatorService> logger,
@@ -170,7 +171,7 @@ public sealed class ValidatorService : IValidatorService
         await _networkService.PublishAsync(GossipTopics.Attestations, attestationPayload, cancellationToken);
         TrackSignature(slot, messageRoot, epoch, signatureBytes);
 
-        if (_validatorDutyConfig.PublishAggregates)
+        if (_aggregateEnabled)
         {
             await PublishAggregateAsync(slot, messageRoot, epoch, cancellationToken);
         }
@@ -192,6 +193,16 @@ public sealed class ValidatorService : IValidatorService
         {
             _validatorPublicKey = configuredPublic;
             _validatorSecretKey = configuredSecret;
+            _aggregateEnabled = _validatorDutyConfig.PublishAggregates;
+        }
+        else if (configuredSecret is not null)
+        {
+            _validatorPublicKey = Array.Empty<byte>();
+            _validatorSecretKey = configuredSecret;
+            _aggregateEnabled = false;
+            _logger.LogWarning(
+                "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
+                _validatorDutyConfig.ValidatorIndex);
         }
         else
         {
@@ -200,6 +211,7 @@ public sealed class ValidatorService : IValidatorService
                 _validatorDutyConfig.NumActiveEpochs);
             _validatorPublicKey = keyPair.PublicKey;
             _validatorSecretKey = keyPair.SecretKey;
+            _aggregateEnabled = _validatorDutyConfig.PublishAggregates;
         }
 
         _validatorId = _validatorDutyConfig.ValidatorIndex;
@@ -242,6 +254,11 @@ public sealed class ValidatorService : IValidatorService
 
     private void TrackSignature(ulong slot, byte[] messageRoot, uint epoch, byte[] signature)
     {
+        if (_validatorPublicKey.Length == 0)
+        {
+            return;
+        }
+
         lock (_dutyStateLock)
         {
             if (!_slotSignatures.TryGetValue(slot, out var signatures))
