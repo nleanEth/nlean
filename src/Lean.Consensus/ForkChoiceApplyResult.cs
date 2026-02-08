@@ -10,7 +10,8 @@ public enum ForkChoiceRejectReason
     FutureSlot = 3,
     InvalidSlot = 4,
     ProposerMismatch = 5,
-    InvalidAttestation = 6
+    InvalidAttestation = 6,
+    StateTransitionFailed = 7
 }
 
 public sealed class ForkChoiceApplyResult

@@ -12,6 +12,18 @@ public static class LeanMetrics
         "lean_consensus_head_slot",
         "Current head slot tracked from block gossip.");
 
+    public static readonly Gauge ConsensusJustifiedSlot = Prometheus.Metrics.CreateGauge(
+        "lean_consensus_justified_slot",
+        "Current justified slot tracked by fork choice.");
+
+    public static readonly Gauge ConsensusFinalizedSlot = Prometheus.Metrics.CreateGauge(
+        "lean_consensus_finalized_slot",
+        "Current finalized slot tracked by fork choice.");
+
+    public static readonly Gauge ConsensusSafeTargetSlot = Prometheus.Metrics.CreateGauge(
+        "lean_consensus_safe_target_slot",
+        "Current safe target slot tracked by fork choice.");
+
     public static readonly Counter ConsensusBlocksTotal = Prometheus.Metrics.CreateCounter(
         "lean_consensus_blocks_total",
         "Total number of block gossip messages processed.");

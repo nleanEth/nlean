@@ -144,6 +144,34 @@ public sealed class ForkChoiceStoreTests
         Assert.That(store.HeadRoot, Is.EqualTo(weightedBranchARoot));
     }
 
+    [Test]
+    public void ApplyBlock_UpdatesJustifiedAndFinalizedFromTransitionOutput()
+    {
+        var store = new ForkChoiceStore();
+        var blockOne = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+        var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+        Assert.That(store.ApplyBlock(blockOne, blockOneRoot, currentSlot: 1).Accepted, Is.True);
+
+        var blockTwo = CreateSignedBlock(
+            2,
+            blockOneRoot,
+            1,
+            sourceRoot: blockOneRoot,
+            sourceSlot: 1,
+            targetRoot: blockOneRoot,
+            targetSlot: 1,
+            headRoot: blockOneRoot,
+            headSlot: 1);
+        var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+        Assert.That(store.ApplyBlock(blockTwo, blockTwoRoot, currentSlot: 2).Accepted, Is.True);
+
+        Assert.That(store.LatestJustified.Slot.Value, Is.EqualTo(1));
+        Assert.That(store.LatestJustified.Root, Is.EqualTo(blockOneRoot));
+        Assert.That(store.LatestFinalized.Slot.Value, Is.EqualTo(1));
+        Assert.That(store.LatestFinalized.Root, Is.EqualTo(blockOneRoot));
+        Assert.That(store.SafeTargetSlot, Is.GreaterThanOrEqualTo(0));
+    }
+
     private static SignedBlockWithAttestation CreateSignedBlock(
         ulong blockSlot,
         Bytes32 parentRoot,

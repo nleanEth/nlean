@@ -5,6 +5,7 @@ namespace Lean.Consensus;
 public sealed class ForkChoiceStore
 {
     private readonly Dictionary<string, Block> _blocks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ForkChoiceStateSnapshot> _states = new(StringComparer.Ordinal);
     private readonly Dictionary<ulong, AttestationData> _latestKnownAttestations = new();
     private readonly Dictionary<ulong, AttestationData> _latestPendingAttestations = new();
     private readonly string _genesisKey;
@@ -12,6 +13,9 @@ public sealed class ForkChoiceStore
     private string _headKey;
     private ulong _headSlot;
     private Bytes32 _headRoot = Bytes32.Zero();
+    private Checkpoint _latestJustified = Checkpoint.Default();
+    private Checkpoint _latestFinalized = Checkpoint.Default();
+    private Bytes32 _safeTarget = Bytes32.Zero();
 
     public ForkChoiceStore()
     {
@@ -19,11 +23,25 @@ public sealed class ForkChoiceStore
         _genesisKey = _headKey;
         _startKey = _genesisKey;
         _blocks[_headKey] = CreateAnchorBlock(0, _headRoot);
+
+        var genesisCheckpoint = new Checkpoint(_headRoot, new Slot(0));
+        _states[_headKey] = new ForkChoiceStateSnapshot(genesisCheckpoint, genesisCheckpoint, 1);
+        _latestJustified = genesisCheckpoint;
+        _latestFinalized = genesisCheckpoint;
+        _safeTarget = _headRoot;
     }
 
     public ulong HeadSlot => _headSlot;
 
     public Bytes32 HeadRoot => _headRoot;
+
+    public Checkpoint LatestJustified => _latestJustified;
+
+    public Checkpoint LatestFinalized => _latestFinalized;
+
+    public Bytes32 SafeTarget => _safeTarget;
+
+    public ulong SafeTargetSlot => GetSlotForRoot(_safeTarget);
 
     public void InitializeHead(ConsensusHeadState state)
     {
@@ -33,16 +51,26 @@ public sealed class ForkChoiceStore
         }
 
         _blocks.Clear();
+        _states.Clear();
         _latestKnownAttestations.Clear();
         _latestPendingAttestations.Clear();
+
+        _blocks[_genesisKey] = CreateAnchorBlock(0, Bytes32.Zero());
+        var genesisCheckpoint = new Checkpoint(Bytes32.Zero(), new Slot(0));
+        _states[_genesisKey] = new ForkChoiceStateSnapshot(genesisCheckpoint, genesisCheckpoint, 1);
 
         var anchorRoot = new Bytes32(state.HeadRoot);
         _headRoot = anchorRoot;
         _headSlot = state.HeadSlot;
         _headKey = ToKey(anchorRoot);
         _startKey = _headKey;
-        _blocks[_genesisKey] = CreateAnchorBlock(0, Bytes32.Zero());
         _blocks[_headKey] = CreateAnchorBlock(state.HeadSlot, anchorRoot);
+
+        var anchorCheckpoint = new Checkpoint(anchorRoot, new Slot(state.HeadSlot));
+        _states[_headKey] = new ForkChoiceStateSnapshot(anchorCheckpoint, anchorCheckpoint, 1);
+        _latestJustified = anchorCheckpoint;
+        _latestFinalized = anchorCheckpoint;
+        _safeTarget = anchorRoot;
     }
 
     public ForkChoiceApplyResult ApplyBlock(
@@ -85,6 +113,15 @@ public sealed class ForkChoiceStore
                 _headRoot);
         }
 
+        if (!_states.TryGetValue(parentKey, out var parentState))
+        {
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.StateTransitionFailed,
+                $"Missing parent state for root {parentKey}.",
+                _headSlot,
+                _headRoot);
+        }
+
         if (block.Slot.Value <= parentBlock.Slot.Value)
         {
             return ForkChoiceApplyResult.Rejected(
@@ -112,6 +149,36 @@ public sealed class ForkChoiceStore
                 _headRoot);
         }
 
+        if (signedBlock.Signature.AttestationSignatures.Count != block.Body.Attestations.Count)
+        {
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.InvalidAttestation,
+                "Attestation signatures count must match block body attestations count.",
+                _headSlot,
+                _headRoot);
+        }
+
+        foreach (var signature in signedBlock.Signature.AttestationSignatures)
+        {
+            if (signature.Participants.Length == 0)
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.InvalidAttestation,
+                    "Aggregated signature participants bitlist cannot be empty.",
+                    _headSlot,
+                    _headRoot);
+            }
+
+            if (signature.ProofData.Length == 0)
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.InvalidAttestation,
+                    "Aggregated signature proof data cannot be empty.",
+                    _headSlot,
+                    _headRoot);
+            }
+        }
+
         if (!TryValidateAttestationData(proposerAttestation.Data, currentSlot, out var proposerReason))
         {
             return ForkChoiceApplyResult.Rejected(
@@ -133,7 +200,17 @@ public sealed class ForkChoiceStore
             }
         }
 
+        if (!TryTransition(parentState, signedBlock, out var postState, out var transitionReason))
+        {
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.StateTransitionFailed,
+                transitionReason,
+                _headSlot,
+                _headRoot);
+        }
+
         _blocks[blockKey] = block;
+        _states[blockKey] = postState;
 
         foreach (var aggregated in block.Body.Attestations)
         {
@@ -143,18 +220,78 @@ public sealed class ForkChoiceStore
             }
         }
 
+        UpdateCheckpoints(postState);
+
         var previousHeadKey = _headKey;
-        var newHeadKey = ComputeLmdGhostHead(_startKey, _latestKnownAttestations);
+        var newHeadKey = ComputeLmdGhostHead(ToKey(_latestJustified.Root), _latestKnownAttestations);
         if (_blocks.TryGetValue(newHeadKey, out var newHeadBlock))
         {
             _headKey = newHeadKey;
             _headSlot = newHeadBlock.Slot.Value;
-            _headRoot = new Bytes32(Convert.FromHexString(newHeadKey));
+            _headRoot = ToRoot(newHeadKey);
         }
 
         UpsertAttestation(_latestPendingAttestations, proposerAttestation.ValidatorId, proposerAttestation.Data);
+        _safeTarget = ComputeSafeTarget();
+
         var headChanged = previousHeadKey != _headKey;
         return ForkChoiceApplyResult.AcceptedResult(headChanged, _headSlot, _headRoot);
+    }
+
+    private bool TryTransition(
+        ForkChoiceStateSnapshot parentState,
+        SignedBlockWithAttestation signedBlock,
+        out ForkChoiceStateSnapshot postState,
+        out string reason)
+    {
+        var block = signedBlock.Message.Block;
+        var proposerAttestation = signedBlock.Message.ProposerAttestation;
+
+        var validatorCount = parentState.ValidatorCount;
+        validatorCount = Math.Max(validatorCount, block.ProposerIndex + 1);
+        validatorCount = Math.Max(validatorCount, proposerAttestation.ValidatorId + 1);
+
+        foreach (var aggregated in block.Body.Attestations)
+        {
+            foreach (var validatorId in aggregated.AggregationBits.ToValidatorIndices())
+            {
+                validatorCount = Math.Max(validatorCount, validatorId + 1);
+            }
+        }
+
+        var latestJustified = parentState.LatestJustified;
+        var latestFinalized = parentState.LatestFinalized;
+
+        ConsiderCheckpoint(proposerAttestation.Data, ref latestJustified, ref latestFinalized);
+        foreach (var aggregated in block.Body.Attestations)
+        {
+            ConsiderCheckpoint(aggregated.Data, ref latestJustified, ref latestFinalized);
+        }
+
+        if (latestFinalized.Slot.Value > latestJustified.Slot.Value)
+        {
+            postState = default!;
+            reason = "Finalized checkpoint slot cannot exceed justified checkpoint slot.";
+            return false;
+        }
+
+        if (latestJustified.Slot.Value > block.Slot.Value)
+        {
+            postState = default!;
+            reason = $"Justified checkpoint slot {latestJustified.Slot.Value} cannot exceed block slot {block.Slot.Value}.";
+            return false;
+        }
+
+        if (latestFinalized.Slot.Value > block.Slot.Value)
+        {
+            postState = default!;
+            reason = $"Finalized checkpoint slot {latestFinalized.Slot.Value} cannot exceed block slot {block.Slot.Value}.";
+            return false;
+        }
+
+        postState = new ForkChoiceStateSnapshot(latestJustified, latestFinalized, validatorCount);
+        reason = string.Empty;
+        return true;
     }
 
     private bool TryValidateAttestationData(AttestationData data, ulong currentSlot, out string reason)
@@ -223,6 +360,63 @@ public sealed class ForkChoiceStore
         return true;
     }
 
+    private void UpdateCheckpoints(ForkChoiceStateSnapshot postState)
+    {
+        if (postState.LatestJustified.Slot.Value > _latestJustified.Slot.Value)
+        {
+            _latestJustified = postState.LatestJustified;
+        }
+
+        if (postState.LatestFinalized.Slot.Value > _latestFinalized.Slot.Value)
+        {
+            _latestFinalized = postState.LatestFinalized;
+        }
+    }
+
+    private static void ConsiderCheckpoint(
+        AttestationData data,
+        ref Checkpoint latestJustified,
+        ref Checkpoint latestFinalized)
+    {
+        if (data.Target.Slot.Value > latestJustified.Slot.Value)
+        {
+            latestJustified = data.Target;
+        }
+
+        if (data.Source.Slot.Value > latestFinalized.Slot.Value && data.Source.Slot.Value <= latestJustified.Slot.Value)
+        {
+            latestFinalized = data.Source;
+        }
+    }
+
+    private Bytes32 ComputeSafeTarget()
+    {
+        var headState = CurrentHeadStateSnapshot();
+        var minScore = ComputeTwoThirdsThreshold(headState.ValidatorCount);
+        var key = ComputeLmdGhostHead(ToKey(_latestJustified.Root), _latestPendingAttestations, minScore);
+        return _blocks.ContainsKey(key) ? ToRoot(key) : _latestJustified.Root;
+    }
+
+    private ForkChoiceStateSnapshot CurrentHeadStateSnapshot()
+    {
+        if (_states.TryGetValue(_headKey, out var headState))
+        {
+            return headState;
+        }
+
+        return _states[_genesisKey];
+    }
+
+    private static int ComputeTwoThirdsThreshold(ulong validatorCount)
+    {
+        if (validatorCount == 0)
+        {
+            return 0;
+        }
+
+        return checked((int)((validatorCount * 2 + 2) / 3));
+    }
+
     private static void UpsertAttestation(
         Dictionary<ulong, AttestationData> destination,
         ulong validatorId,
@@ -244,11 +438,14 @@ public sealed class ForkChoiceStore
         _latestPendingAttestations.Clear();
     }
 
-    private string ComputeLmdGhostHead(string startKey, IReadOnlyDictionary<ulong, AttestationData> attestations)
+    private string ComputeLmdGhostHead(
+        string startKey,
+        IReadOnlyDictionary<ulong, AttestationData> attestations,
+        int minScore = 0)
     {
         if (!_blocks.ContainsKey(startKey))
         {
-            startKey = _genesisKey;
+            startKey = _blocks.ContainsKey(_startKey) ? _startKey : _genesisKey;
         }
 
         var startSlot = _blocks[startKey].Slot.Value;
@@ -269,7 +466,16 @@ public sealed class ForkChoiceStore
         var head = startKey;
         while (children.TryGetValue(head, out var childKeys) && childKeys.Count > 0)
         {
-            head = childKeys
+            var candidates = childKeys
+                .Where(key => (weights.TryGetValue(key, out var weight) ? weight : 0) >= minScore)
+                .ToList();
+
+            if (candidates.Count == 0)
+            {
+                break;
+            }
+
+            head = candidates
                 .OrderByDescending(key => weights.TryGetValue(key, out var weight) ? weight : 0)
                 .ThenByDescending(key => key, StringComparer.Ordinal)
                 .First();
@@ -299,9 +505,20 @@ public sealed class ForkChoiceStore
         return children;
     }
 
+    private ulong GetSlotForRoot(Bytes32 root)
+    {
+        var key = ToKey(root);
+        return _blocks.TryGetValue(key, out var block) ? block.Slot.Value : 0;
+    }
+
     private static string ToKey(Bytes32 root)
     {
         return Convert.ToHexString(root.AsSpan());
+    }
+
+    private static Bytes32 ToRoot(string key)
+    {
+        return new Bytes32(Convert.FromHexString(key));
     }
 
     private static Block CreateAnchorBlock(ulong slot, Bytes32 root)
@@ -309,4 +526,9 @@ public sealed class ForkChoiceStore
         var emptyAttestations = new List<AggregatedAttestation>();
         return new Block(new Slot(slot), 0, root, Bytes32.Zero(), new BlockBody(emptyAttestations));
     }
+
+    private sealed record ForkChoiceStateSnapshot(
+        Checkpoint LatestJustified,
+        Checkpoint LatestFinalized,
+        ulong ValidatorCount);
 }

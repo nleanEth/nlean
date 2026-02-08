@@ -80,6 +80,9 @@ public sealed class ConsensusService : IConsensusService
             }
 
             LeanMetrics.ConsensusHeadSlot.Set(_forkChoice.HeadSlot);
+            LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
+            LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
+            LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
             _logger.LogInformation(
                 "Loaded persisted consensus head state. HeadSlot: {HeadSlot}, HeadRoot: {HeadRoot}",
                 _forkChoice.HeadSlot,
@@ -241,6 +244,9 @@ public sealed class ConsensusService : IConsensusService
         _stateStore.Save(new ConsensusHeadState(headSlot, headRoot));
         LeanMetrics.ConsensusBlocksTotal.Inc();
         LeanMetrics.ConsensusHeadSlot.Set(headSlot);
+        LeanMetrics.ConsensusJustifiedSlot.Set(_forkChoice.LatestJustified.Slot.Value);
+        LeanMetrics.ConsensusFinalizedSlot.Set(_forkChoice.LatestFinalized.Slot.Value);
+        LeanMetrics.ConsensusSafeTargetSlot.Set(_forkChoice.SafeTargetSlot);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {

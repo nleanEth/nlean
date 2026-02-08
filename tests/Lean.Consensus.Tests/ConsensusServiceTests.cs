@@ -242,12 +242,36 @@ public class ConsensusServiceTests
         Assert.That(stateStore.TryLoad(out _), Is.False);
     }
 
+    [Test]
+    public async Task BlockGossip_ProposerMismatch_DoesNotAdvanceHead()
+    {
+        var stateStore = new ConsensusStateStore(new InMemoryKeyValueStore());
+        var network = new FakeNetworkService();
+        var service = new ConsensusService(
+            NullLogger<ConsensusService>.Instance,
+            network,
+            new SignedBlockWithAttestationGossipDecoder(),
+            stateStore,
+            new ForkChoiceStore(),
+            new ConsensusConfig { SecondsPerSlot = 60, EnableGossipProcessing = true });
+
+        var invalidBlock = CreateSignedBlock(1, Bytes32.Zero(), 0, Bytes32.Zero(), 0, proposerAttesterId: 42);
+
+        await service.StartAsync(CancellationToken.None);
+        network.PublishToTopic(GossipTopics.Blocks, SszEncoding.Encode(invalidBlock));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(service.HeadSlot, Is.EqualTo(0));
+        Assert.That(stateStore.TryLoad(out _), Is.False);
+    }
+
     private static SignedBlockWithAttestation CreateSignedBlock(
         ulong blockSlot,
         Bytes32 parentRoot,
         ulong parentSlot,
         Bytes32 sourceRoot,
-        ulong sourceSlot)
+        ulong sourceSlot,
+        ulong proposerAttesterId = 7)
     {
         var proposerAttestationData = new AttestationData(
             new Slot(blockSlot),
@@ -268,7 +292,7 @@ public class ConsensusServiceTests
 
         var blockWithAttestation = new BlockWithAttestation(
             block,
-            new Attestation(7, proposerAttestationData));
+            new Attestation(proposerAttesterId, proposerAttestationData));
 
         var signatures = new BlockSignatures(
             new[]
