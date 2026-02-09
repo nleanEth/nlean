@@ -12,6 +12,18 @@ This repo contains a .NET 10+ Lean consensus client scaffold with Rust FFI bindi
 ./src/Lean.Client/bin/Debug/net10.0/Lean.Client --config config/node-config.json --validator-config config/validator-config.yaml --node lean_client_0
 ```
 
+## lean-quickstart interop
+
+```bash
+# One-line local interop run (nlean + zeam + ream)
+./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart
+```
+
+What this does:
+- installs `client-cmds/nlean-cmd.sh` into your lean-quickstart checkout
+- uses `config/validator-config.quickstart.yaml` as the devnet validator layout
+- publishes `Lean.Client`, builds Rust FFI native library, and starts quickstart via `spin-node.sh`
+
 ## Crypto binding tests
 
 ```bash

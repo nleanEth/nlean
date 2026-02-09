@@ -63,4 +63,36 @@ public static class LeanMetrics
         {
             LabelNames = new[] { "topic" }
         });
+
+    public static readonly Counter SyncBlocksByRootRequestsTotal = Prometheus.Metrics.CreateCounter(
+        "lean_sync_blocks_by_root_requests_total",
+        "Total blocks-by-root sync requests labeled by hit or miss.",
+        new CounterConfiguration
+        {
+            LabelNames = new[] { "result" }
+        });
+
+    public static readonly Counter SyncBlocksByRootAttemptsTotal = Prometheus.Metrics.CreateCounter(
+        "lean_sync_blocks_by_root_attempts_total",
+        "Total outbound blocks-by-root RPC attempts labeled by outcome.",
+        new CounterConfiguration
+        {
+            LabelNames = new[] { "result" }
+        });
+
+    public static readonly Counter SyncBlocksByRootFailuresTotal = Prometheus.Metrics.CreateCounter(
+        "lean_sync_blocks_by_root_failures_total",
+        "Total blocks-by-root sync failures labeled by reason.",
+        new CounterConfiguration
+        {
+            LabelNames = new[] { "reason" }
+        });
+
+    public static readonly Histogram SyncBlocksByRootAttemptLatencySeconds = Prometheus.Metrics.CreateHistogram(
+        "lean_sync_blocks_by_root_attempt_latency_seconds",
+        "Latency of outbound blocks-by-root RPC attempts.",
+        new HistogramConfiguration
+        {
+            LabelNames = new[] { "result" }
+        });
 }
