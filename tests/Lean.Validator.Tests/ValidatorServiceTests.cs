@@ -105,6 +105,8 @@ public sealed class ValidatorServiceTests
 
         Assert.That(published, Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestation("devnet0")), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregate("devnet0")), Is.True);
     }
 
     [Test]
@@ -132,6 +134,31 @@ public sealed class ValidatorServiceTests
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.Attestation, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task DutyLoop_UsesSlotAsXmssEpoch()
+    {
+        var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
+        var leanSig = new FakeLeanSig();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, SlotsPerEpoch = 32 },
+            new ValidatorDutyConfig(),
+            leanSig,
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        var published = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(published, Is.True);
+        Assert.That(leanSig.LastSignEpoch, Is.EqualTo(1U));
     }
 
     [Test]
@@ -264,6 +291,8 @@ public sealed class ValidatorServiceTests
 
     private sealed class FakeLeanSig : ILeanSig
     {
+        public uint LastSignEpoch { get; private set; }
+
         public LeanSigKeyPair GenerateKeyPair(uint activationEpoch, uint numActiveEpochs)
         {
             return new LeanSigKeyPair(
@@ -273,6 +302,7 @@ public sealed class ValidatorServiceTests
 
         public byte[] Sign(ReadOnlySpan<byte> secretKey, uint epoch, ReadOnlySpan<byte> message)
         {
+            LastSignEpoch = epoch;
             return Enumerable.Repeat((byte)0x33, XmssSignature.Length).ToArray();
         }
 

@@ -17,6 +17,9 @@ public sealed class ValidatorService : IValidatorService
     private readonly ILogger<ValidatorService> _logger;
     private readonly IConsensusService _consensusService;
     private readonly INetworkService _networkService;
+    private readonly IGossipTopicProvider _gossipTopics;
+    private readonly HashSet<string> _attestationPublishTopics;
+    private readonly HashSet<string> _aggregatePublishTopics;
     private readonly ConsensusConfig _consensusConfig;
     private readonly ValidatorDutyConfig _validatorDutyConfig;
     private readonly ILeanSig _leanSig;
@@ -39,11 +42,15 @@ public sealed class ValidatorService : IValidatorService
         ConsensusConfig consensusConfig,
         ValidatorDutyConfig validatorDutyConfig,
         ILeanSig leanSig,
-        ILeanMultiSig leanMultiSig)
+        ILeanMultiSig leanMultiSig,
+        IGossipTopicProvider? gossipTopics = null)
     {
         _logger = logger;
         _consensusService = consensusService;
         _networkService = networkService;
+        _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultNetwork);
+        _attestationPublishTopics = BuildTopicSet(_gossipTopics.AttestationTopics, _gossipTopics.AttestationTopic);
+        _aggregatePublishTopics = BuildTopicSet(_gossipTopics.AggregateTopics, _gossipTopics.AggregateTopic);
         _consensusConfig = consensusConfig;
         _validatorDutyConfig = validatorDutyConfig;
         _leanSig = leanSig;
@@ -156,7 +163,7 @@ public sealed class ValidatorService : IValidatorService
         var headSlot = _consensusService.HeadSlot;
         var headRoot = NormalizeRoot(_consensusService.HeadRoot);
         var sourceSlot = Math.Min(slot, headSlot);
-        var epoch = ToEpoch(slot);
+        var epoch = ToSignatureEpoch(slot);
         var attestationData = new AttestationData(
             new Slot(slot),
             new Checkpoint(headRoot, new Slot(headSlot)),
@@ -168,7 +175,7 @@ public sealed class ValidatorService : IValidatorService
         var signature = XmssSignature.FromBytes(signatureBytes);
         var signedAttestation = new SignedAttestation(_validatorId, attestationData, signature);
         var attestationPayload = SszEncoding.Encode(signedAttestation);
-        await _networkService.PublishAsync(GossipTopics.Attestations, attestationPayload, cancellationToken);
+        await PublishToTopicsAsync(_attestationPublishTopics, attestationPayload, cancellationToken);
         TrackSignature(slot, messageRoot, epoch, signatureBytes);
 
         if (_aggregateEnabled)
@@ -187,8 +194,10 @@ public sealed class ValidatorService : IValidatorService
 
     private void InitializeValidatorKeyMaterial()
     {
-        var configuredPublic = ParseHex(_validatorDutyConfig.PublicKeyHex);
-        var configuredSecret = ParseHex(_validatorDutyConfig.SecretKeyHex);
+        var configuredPublic = ParseHex(_validatorDutyConfig.PublicKeyHex)
+            ?? ReadKeyFile(_validatorDutyConfig.PublicKeyPath, "public");
+        var configuredSecret = ParseHex(_validatorDutyConfig.SecretKeyHex)
+            ?? ReadKeyFile(_validatorDutyConfig.SecretKeyPath, "secret");
         if (configuredPublic is not null && configuredSecret is not null)
         {
             _validatorPublicKey = configuredPublic;
@@ -215,6 +224,29 @@ public sealed class ValidatorService : IValidatorService
         }
 
         _validatorId = _validatorDutyConfig.ValidatorIndex;
+    }
+
+    private byte[]? ReadKeyFile(string? path, string keyLabel)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var resolvedPath = path.Trim();
+        if (!File.Exists(resolvedPath))
+        {
+            throw new FileNotFoundException($"Configured {keyLabel} key file was not found: {resolvedPath}");
+        }
+
+        var bytes = File.ReadAllBytes(resolvedPath);
+        if (bytes.Length == 0)
+        {
+            throw new InvalidOperationException($"Configured {keyLabel} key file is empty: {resolvedPath}");
+        }
+
+        _logger.LogInformation("Loaded validator {KeyLabel} key bytes from {Path}.", keyLabel, resolvedPath);
+        return bytes;
     }
 
     private async Task PublishAggregateAsync(
@@ -249,7 +281,7 @@ public sealed class ValidatorService : IValidatorService
             return;
         }
 
-        await _networkService.PublishAsync(GossipTopics.Aggregates, aggregate, cancellationToken);
+        await PublishToTopicsAsync(_aggregatePublishTopics, aggregate, cancellationToken);
     }
 
     private void TrackSignature(ulong slot, byte[] messageRoot, uint epoch, byte[] signature)
@@ -288,10 +320,10 @@ public sealed class ValidatorService : IValidatorService
         }
     }
 
-    private uint ToEpoch(ulong slot)
+    private static uint ToSignatureEpoch(ulong slot)
     {
-        var slotsPerEpoch = Math.Max(1UL, _consensusConfig.SlotsPerEpoch);
-        return checked((uint)(slot / slotsPerEpoch));
+        // Devnet2 clients (ream/zeam) use slot as the XMSS epoch parameter.
+        return checked((uint)slot);
     }
 
     private static Bytes32 NormalizeRoot(byte[] maybeRoot)
@@ -330,6 +362,39 @@ public sealed class ValidatorService : IValidatorService
         {
             return null;
         }
+    }
+
+    private async Task PublishToTopicsAsync(
+        IEnumerable<string> topics,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
+    {
+        foreach (var topic in topics)
+        {
+            await _networkService.PublishAsync(topic, payload, cancellationToken);
+        }
+    }
+
+    private static HashSet<string> BuildTopicSet(IReadOnlyList<string>? topics, string fallback)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (topics is not null)
+        {
+            foreach (var topic in topics)
+            {
+                if (!string.IsNullOrWhiteSpace(topic))
+                {
+                    set.Add(topic);
+                }
+            }
+        }
+
+        if (set.Count == 0 && !string.IsNullOrWhiteSpace(fallback))
+        {
+            set.Add(fallback);
+        }
+
+        return set;
     }
 
     private sealed record ValidatorSignature(
