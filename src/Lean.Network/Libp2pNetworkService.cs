@@ -33,6 +33,8 @@ public sealed class Libp2pNetworkService : INetworkService
     private readonly PubsubRouter _pubsubRouter;
     private readonly MDnsDiscoveryProtocol _mdnsDiscovery;
     private readonly Libp2pConfig _config;
+    private readonly object _topicsLock = new();
+    private readonly object _bootstrapPeersLock = new();
     private readonly object _blocksByRootPeersLock = new();
     private readonly Dictionary<string, ITopic> _topics = new();
     private readonly Dictionary<string, Multiformats.Address.Multiaddress> _bootstrapPeerAddresses = new(StringComparer.Ordinal);
@@ -126,9 +128,17 @@ public sealed class Libp2pNetworkService : INetworkService
         await DisconnectBootstrapSessionsAsync();
         Interlocked.Exchange(ref _bootstrapReconnectTriggeredAfterSubscribe, 0);
 
-        _topics.Clear();
-        _bootstrapPeerAddresses.Clear();
-        _connectedBootstrapPeers.Clear();
+        lock (_topicsLock)
+        {
+            _topics.Clear();
+        }
+
+        lock (_bootstrapPeersLock)
+        {
+            _bootstrapPeerAddresses.Clear();
+            _connectedBootstrapPeers.Clear();
+        }
+
         lock (_blocksByRootPeersLock)
         {
             _blocksByRootPeerAddresses.Clear();
@@ -173,14 +183,14 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             if (_bootstrapSessions.Count == 0)
             {
-                _connectedBootstrapPeers.Clear();
+                ClearConnectedBootstrapPeers();
                 return;
             }
 
             sessions = new List<ISession>(_bootstrapSessions);
             _bootstrapSessions.Clear();
         }
-        _connectedBootstrapPeers.Clear();
+        ClearConnectedBootstrapPeers();
 
         foreach (var session in sessions)
         {
@@ -435,16 +445,19 @@ public sealed class Libp2pNetworkService : INetworkService
 
     private ITopic GetOrCreateTopic(string topic, bool subscribe = false)
     {
-        if (_topics.TryGetValue(topic, out var existing))
+        ITopic? topicHandle;
+        lock (_topicsLock)
         {
-            EnsureTopicSubscription(topic, existing, subscribe);
-            return existing;
+            if (!_topics.TryGetValue(topic, out topicHandle))
+            {
+                topicHandle = _pubsubRouter.GetTopic(topic, subscribe);
+                _topics[topic] = topicHandle;
+            }
         }
 
-        var created = _pubsubRouter.GetTopic(topic, subscribe);
-        EnsureTopicSubscription(topic, created, subscribe);
-        _topics[topic] = created;
-        return created;
+        ArgumentNullException.ThrowIfNull(topicHandle);
+        EnsureTopicSubscription(topic, topicHandle, subscribe);
+        return topicHandle;
     }
 
     private void EnsureTopicSubscription(string topic, ITopic topicHandle, bool subscribe)
@@ -470,7 +483,7 @@ public sealed class Libp2pNetworkService : INetworkService
 
     private void TriggerBootstrapReconnectAfterSubscription()
     {
-        if (_peer is null || _bootstrapPeerAddresses.Count == 0)
+        if (_peer is null || !HasBootstrapPeers())
         {
             return;
         }
@@ -500,7 +513,12 @@ public sealed class Libp2pNetworkService : INetworkService
 
     private void InitializeBootstrapPeers()
     {
-        _bootstrapPeerAddresses.Clear();
+        lock (_bootstrapPeersLock)
+        {
+            _bootstrapPeerAddresses.Clear();
+            _connectedBootstrapPeers.Clear();
+        }
+
         lock (_blocksByRootPeersLock)
         {
             _blocksByRootPeerAddresses.Clear();
@@ -516,7 +534,11 @@ public sealed class Libp2pNetworkService : INetworkService
             try
             {
                 var address = Multiformats.Address.Multiaddress.Decode(bootstrapPeer);
-                _bootstrapPeerAddresses[bootstrapPeer] = address;
+                lock (_bootstrapPeersLock)
+                {
+                    _bootstrapPeerAddresses[bootstrapPeer] = address;
+                }
+
                 RegisterBlocksByRootCandidate(bootstrapPeer, address);
             }
             catch (Exception ex)
@@ -534,9 +556,10 @@ public sealed class Libp2pNetworkService : INetworkService
             return;
         }
 
-        foreach (var (peerKey, address) in _bootstrapPeerAddresses)
+        var bootstrapPeers = SnapshotBootstrapPeers();
+        foreach (var (peerKey, address) in bootstrapPeers)
         {
-            if (_connectedBootstrapPeers.Contains(peerKey))
+            if (!TryReserveBootstrapPeerConnection(peerKey))
             {
                 continue;
             }
@@ -560,7 +583,6 @@ public sealed class Libp2pNetworkService : INetworkService
                     CancellationToken.None);
                 RegisterBlocksByRootCandidate(session.RemoteAddress.ToString(), session.RemoteAddress);
                 _blocksByRootPeerSelector.MarkConnected(peerKey);
-                _connectedBootstrapPeers.Add(peerKey);
                 lock (_bootstrapSessionsLock)
                 {
                     _bootstrapSessions.Add(session);
@@ -570,9 +592,49 @@ public sealed class Libp2pNetworkService : INetworkService
             catch (Exception ex)
             {
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
-                _connectedBootstrapPeers.Remove(peerKey);
+                ReleaseBootstrapPeerConnection(peerKey);
                 _logger.LogWarning(ex, "Failed to connect to bootstrap peer {Address}", peerKey);
             }
+        }
+    }
+
+    private bool HasBootstrapPeers()
+    {
+        lock (_bootstrapPeersLock)
+        {
+            return _bootstrapPeerAddresses.Count > 0;
+        }
+    }
+
+    private List<KeyValuePair<string, Multiformats.Address.Multiaddress>> SnapshotBootstrapPeers()
+    {
+        lock (_bootstrapPeersLock)
+        {
+            return _bootstrapPeerAddresses.ToList();
+        }
+    }
+
+    private bool TryReserveBootstrapPeerConnection(string peerKey)
+    {
+        lock (_bootstrapPeersLock)
+        {
+            return _connectedBootstrapPeers.Add(peerKey);
+        }
+    }
+
+    private void ReleaseBootstrapPeerConnection(string peerKey)
+    {
+        lock (_bootstrapPeersLock)
+        {
+            _connectedBootstrapPeers.Remove(peerKey);
+        }
+    }
+
+    private void ClearConnectedBootstrapPeers()
+    {
+        lock (_bootstrapPeersLock)
+        {
+            _connectedBootstrapPeers.Clear();
         }
     }
 
