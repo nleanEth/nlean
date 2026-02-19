@@ -391,7 +391,7 @@ public static class LeanReqRespCodec
         }
 
         var output = expectedUncompressedLength == 0
-            ? []
+            ? Array.Empty<byte>()
             : new byte[expectedUncompressedLength];
         var totalUncompressedLength = 0;
         while (readOffset < framedBytes.Length)
