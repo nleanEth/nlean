@@ -1,3 +1,5 @@
+# Quickstart validator template used by nlean interop scripts.
+# Keep node names and ports aligned with the target interop topology.
 shuffle: roundrobin
 deployment_mode: local
 config:
@@ -20,11 +22,10 @@ validators:
     metricsPort: 18082
     count: 1
 
-  - name: "ream_0"
-    privkey: "af27950128b49cda7e7bc9fcb7b0270f7a3945aa7543326f3bfdbd57d2a97a32"
+  - name: "ethlambda_0"
+    privkey: "299550529a79bc2dce003747c52fb0639465c893e00b0440ac66144d625e066a"
     enrFields:
       ip: "127.0.0.1"
-      quic: 9103
-    metricsPort: 18083
-    devnet: 2
+      quic: 9107
+    metricsPort: 18087
     count: 1
