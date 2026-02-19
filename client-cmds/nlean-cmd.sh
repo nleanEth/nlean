@@ -1,6 +1,9 @@
 #!/bin/bash
 
 #-----------------------nlean setup----------------------
+# This script follows lean-quickstart's client-cmd contract:
+# it must populate node_binary / node_docker / node_setup.
+# It is not a direct container entrypoint wrapper.
 # NLEAN_REPO should point to this repository when lean-quickstart is outside this workspace.
 # Default assumes sibling checkouts: <workspace>/nlean and <workspace>/lean-quickstart.
 nlean_repo="${NLEAN_REPO:-$scriptDir/../nlean}"
