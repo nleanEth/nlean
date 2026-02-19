@@ -1,5 +1,7 @@
 using System.Linq;
 using Lean.Consensus.Types;
+using Lean.Metrics;
+using System.Diagnostics;
 
 namespace Lean.Consensus;
 
@@ -95,311 +97,374 @@ internal sealed class ChainStateTransition
         var validators = parentState.Validators.ToList();
         var justificationsRoots = parentState.JustificationsRoots.ToList();
         var justificationsValidators = parentState.JustificationsValidators.ToList();
+        var transitionStopwatch = Stopwatch.StartNew();
+        var slotsProcessingStopwatch = Stopwatch.StartNew();
+        var blockProcessingStopwatch = new Stopwatch();
+        var attestationsProcessingStopwatch = new Stopwatch();
+        ulong slotsProcessed = 0;
+        ulong attestationsProcessed = 0;
+        var finalizedSlotBeforeTransition = latestFinalized.Slot.Value;
+        var transitionSucceeded = false;
+        var finalizedAdvanced = false;
 
-        if (block.Slot.Value <= stateSlot)
+        try
         {
-            postState = default!;
-            reason = $"Block slot {block.Slot.Value} must be greater than state slot {stateSlot}.";
-            return false;
-        }
 
-        while (stateSlot < block.Slot.Value)
-        {
-            if (latestBlockHeader.StateRoot.Equals(Bytes32.Zero()))
+            if (block.Slot.Value <= stateSlot)
             {
-                var preState = new State(
-                    parentState.Config,
-                    new Slot(stateSlot),
-                    latestBlockHeader,
-                    latestJustified,
-                    latestFinalized,
-                    historicalBlockHashes,
-                    justifiedSlots,
-                    validators,
+                postState = default!;
+                reason = $"Block slot {block.Slot.Value} must be greater than state slot {stateSlot}.";
+                return false;
+            }
+
+            while (stateSlot < block.Slot.Value)
+            {
+                if (latestBlockHeader.StateRoot.Equals(Bytes32.Zero()))
+                {
+                    var preState = new State(
+                        parentState.Config,
+                        new Slot(stateSlot),
+                        latestBlockHeader,
+                        latestJustified,
+                        latestFinalized,
+                        historicalBlockHashes,
+                        justifiedSlots,
+                        validators,
+                        justificationsRoots,
+                        justificationsValidators);
+                    latestBlockHeader = latestBlockHeader with { StateRoot = new Bytes32(preState.HashTreeRoot()) };
+                }
+
+                stateSlot++;
+                slotsProcessed++;
+            }
+
+            slotsProcessingStopwatch.Stop();
+            blockProcessingStopwatch.Start();
+
+            if (block.Slot.Value != stateSlot)
+            {
+                postState = default!;
+                reason = $"Block slot {block.Slot.Value} does not match state slot {stateSlot}.";
+                return false;
+            }
+
+            if (block.Slot.Value <= latestBlockHeader.Slot.Value)
+            {
+                postState = default!;
+                reason = $"Block slot {block.Slot.Value} is not greater than latest block header slot {latestBlockHeader.Slot.Value}.";
+                return false;
+            }
+
+            if (validators.Count == 0)
+            {
+                postState = default!;
+                reason = "No validators are configured for state transition.";
+                return false;
+            }
+
+            // Parent linkage is already enforced by ForkChoiceStore before this transition runs.
+            // Re-deriving the parent root from latestBlockHeader can reject imported branches when
+            // this simplified transition computes different intermediate state roots than peers.
+
+            if (latestBlockHeader.Slot.Value == 0)
+            {
+                latestJustified = latestJustified with { Root = block.ParentRoot };
+                latestFinalized = latestFinalized with { Root = block.ParentRoot };
+            }
+
+            historicalBlockHashes.Add(block.ParentRoot);
+
+            var emptySlots = checked((int)(block.Slot.Value - latestBlockHeader.Slot.Value - 1));
+            for (var i = 0; i < emptySlots; i++)
+            {
+                historicalBlockHashes.Add(Bytes32.Zero());
+            }
+
+            if (block.Slot.Value > 0)
+            {
+                var targetIndex = new Slot(block.Slot.Value - 1).JustifiedIndexAfter(latestFinalized.Slot);
+                if (targetIndex.HasValue)
+                {
+                    EnsureBooleanCapacity(justifiedSlots, targetIndex.Value + 1);
+                }
+            }
+
+            latestBlockHeader = new BlockHeader(
+                block.Slot,
+                block.ProposerIndex,
+                block.ParentRoot,
+                Bytes32.Zero(),
+                new Bytes32(block.Body.HashTreeRoot()));
+
+            if (block.Body.Attestations
+                .Select(attestation => Convert.ToHexString(attestation.Data.HashTreeRoot()))
+                .Distinct(StringComparer.Ordinal)
+                .Count() != block.Body.Attestations.Count)
+            {
+                postState = default!;
+                reason = "Block contains duplicate AttestationData.";
+                return false;
+            }
+
+            if (justificationsRoots.Any(root => root.Equals(Bytes32.Zero())))
+            {
+                postState = default!;
+                reason = "Zero hash is not allowed in justifications roots.";
+                return false;
+            }
+
+            if (!TryBuildJustificationsMap(
                     justificationsRoots,
-                    justificationsValidators);
-                latestBlockHeader = latestBlockHeader with { StateRoot = new Bytes32(preState.HashTreeRoot()) };
-            }
-
-            stateSlot++;
-        }
-
-        if (block.Slot.Value != stateSlot)
-        {
-            postState = default!;
-            reason = $"Block slot {block.Slot.Value} does not match state slot {stateSlot}.";
-            return false;
-        }
-
-        if (block.Slot.Value <= latestBlockHeader.Slot.Value)
-        {
-            postState = default!;
-            reason = $"Block slot {block.Slot.Value} is not greater than latest block header slot {latestBlockHeader.Slot.Value}.";
-            return false;
-        }
-
-        if (validators.Count == 0)
-        {
-            postState = default!;
-            reason = "No validators are configured for state transition.";
-            return false;
-        }
-
-        // Parent linkage is already enforced by ForkChoiceStore before this transition runs.
-        // Re-deriving the parent root from latestBlockHeader can reject imported branches when
-        // this simplified transition computes different intermediate state roots than peers.
-
-        if (latestBlockHeader.Slot.Value == 0)
-        {
-            latestJustified = latestJustified with { Root = block.ParentRoot };
-            latestFinalized = latestFinalized with { Root = block.ParentRoot };
-        }
-
-        historicalBlockHashes.Add(block.ParentRoot);
-
-        var emptySlots = checked((int)(block.Slot.Value - latestBlockHeader.Slot.Value - 1));
-        for (var i = 0; i < emptySlots; i++)
-        {
-            historicalBlockHashes.Add(Bytes32.Zero());
-        }
-
-        if (block.Slot.Value > 0)
-        {
-            var targetIndex = new Slot(block.Slot.Value - 1).JustifiedIndexAfter(latestFinalized.Slot);
-            if (targetIndex.HasValue)
-            {
-                EnsureBooleanCapacity(justifiedSlots, targetIndex.Value + 1);
-            }
-        }
-
-        latestBlockHeader = new BlockHeader(
-            block.Slot,
-            block.ProposerIndex,
-            block.ParentRoot,
-            Bytes32.Zero(),
-            new Bytes32(block.Body.HashTreeRoot()));
-
-        if (block.Body.Attestations
-            .Select(attestation => Convert.ToHexString(attestation.Data.HashTreeRoot()))
-            .Distinct(StringComparer.Ordinal)
-            .Count() != block.Body.Attestations.Count)
-        {
-            postState = default!;
-            reason = "Block contains duplicate AttestationData.";
-            return false;
-        }
-
-        if (justificationsRoots.Any(root => root.Equals(Bytes32.Zero())))
-        {
-            postState = default!;
-            reason = "Zero hash is not allowed in justifications roots.";
-            return false;
-        }
-
-        if (!TryBuildJustificationsMap(
-                justificationsRoots,
-                justificationsValidators,
-                validators.Count,
-                out var justificationsMap,
-                out reason))
-        {
-            postState = default!;
-            return false;
-        }
-
-        var rootToSlot = new Dictionary<string, ulong>(StringComparer.Ordinal);
-        var startSlot = latestFinalized.Slot.Value + 1;
-        for (var slot = startSlot; slot < (ulong)historicalBlockHashes.Count; slot++)
-        {
-            rootToSlot[ToKey(historicalBlockHashes[(int)slot])] = slot;
-        }
-
-        var originalFinalizedSlot = latestFinalized.Slot.Value;
-        foreach (var aggregated in block.Body.Attestations)
-        {
-            var sourceSlot = aggregated.Data.Source.Slot.Value;
-            var targetSlot = aggregated.Data.Target.Slot.Value;
-
-            if (aggregated.Data.Source.Root.Equals(Bytes32.Zero()) || aggregated.Data.Target.Root.Equals(Bytes32.Zero()))
-            {
-                continue;
-            }
-
-            if (!TryIsSlotJustified(sourceSlot, latestFinalized.Slot.Value, justifiedSlots, out var sourceJustified, out reason))
+                    justificationsValidators,
+                    validators.Count,
+                    out var justificationsMap,
+                    out reason))
             {
                 postState = default!;
                 return false;
             }
 
-            if (!sourceJustified)
+            var rootToSlot = new Dictionary<string, ulong>(StringComparer.Ordinal);
+            var startSlot = latestFinalized.Slot.Value + 1;
+            for (var slot = startSlot; slot < (ulong)historicalBlockHashes.Count; slot++)
             {
-                continue;
+                rootToSlot[ToKey(historicalBlockHashes[(int)slot])] = slot;
             }
 
-            if (!TryIsSlotJustified(targetSlot, latestFinalized.Slot.Value, justifiedSlots, out var targetAlreadyJustified, out reason))
+            var originalFinalizedSlot = latestFinalized.Slot.Value;
+            attestationsProcessingStopwatch.Start();
+            foreach (var aggregated in block.Body.Attestations)
             {
-                postState = default!;
-                return false;
-            }
+                attestationsProcessed++;
+                var sourceSlot = aggregated.Data.Source.Slot.Value;
+                var targetSlot = aggregated.Data.Target.Slot.Value;
 
-            if (targetAlreadyJustified)
-            {
-                continue;
-            }
-
-            if (sourceSlot >= (ulong)historicalBlockHashes.Count || targetSlot >= (ulong)historicalBlockHashes.Count)
-            {
-                // Match leanSpec/ethlambda semantics: block import remains valid and
-                // this attestation is ignored when it references unavailable history.
-                continue;
-            }
-
-            if (!aggregated.Data.Source.Root.Equals(historicalBlockHashes[(int)sourceSlot]))
-            {
-                continue;
-            }
-
-            if (!aggregated.Data.Target.Root.Equals(historicalBlockHashes[(int)targetSlot]))
-            {
-                continue;
-            }
-
-            if (targetSlot <= sourceSlot)
-            {
-                continue;
-            }
-
-            if (!new Slot(targetSlot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
-            {
-                continue;
-            }
-
-            var targetKey = ToKey(aggregated.Data.Target.Root);
-            if (!justificationsMap.TryGetValue(targetKey, out var votes))
-            {
-                votes = new JustificationVotes(
-                    aggregated.Data.Target.Root,
-                    new bool[validators.Count]);
-                justificationsMap[targetKey] = votes;
-            }
-
-            for (var validatorIndex = 0; validatorIndex < aggregated.AggregationBits.Bits.Count; validatorIndex++)
-            {
-                if (!aggregated.AggregationBits.Bits[validatorIndex])
+                if (aggregated.Data.Source.Root.Equals(Bytes32.Zero()) || aggregated.Data.Target.Root.Equals(Bytes32.Zero()))
                 {
                     continue;
                 }
 
-                if (validatorIndex >= validators.Count)
+                if (!TryIsSlotJustified(sourceSlot, latestFinalized.Slot.Value, justifiedSlots, out var sourceJustified, out reason))
                 {
                     postState = default!;
-                    reason = $"Validator index {validatorIndex} is out of range for validator set size {validators.Count}.";
                     return false;
                 }
 
-                votes.Votes[validatorIndex] = true;
-            }
-
-            var voteCount = votes.Votes.Count(vote => vote);
-            if (checked(3 * voteCount) < checked(2 * validators.Count))
-            {
-                continue;
-            }
-
-            latestJustified = aggregated.Data.Target;
-            var justifiedIndex = aggregated.Data.Target.Slot.JustifiedIndexAfter(latestFinalized.Slot);
-            if (justifiedIndex.HasValue)
-            {
-                EnsureBooleanCapacity(justifiedSlots, justifiedIndex.Value + 1);
-                justifiedSlots[justifiedIndex.Value] = true;
-            }
-
-            justificationsMap.Remove(targetKey);
-
-            var canFinalize = true;
-            for (var slot = sourceSlot + 1; slot < targetSlot; slot++)
-            {
-                if (new Slot(slot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                if (!sourceJustified)
                 {
-                    canFinalize = false;
-                    break;
+                    continue;
                 }
-            }
 
-            if (!canFinalize)
-            {
-                continue;
-            }
-
-            var previousFinalizedSlot = latestFinalized.Slot.Value;
-            latestFinalized = aggregated.Data.Source;
-            var delta = latestFinalized.Slot.Value - previousFinalizedSlot;
-            if (delta == 0)
-            {
-                continue;
-            }
-
-            ShiftLeft(justifiedSlots, delta);
-
-            var obsoleteTargets = new List<string>();
-            foreach (var (key, value) in justificationsMap)
-            {
-                if (!rootToSlot.TryGetValue(key, out var slot))
+                if (!TryIsSlotJustified(targetSlot, latestFinalized.Slot.Value, justifiedSlots, out var targetAlreadyJustified, out reason))
                 {
                     postState = default!;
-                    reason = "Justification root missing from historical root-to-slot index.";
                     return false;
                 }
 
-                if (slot <= latestFinalized.Slot.Value)
+                if (targetAlreadyJustified)
                 {
-                    obsoleteTargets.Add(key);
+                    continue;
+                }
+
+                if (sourceSlot >= (ulong)historicalBlockHashes.Count || targetSlot >= (ulong)historicalBlockHashes.Count)
+                {
+                    // Match leanSpec/ethlambda semantics: block import remains valid and
+                    // this attestation is ignored when it references unavailable history.
+                    continue;
+                }
+
+                if (!aggregated.Data.Source.Root.Equals(historicalBlockHashes[(int)sourceSlot]))
+                {
+                    continue;
+                }
+
+                if (!aggregated.Data.Target.Root.Equals(historicalBlockHashes[(int)targetSlot]))
+                {
+                    continue;
+                }
+
+                if (targetSlot <= sourceSlot)
+                {
+                    continue;
+                }
+
+                if (!new Slot(targetSlot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                {
+                    continue;
+                }
+
+                var targetKey = ToKey(aggregated.Data.Target.Root);
+                if (!justificationsMap.TryGetValue(targetKey, out var votes))
+                {
+                    votes = new JustificationVotes(
+                        aggregated.Data.Target.Root,
+                        new bool[validators.Count]);
+                    justificationsMap[targetKey] = votes;
+                }
+
+                for (var validatorIndex = 0; validatorIndex < aggregated.AggregationBits.Bits.Count; validatorIndex++)
+                {
+                    if (!aggregated.AggregationBits.Bits[validatorIndex])
+                    {
+                        continue;
+                    }
+
+                    if (validatorIndex >= validators.Count)
+                    {
+                        postState = default!;
+                        reason = $"Validator index {validatorIndex} is out of range for validator set size {validators.Count}.";
+                        return false;
+                    }
+
+                    votes.Votes[validatorIndex] = true;
+                }
+
+                var voteCount = votes.Votes.Count(vote => vote);
+                if (checked(3 * voteCount) < checked(2 * validators.Count))
+                {
+                    continue;
+                }
+
+                latestJustified = aggregated.Data.Target;
+                var justifiedIndex = aggregated.Data.Target.Slot.JustifiedIndexAfter(latestFinalized.Slot);
+                if (justifiedIndex.HasValue)
+                {
+                    EnsureBooleanCapacity(justifiedSlots, justifiedIndex.Value + 1);
+                    justifiedSlots[justifiedIndex.Value] = true;
+                }
+
+                justificationsMap.Remove(targetKey);
+
+                var canFinalize = true;
+                for (var slot = sourceSlot + 1; slot < targetSlot; slot++)
+                {
+                    if (new Slot(slot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                    {
+                        canFinalize = false;
+                        break;
+                    }
+                }
+
+                if (!canFinalize)
+                {
+                    continue;
+                }
+
+                var previousFinalizedSlot = latestFinalized.Slot.Value;
+                latestFinalized = aggregated.Data.Source;
+                var delta = latestFinalized.Slot.Value - previousFinalizedSlot;
+                if (delta == 0)
+                {
+                    continue;
+                }
+
+                ShiftLeft(justifiedSlots, delta);
+
+                var obsoleteTargets = new List<string>();
+                foreach (var (key, value) in justificationsMap)
+                {
+                    if (!rootToSlot.TryGetValue(key, out var slot))
+                    {
+                        postState = default!;
+                        reason = "Justification root missing from historical root-to-slot index.";
+                        return false;
+                    }
+
+                    if (slot <= latestFinalized.Slot.Value)
+                    {
+                        obsoleteTargets.Add(key);
+                    }
+                }
+
+                foreach (var key in obsoleteTargets)
+                {
+                    justificationsMap.Remove(key);
                 }
             }
+            attestationsProcessingStopwatch.Stop();
 
-            foreach (var key in obsoleteTargets)
+            justificationsRoots = new List<Bytes32>(justificationsMap.Count);
+            justificationsValidators = new List<bool>(justificationsMap.Count * validators.Count);
+            foreach (var key in justificationsMap.Keys.OrderBy(value => value, StringComparer.Ordinal))
             {
-                justificationsMap.Remove(key);
-            }
-        }
+                var value = justificationsMap[key];
+                if (value.Votes.Length != validators.Count)
+                {
+                    postState = default!;
+                    reason = "Justification vote vector length does not match validator count.";
+                    return false;
+                }
 
-        justificationsRoots = new List<Bytes32>(justificationsMap.Count);
-        justificationsValidators = new List<bool>(justificationsMap.Count * validators.Count);
-        foreach (var key in justificationsMap.Keys.OrderBy(value => value, StringComparer.Ordinal))
-        {
-            var value = justificationsMap[key];
-            if (value.Votes.Length != validators.Count)
+                justificationsRoots.Add(value.Root);
+                justificationsValidators.AddRange(value.Votes);
+            }
+
+            if ((ulong)justificationsValidators.Count > JustificationsValidatorsLimit)
             {
                 postState = default!;
-                reason = "Justification vote vector length does not match validator count.";
+                reason = "Justifications validators bitlist exceeds protocol limit.";
                 return false;
             }
 
-            justificationsRoots.Add(value.Root);
-            justificationsValidators.AddRange(value.Votes);
-        }
+            postState = new State(
+                parentState.Config,
+                new Slot(stateSlot),
+                latestBlockHeader,
+                latestJustified,
+                latestFinalized,
+                historicalBlockHashes,
+                justifiedSlots,
+                validators,
+                justificationsRoots,
+                justificationsValidators);
 
-        if ((ulong)justificationsValidators.Count > JustificationsValidatorsLimit)
+            finalizedAdvanced = latestFinalized.Slot.Value > finalizedSlotBeforeTransition;
+            transitionSucceeded = true;
+            reason = string.Empty;
+            return true;
+        }
+        finally
         {
-            postState = default!;
-            reason = "Justifications validators bitlist exceeds protocol limit.";
-            return false;
+            if (slotsProcessingStopwatch.IsRunning)
+            {
+                slotsProcessingStopwatch.Stop();
+            }
+
+            if (attestationsProcessingStopwatch.IsRunning)
+            {
+                attestationsProcessingStopwatch.Stop();
+            }
+
+            if (blockProcessingStopwatch.IsRunning)
+            {
+                blockProcessingStopwatch.Stop();
+            }
+
+            transitionStopwatch.Stop();
+
+            LeanMetrics.RecordStateTransition(
+                transitionStopwatch.Elapsed,
+                slotsProcessed,
+                slotsProcessingStopwatch.Elapsed,
+                blockProcessingStopwatch.Elapsed,
+                attestationsProcessed,
+                attestationsProcessingStopwatch.Elapsed);
+
+            if (transitionSucceeded)
+            {
+                LeanMetrics.SetJustifiedSlot(latestJustified.Slot.Value);
+                LeanMetrics.SetFinalizedSlot(latestFinalized.Slot.Value);
+                if (finalizedAdvanced)
+                {
+                    LeanMetrics.RecordFinalizationResult(true);
+                }
+            }
+            else
+            {
+                LeanMetrics.RecordFinalizationResult(false);
+            }
         }
-
-        postState = new State(
-            parentState.Config,
-            new Slot(stateSlot),
-            latestBlockHeader,
-            latestJustified,
-            latestFinalized,
-            historicalBlockHashes,
-            justifiedSlots,
-            validators,
-            justificationsRoots,
-            justificationsValidators);
-
-        reason = string.Empty;
-        return true;
     }
 
     private IReadOnlyList<Validator> BuildGenesisValidators(ulong initialValidatorCount)

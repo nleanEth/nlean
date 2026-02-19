@@ -1,8 +1,10 @@
 using System.Diagnostics.Metrics;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Lean.Consensus;
 using Lean.Consensus.Types;
 using Lean.Crypto;
+using Lean.Metrics;
 using Lean.Network;
 using Microsoft.Extensions.Logging;
 
@@ -314,8 +316,20 @@ public sealed class ValidatorService : IValidatorService
             Convert.ToHexString(attestationData.Target.Root.AsSpan()));
 
         var messageRoot = attestationData.HashTreeRoot();
+        var signingStopwatch = Stopwatch.StartNew();
         var signatureBytes = _leanSig.Sign(_validatorSecretKey, epoch, messageRoot);
-        var selfVerificationOk = _validatorPublicKey.Length == 0 || _leanSig.Verify(_validatorPublicKey, epoch, messageRoot, signatureBytes);
+        signingStopwatch.Stop();
+        LeanMetrics.RecordPqAttestationSigning(signingStopwatch.Elapsed);
+
+        var selfVerificationOk = true;
+        if (_validatorPublicKey.Length > 0)
+        {
+            var verificationStopwatch = Stopwatch.StartNew();
+            selfVerificationOk = _leanSig.Verify(_validatorPublicKey, epoch, messageRoot, signatureBytes);
+            verificationStopwatch.Stop();
+            LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
+        }
+
         var signature = XmssSignature.FromBytes(signatureBytes);
         var signedAttestation = new SignedAttestation(_validatorId, attestationData, signature);
         RecordObservedAttestation(signedAttestation);
@@ -447,7 +461,10 @@ public sealed class ValidatorService : IValidatorService
         };
 
         var proposerMessageRoot = proposerAttestationData.HashTreeRoot();
+        var proposerSigningStopwatch = Stopwatch.StartNew();
         var proposerSignatureBytes = _leanSig.Sign(_validatorSecretKey, ToSignatureEpoch(slot), proposerMessageRoot);
+        proposerSigningStopwatch.Stop();
+        LeanMetrics.RecordPqAttestationSigning(proposerSigningStopwatch.Elapsed);
         var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
         var proposerAttestation = new Attestation(_validatorId, proposerAttestationData);
         var signedProposerAttestation = new SignedAttestation(_validatorId, proposerAttestationData, proposerSignature);
@@ -524,7 +541,11 @@ public sealed class ValidatorService : IValidatorService
                     continue;
                 }
 
-                if (!_leanSig.Verify(publicKey, epoch, messageRoot, signatureBytes))
+                var verificationStopwatch = Stopwatch.StartNew();
+                var signatureValid = _leanSig.Verify(publicKey, epoch, messageRoot, signatureBytes);
+                verificationStopwatch.Stop();
+                LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
+                if (!signatureValid)
                 {
                     continue;
                 }
@@ -540,12 +561,14 @@ public sealed class ValidatorService : IValidatorService
             }
 
             byte[] aggregateSignature;
+            var aggregateBuildStopwatch = Stopwatch.StartNew();
             try
             {
                 aggregateSignature = _leanMultiSig.AggregateSignatures(publicKeys, signatures, messageRoot, epoch);
             }
             catch (Exception ex)
             {
+                aggregateBuildStopwatch.Stop();
                 _logger.LogDebug(
                     ex,
                     "Failed aggregating attestation signatures. Slot: {Slot}, Participants: {Participants}",
@@ -553,8 +576,14 @@ public sealed class ValidatorService : IValidatorService
                     participants.Count);
                 continue;
             }
+            aggregateBuildStopwatch.Stop();
+            LeanMetrics.RecordPqAggregatedSignatureBuilt(participants.Count, aggregateBuildStopwatch.Elapsed);
 
-            if (!_leanMultiSig.VerifyAggregate(publicKeys, messageRoot, aggregateSignature, epoch))
+            var aggregateVerificationStopwatch = Stopwatch.StartNew();
+            var aggregateValid = _leanMultiSig.VerifyAggregate(publicKeys, messageRoot, aggregateSignature, epoch);
+            aggregateVerificationStopwatch.Stop();
+            LeanMetrics.RecordPqAggregatedSignatureVerification(aggregateValid, aggregateVerificationStopwatch.Elapsed);
+            if (!aggregateValid)
             {
                 continue;
             }
@@ -786,6 +815,7 @@ public sealed class ValidatorService : IValidatorService
     {
         _validatorId = _validatorDutyConfig.ValidatorIndex;
         _validatorCount = Math.Max(_consensusConfig.InitialValidatorCount, _validatorId + 1);
+        LeanMetrics.SetValidatorsCount(_validatorCount);
 
         LoadKnownValidatorPublicKeysFromGenesisConfig();
 
@@ -1016,8 +1046,15 @@ public sealed class ValidatorService : IValidatorService
             .Select(sig => new ReadOnlyMemory<byte>(sig.Signature))
             .ToList();
 
+        var aggregateBuildStopwatch = Stopwatch.StartNew();
         var aggregate = _leanMultiSig.AggregateSignatures(publicKeys, signatureBytes, messageRoot, epoch);
+        aggregateBuildStopwatch.Stop();
+        LeanMetrics.RecordPqAggregatedSignatureBuilt(signatures.Count, aggregateBuildStopwatch.Elapsed);
+
+        var aggregateVerificationStopwatch = Stopwatch.StartNew();
         var isValid = _leanMultiSig.VerifyAggregate(publicKeys, messageRoot, aggregate, epoch);
+        aggregateVerificationStopwatch.Stop();
+        LeanMetrics.RecordPqAggregatedSignatureVerification(isValid, aggregateVerificationStopwatch.Elapsed);
         if (!isValid)
         {
             _logger.LogWarning("Skipping aggregate publish due to local verification failure. Slot: {Slot}", slot);

@@ -1,5 +1,8 @@
 using Lean.Consensus.Types;
 using Lean.Crypto;
+using Lean.Metrics;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Lean.Consensus;
 
@@ -120,7 +123,12 @@ public sealed class ForkChoiceStore
         return _blocks.ContainsKey(ToKey(root));
     }
 
-    public void InitializeHead(ConsensusHeadState state)
+    public bool TryGetHeadChainState([NotNullWhen(true)] out State? headChainState)
+    {
+        return _chainStates.TryGetValue(_headKey, out headChainState);
+    }
+
+    public void InitializeHead(ConsensusHeadState state, State? headChainState = null)
     {
         if (state.HeadRoot.Length != SszEncoding.Bytes32Length)
         {
@@ -148,7 +156,11 @@ public sealed class ForkChoiceStore
 
         var anchorCheckpoint = new Checkpoint(anchorRoot, new Slot(state.HeadSlot));
         _states[_headKey] = new ForkChoiceNodeState(anchorCheckpoint, anchorCheckpoint, _initialValidatorCount);
-        if (state.HeadSlot == 0)
+        if (headChainState is not null)
+        {
+            _chainStates[_headKey] = headChainState;
+        }
+        else if (state.HeadSlot == 0)
         {
             // After adopting a peer-provided genesis anchor root, keep a chain-state snapshot
             // under that anchor key so post-genesis state transitions can proceed.
@@ -433,16 +445,20 @@ public sealed class ForkChoiceStore
             }
         }
 
-        if (!TryValidateAttestationData(
-                proposerAttestation.Data,
-                currentSlot,
-                allowUnknownRoots: false,
-                out var proposerReason,
-                pendingHeadKey: blockKey,
-                pendingHeadSlot: block.Slot.Value,
-                pendingHeadParentKey: parentKey,
-                requirePendingHeadAncestry: true,
-                enforceChainTopology: false))
+        var proposerValidationStopwatch = Stopwatch.StartNew();
+        var proposerAttestationValid = TryValidateAttestationData(
+            proposerAttestation.Data,
+            currentSlot,
+            allowUnknownRoots: false,
+            out var proposerReason,
+            pendingHeadKey: blockKey,
+            pendingHeadSlot: block.Slot.Value,
+            pendingHeadParentKey: parentKey,
+            requirePendingHeadAncestry: true,
+            enforceChainTopology: false);
+        proposerValidationStopwatch.Stop();
+        LeanMetrics.RecordAttestationValidation("block", proposerAttestationValid, proposerValidationStopwatch.Elapsed);
+        if (!proposerAttestationValid)
         {
             return ForkChoiceApplyResult.Rejected(
                 ForkChoiceRejectReason.InvalidAttestation,
@@ -455,6 +471,7 @@ public sealed class ForkChoiceStore
         {
             if (!aggregated.AggregationBits.TryToValidatorIndices(out _))
             {
+                LeanMetrics.RecordAttestationValidation("block", false, TimeSpan.Zero);
                 return ForkChoiceApplyResult.Rejected(
                     ForkChoiceRejectReason.InvalidAttestation,
                     "Aggregated attestation participants bitlist cannot be empty.",
@@ -462,16 +479,20 @@ public sealed class ForkChoiceStore
                     _headRoot);
             }
 
-            if (!TryValidateAttestationData(
-                    aggregated.Data,
-                    currentSlot,
-                    allowUnknownRoots: false,
-                    out var aggregatedReason,
-                    pendingHeadKey: blockKey,
-                    pendingHeadSlot: block.Slot.Value,
-                    pendingHeadParentKey: parentKey,
-                    requirePendingHeadAncestry: false,
-                    enforceChainTopology: false))
+            var aggregatedValidationStopwatch = Stopwatch.StartNew();
+            var aggregatedValid = TryValidateAttestationData(
+                aggregated.Data,
+                currentSlot,
+                allowUnknownRoots: false,
+                out var aggregatedReason,
+                pendingHeadKey: blockKey,
+                pendingHeadSlot: block.Slot.Value,
+                pendingHeadParentKey: parentKey,
+                requirePendingHeadAncestry: false,
+                enforceChainTopology: false);
+            aggregatedValidationStopwatch.Stop();
+            LeanMetrics.RecordAttestationValidation("block", aggregatedValid, aggregatedValidationStopwatch.Elapsed);
+            if (!aggregatedValid)
             {
                 return ForkChoiceApplyResult.Rejected(
                     ForkChoiceRejectReason.InvalidAttestation,
@@ -496,13 +517,37 @@ public sealed class ForkChoiceStore
         {
             postState = ToForkChoiceNodeState(chainPostState);
         }
-        else if (!_stateTransition.TryTransition(parentState, signedBlock, out postState, out var transitionReason))
+        else
         {
-            return ForkChoiceApplyResult.Rejected(
-                ForkChoiceRejectReason.StateTransitionFailed,
-                transitionReason,
-                _headSlot,
-                _headRoot);
+            var transitionStopwatch = Stopwatch.StartNew();
+            var transitioned = _stateTransition.TryTransition(parentState, signedBlock, out postState, out var transitionReason);
+            transitionStopwatch.Stop();
+            var slotsProcessed = block.Slot.Value > parentBlock.Slot.Value
+                ? block.Slot.Value - parentBlock.Slot.Value
+                : 0UL;
+            LeanMetrics.RecordStateTransition(
+                transitionStopwatch.Elapsed,
+                slotsProcessed,
+                TimeSpan.Zero,
+                transitionStopwatch.Elapsed,
+                (ulong)block.Body.Attestations.Count,
+                TimeSpan.Zero);
+            if (!transitioned)
+            {
+                LeanMetrics.RecordFinalizationResult(false);
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.StateTransitionFailed,
+                    transitionReason,
+                    _headSlot,
+                    _headRoot);
+            }
+
+            LeanMetrics.SetJustifiedSlot(postState.LatestJustified.Slot.Value);
+            LeanMetrics.SetFinalizedSlot(postState.LatestFinalized.Slot.Value);
+            if (postState.LatestFinalized.Slot.Value > parentState.LatestFinalized.Slot.Value)
+            {
+                LeanMetrics.RecordFinalizationResult(true);
+            }
         }
 
         _blocks[blockKey] = block;
@@ -794,13 +839,71 @@ public sealed class ForkChoiceStore
 
     private void UpdateHeadFromKnownAttestations()
     {
+        var previousHeadKey = _headKey;
         var newHeadKey = ComputeLmdGhostHead(ToKey(_latestJustified.Root), _latestKnownAttestations);
         if (_blocks.TryGetValue(newHeadKey, out var newHeadBlock))
         {
+            var reorgDepth = ComputeReorgDepth(previousHeadKey, newHeadKey);
+            LeanMetrics.RecordForkChoiceReorg(reorgDepth);
             _headKey = newHeadKey;
             _headSlot = newHeadBlock.Slot.Value;
             _headRoot = ToRoot(newHeadKey);
         }
+    }
+
+    private ulong ComputeReorgDepth(string oldHeadKey, string newHeadKey)
+    {
+        if (string.Equals(oldHeadKey, newHeadKey, StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
+        if (IsAncestorOrSelf(oldHeadKey, newHeadKey))
+        {
+            return 0;
+        }
+
+        var ancestorDepthFromOld = new Dictionary<string, ulong>(StringComparer.Ordinal);
+        var current = oldHeadKey;
+        ulong depth = 0;
+        var maxTraversal = _blocks.Count + 1;
+        while (depth < (ulong)maxTraversal && _blocks.TryGetValue(current, out var block))
+        {
+            if (!ancestorDepthFromOld.TryAdd(current, depth))
+            {
+                break;
+            }
+
+            var parentKey = ToKey(block.ParentRoot);
+            if (string.Equals(parentKey, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            current = parentKey;
+            depth++;
+        }
+
+        current = newHeadKey;
+        depth = 0;
+        while (depth < (ulong)maxTraversal && _blocks.TryGetValue(current, out var block))
+        {
+            if (ancestorDepthFromOld.TryGetValue(current, out var oldDepth))
+            {
+                return oldDepth;
+            }
+
+            var parentKey = ToKey(block.ParentRoot);
+            if (string.Equals(parentKey, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            current = parentKey;
+            depth++;
+        }
+
+        return 0;
     }
 
     private bool TryVerifyGossipAttestationSignature(SignedAttestation signedAttestation, out string reason)
@@ -840,7 +943,11 @@ public sealed class ForkChoiceStore
         var messageRoot = signedAttestation.Message.HashTreeRoot();
         try
         {
-            if (!_leanSig.Verify(publicKey, epoch, messageRoot, signedAttestation.Signature.Bytes))
+            var verificationStopwatch = Stopwatch.StartNew();
+            var verified = _leanSig.Verify(publicKey, epoch, messageRoot, signedAttestation.Signature.Bytes);
+            verificationStopwatch.Stop();
+            LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
+            if (!verified)
             {
                 reason = "Attestation signature verification failed.";
                 return false;
@@ -894,11 +1001,15 @@ public sealed class ForkChoiceStore
         var proposerMessageRoot = signedBlock.Message.ProposerAttestation.Data.HashTreeRoot();
         try
         {
-            if (!_leanSig.Verify(
+            var verificationStopwatch = Stopwatch.StartNew();
+            var proposerVerified = _leanSig.Verify(
                     proposerPublicKey,
                     proposerEpoch,
                     proposerMessageRoot,
-                    signedBlock.Signature.ProposerSignature.Bytes))
+                    signedBlock.Signature.ProposerSignature.Bytes);
+            verificationStopwatch.Stop();
+            LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
+            if (!proposerVerified)
             {
                 reason = "Proposer signature verification failed.";
                 return false;
@@ -950,7 +1061,11 @@ public sealed class ForkChoiceStore
             var messageRoot = aggregated.Data.HashTreeRoot();
             try
             {
-                if (!_leanMultiSig.VerifyAggregate(publicKeys, messageRoot, proof.ProofData, epoch))
+                var aggregateVerificationStopwatch = Stopwatch.StartNew();
+                var aggregateValid = _leanMultiSig.VerifyAggregate(publicKeys, messageRoot, proof.ProofData, epoch);
+                aggregateVerificationStopwatch.Stop();
+                LeanMetrics.RecordPqAggregatedSignatureVerification(aggregateValid, aggregateVerificationStopwatch.Elapsed);
+                if (!aggregateValid)
                 {
                     reason = $"Aggregated signature verification failed for attestation index {i}.";
                     return false;

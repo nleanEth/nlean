@@ -179,6 +179,58 @@ public sealed class ForkChoiceStoreTests
     }
 
     [Test]
+    public void InitializeHead_WithChainSnapshot_RestoresNonZeroHeadTransitionContext()
+    {
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var original = new ForkChoiceStore(new ForkChoiceStateTransition(config), config);
+        var genesisRoot = original.HeadRoot;
+        var blockOne = CreateSignedBlock(1, genesisRoot, parentSlot: 0, sourceRoot: genesisRoot, sourceSlot: 0);
+        var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+        Assert.That(original.ApplyBlock(blockOne, blockOneRoot, currentSlot: 1).Accepted, Is.True);
+
+        var blockTwo = CreateSignedBlock(
+            blockSlot: 2,
+            parentRoot: blockOneRoot,
+            parentSlot: 1,
+            sourceRoot: genesisRoot,
+            sourceSlot: 0,
+            targetRoot: blockOneRoot,
+            targetSlot: 1,
+            proposerIndex: 1,
+            proposerValidatorId: 1);
+        var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+        Assert.That(original.ApplyBlock(blockTwo, blockTwoRoot, currentSlot: 2).Accepted, Is.True);
+
+        var persistedHeadState = original.CreateHeadState();
+        Assert.That(original.TryGetHeadChainState(out var persistedHeadChainState), Is.True);
+        Assert.That(persistedHeadChainState, Is.Not.Null);
+
+        var candidate = CreateSignedBlock(
+            blockSlot: 3,
+            parentRoot: blockTwoRoot,
+            parentSlot: 2,
+            sourceRoot: genesisRoot,
+            sourceSlot: 0,
+            targetRoot: blockOneRoot,
+            targetSlot: 1,
+            headRoot: blockTwoRoot,
+            headSlot: 2,
+            proposerIndex: 2,
+            proposerValidatorId: 2);
+
+        var withoutSnapshot = new ForkChoiceStore(new ForkChoiceStateTransition(config), config);
+        withoutSnapshot.InitializeHead(persistedHeadState);
+        var computedWithoutSnapshot = withoutSnapshot.TryComputeBlockStateRoot(candidate.Message.Block, out _, out var reasonWithoutSnapshot);
+        Assert.That(computedWithoutSnapshot, Is.False);
+        Assert.That(reasonWithoutSnapshot, Does.Contain("Missing chain state snapshot"));
+
+        var restored = new ForkChoiceStore(new ForkChoiceStateTransition(config), config);
+        restored.InitializeHead(persistedHeadState, persistedHeadChainState);
+        var computedWithSnapshot = restored.TryComputeBlockStateRoot(candidate.Message.Block, out _, out var reasonWithSnapshot);
+        Assert.That(computedWithSnapshot, Is.True, reasonWithSnapshot);
+    }
+
+    [Test]
     public void InitializeHead_RestoresCheckpointsAndSafeTarget()
     {
         var store = new ForkChoiceStore();

@@ -14,19 +14,13 @@ public sealed class Libp2pNetworkService : INetworkService
     private static readonly TimeSpan StatusProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StatusProbeMinInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PubsubDialTimeout = TimeSpan.FromSeconds(2);
-    private const string BlocksByRootHit = "hit";
-    private const string BlocksByRootMiss = "miss";
-    private const string BlocksByRootAttemptSuccess = "success";
-    private const string BlocksByRootAttemptDialFailure = "dial_failure";
-    private const string BlocksByRootAttemptRpcFailure = "rpc_failure";
-    private const string BlocksByRootAttemptEmptyResponse = "empty_response";
-    private const string BlocksByRootFailurePeerNotStarted = "peer_not_started";
-    private const string BlocksByRootFailureInvalidRootLength = "invalid_root_length";
-    private const string BlocksByRootFailureNoCandidates = "no_candidates";
-    private const string BlocksByRootFailureInvalidBootstrapAddress = "invalid_bootstrap_address";
-    private const string BlocksByRootFailureDialError = "dial_error";
-    private const string BlocksByRootFailureRpcError = "rpc_error";
-    private const string BlocksByRootFailureEmptyResponse = "empty_response";
+    private const string ConnectionDirectionInbound = "inbound";
+    private const string ConnectionDirectionOutbound = "outbound";
+    private const string ConnectionResultSuccess = "success";
+    private const string ConnectionResultTimeout = "timeout";
+    private const string ConnectionResultError = "error";
+    private const string DisconnectionReasonLocalClose = "local_close";
+    private const string DisconnectionReasonError = "error";
 
     private readonly ILogger<Libp2pNetworkService> _logger;
     private readonly IPeerFactory _peerFactory;
@@ -43,6 +37,8 @@ public sealed class Libp2pNetworkService : INetworkService
     private readonly IStatusRpcRouter _statusRpcRouter;
     private readonly object _statusProbeLock = new();
     private readonly Dictionary<string, DateTimeOffset> _lastStatusProbeAtUtc = new(StringComparer.Ordinal);
+    private readonly object _connectedPeersLock = new();
+    private readonly HashSet<string> _connectedPeers = new(StringComparer.Ordinal);
     private readonly object _bootstrapSessionsLock = new();
     private readonly List<ISession> _bootstrapSessions = new();
     private readonly HashSet<string> _connectedBootstrapPeers = new(StringComparer.Ordinal);
@@ -69,6 +65,11 @@ public sealed class Libp2pNetworkService : INetworkService
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _bootstrapReconnectTriggeredAfterSubscribe, 0);
+        lock (_connectedPeersLock)
+        {
+            _connectedPeers.Clear();
+            LeanMetrics.SetConnectedPeers(0);
+        }
 
         var identity = Libp2pIdentityFactory.Create(_config);
         _logger.LogInformation("libp2p identity initialized with peer id {PeerId}", identity.PeerId);
@@ -147,6 +148,11 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             _lastStatusProbeAtUtc.Clear();
         }
+        lock (_connectedPeersLock)
+        {
+            _connectedPeers.Clear();
+            LeanMetrics.SetConnectedPeers(0);
+        }
 
         if (_peer is not null && _onConnectedHandler is not null)
         {
@@ -194,12 +200,15 @@ public sealed class Libp2pNetworkService : INetworkService
 
         foreach (var session in sessions)
         {
+            var remotePeer = session.RemoteAddress.ToString();
             try
             {
                 await session.DisconnectAsync();
+                RecordPeerDisconnected(remotePeer, ConnectionDirectionOutbound, DisconnectionReasonLocalClose);
             }
             catch (Exception ex)
             {
+                RecordPeerDisconnected(remotePeer, ConnectionDirectionOutbound, DisconnectionReasonError);
                 _logger.LogDebug(ex, "Failed to disconnect bootstrap session cleanly.");
             }
         }
@@ -287,15 +296,11 @@ public sealed class Libp2pNetworkService : INetworkService
     {
         if (_peer is null)
         {
-            RecordBlocksByRootFailure(BlocksByRootFailurePeerNotStarted);
-            RecordBlocksByRootRequest(BlocksByRootMiss);
             return null;
         }
 
         if (blockRoot.Length != BlockRootLength)
         {
-            RecordBlocksByRootFailure(BlocksByRootFailureInvalidRootLength);
-            RecordBlocksByRootRequest(BlocksByRootMiss);
             return null;
         }
 
@@ -306,8 +311,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, Reason=no-candidates.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none");
-            RecordBlocksByRootFailure(BlocksByRootFailureNoCandidates);
-            RecordBlocksByRootRequest(BlocksByRootMiss);
             return null;
         }
 
@@ -318,8 +321,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, Reason=no-request-order.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none");
-            RecordBlocksByRootFailure(BlocksByRootFailureNoCandidates);
-            RecordBlocksByRootRequest(BlocksByRootMiss);
             return null;
         }
 
@@ -344,6 +345,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 cancellationToken.ThrowIfCancellationRequested();
                 session = await _peer.DialAsync(address, cancellationToken);
                 _blocksByRootPeerSelector.MarkConnected(peerKey);
+                RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
             }
             catch (OperationCanceledException)
             {
@@ -355,8 +357,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 dialFailures++;
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
-                RecordBlocksByRootAttempt(BlocksByRootAttemptDialFailure, stopwatch.Elapsed);
-                RecordBlocksByRootFailure(BlocksByRootFailureDialError);
+                RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
                 _logger.LogDebug(ex, "Failed dialing peer {Address} for blocks-by-root request.", peerKey);
                 continue;
             }
@@ -371,8 +372,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 {
                     stopwatch.Stop();
                     _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Success, stopwatch.Elapsed);
-                    RecordBlocksByRootAttempt(BlocksByRootAttemptSuccess, stopwatch.Elapsed);
-                    RecordBlocksByRootRequest(BlocksByRootHit);
                     _logger.LogInformation(
                         "blocks-by-root hit. Root={Root}, PreferredPeer={PreferredPeer}, Peer={Peer}, PayloadBytes={PayloadBytes}, Attempts={Attempts}.",
                         Convert.ToHexString(blockRoot.Span),
@@ -386,8 +385,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 stopwatch.Stop();
                 emptyResponses++;
                 _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.EmptyResponse, stopwatch.Elapsed);
-                RecordBlocksByRootAttempt(BlocksByRootAttemptEmptyResponse, stopwatch.Elapsed);
-                RecordBlocksByRootFailure(BlocksByRootFailureEmptyResponse);
             }
             catch (OperationCanceledException)
             {
@@ -398,20 +395,21 @@ public sealed class Libp2pNetworkService : INetworkService
                 stopwatch.Stop();
                 rpcFailures++;
                 _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
-                RecordBlocksByRootAttempt(BlocksByRootAttemptRpcFailure, stopwatch.Elapsed);
-                RecordBlocksByRootFailure(BlocksByRootFailureRpcError);
                 _logger.LogDebug(ex, "Failed blocks-by-root request against peer {Address}.", peerKey);
             }
             finally
             {
                 if (session is not null)
                 {
+                    var remotePeer = session.RemoteAddress.ToString();
                     try
                     {
                         await session.DisconnectAsync();
+                        RecordPeerDisconnected(remotePeer, ConnectionDirectionOutbound, DisconnectionReasonLocalClose);
                     }
                     catch
                     {
+                        RecordPeerDisconnected(remotePeer, ConnectionDirectionOutbound, DisconnectionReasonError);
                         // Ignore disconnect errors.
                     }
                 }
@@ -424,7 +422,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, Reason=not-attempted.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none");
-            RecordBlocksByRootFailure(BlocksByRootFailureNoCandidates);
         }
         else
         {
@@ -439,7 +436,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 candidateAddresses.Count);
         }
 
-        RecordBlocksByRootRequest(BlocksByRootMiss);
         return null;
     }
 
@@ -543,7 +539,6 @@ public sealed class Libp2pNetworkService : INetworkService
             }
             catch (Exception ex)
             {
-                RecordBlocksByRootFailure(BlocksByRootFailureInvalidBootstrapAddress);
                 _logger.LogWarning(ex, "Skipping invalid bootstrap peer address: {Address}", bootstrapPeer);
             }
         }
@@ -583,16 +578,25 @@ public sealed class Libp2pNetworkService : INetworkService
                     CancellationToken.None);
                 RegisterBlocksByRootCandidate(session.RemoteAddress.ToString(), session.RemoteAddress);
                 _blocksByRootPeerSelector.MarkConnected(peerKey);
+                RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
                 lock (_bootstrapSessionsLock)
                 {
                     _bootstrapSessions.Add(session);
                 }
                 _logger.LogInformation("Connected to bootstrap peer {Address}", peerKey);
             }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
+                ReleaseBootstrapPeerConnection(peerKey);
+                RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
+                _logger.LogWarning(ex, "Timed out connecting to bootstrap peer {Address}", peerKey);
+            }
             catch (Exception ex)
             {
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
+                RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
                 _logger.LogWarning(ex, "Failed to connect to bootstrap peer {Address}", peerKey);
             }
         }
@@ -695,6 +699,7 @@ public sealed class Libp2pNetworkService : INetworkService
         var peerKey = remoteAddress.ToString();
         RegisterBlocksByRootCandidate(peerKey, remoteAddress);
         _blocksByRootPeerSelector.MarkConnected(peerKey);
+        RecordPeerConnected(peerKey, ConnectionDirectionInbound);
         _ = Task.Run(
             async () =>
             {
@@ -726,10 +731,12 @@ public sealed class Libp2pNetworkService : INetworkService
             using var dialTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             dialTimeoutCts.CancelAfter(StatusProbeTimeout);
             var session = await _peer.DialAsync(address, dialTimeoutCts.Token);
+            RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
             await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: false, forceProbe: true);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            RecordPeerConnectionFailure(ConnectionDirectionOutbound, ConnectionResultTimeout);
             _logger.LogDebug("Timed out proactive status probe dial for peer {Peer}.", peerKey);
         }
         catch (OperationCanceledException)
@@ -738,6 +745,7 @@ public sealed class Libp2pNetworkService : INetworkService
         }
         catch (Exception ex)
         {
+            RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
             _logger.LogDebug(ex, "Failed proactive status probe dial for peer {Peer}.", peerKey);
         }
     }
@@ -788,12 +796,15 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             if (disconnectAfterProbe)
             {
+                var remotePeer = session.RemoteAddress.ToString();
                 try
                 {
                     await session.DisconnectAsync();
+                    RecordPeerDisconnected(remotePeer, ConnectionDirectionOutbound, DisconnectionReasonLocalClose);
                 }
                 catch
                 {
+                    RecordPeerDisconnected(remotePeer, ConnectionDirectionOutbound, DisconnectionReasonError);
                     // Ignore disconnect errors.
                 }
             }
@@ -935,20 +946,48 @@ public sealed class Libp2pNetworkService : INetworkService
         return true;
     }
 
-    private static void RecordBlocksByRootRequest(string result)
+    private void RecordPeerConnected(string peerKey, string direction)
     {
-        LeanMetrics.SyncBlocksByRootRequestsTotal.WithLabels(result).Inc();
+        if (!TryNormalizePeerKey(peerKey, out var normalizedPeerKey))
+        {
+            return;
+        }
+
+        var added = false;
+        lock (_connectedPeersLock)
+        {
+            added = _connectedPeers.Add(normalizedPeerKey);
+            LeanMetrics.SetConnectedPeers(_connectedPeers.Count);
+        }
+
+        if (added)
+        {
+            LeanMetrics.PeerConnectionEventsTotal.WithLabels(direction, ConnectionResultSuccess).Inc();
+        }
     }
 
-    private static void RecordBlocksByRootFailure(string reason)
+    private static void RecordPeerConnectionFailure(string direction, string result)
     {
-        LeanMetrics.SyncBlocksByRootFailuresTotal.WithLabels(reason).Inc();
+        LeanMetrics.PeerConnectionEventsTotal.WithLabels(direction, result).Inc();
     }
 
-    private static void RecordBlocksByRootAttempt(string result, TimeSpan latency)
+    private void RecordPeerDisconnected(string peerKey, string direction, string reason)
     {
-        LeanMetrics.SyncBlocksByRootAttemptsTotal.WithLabels(result).Inc();
-        LeanMetrics.SyncBlocksByRootAttemptLatencySeconds.WithLabels(result).Observe(Math.Max(0d, latency.TotalSeconds));
+        if (TryNormalizePeerKey(peerKey, out var normalizedPeerKey))
+        {
+            lock (_connectedPeersLock)
+            {
+                _connectedPeers.Remove(normalizedPeerKey);
+                LeanMetrics.SetConnectedPeers(_connectedPeers.Count);
+            }
+        }
+
+        LeanMetrics.PeerDisconnectionEventsTotal.WithLabels(direction, reason).Inc();
+    }
+
+    private static string MapConnectionFailureResult(Exception exception)
+    {
+        return exception is OperationCanceledException ? ConnectionResultTimeout : ConnectionResultError;
     }
 
     private static byte[] EncodeGossipPayload(ReadOnlyMemory<byte> payload)

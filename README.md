@@ -18,17 +18,43 @@ This repo contains a .NET 10+ Lean consensus client scaffold with Rust FFI bindi
 ## lean-quickstart interop
 
 ```bash
-# One-line local interop run (nlean + zeam + ream) with pass/fail checks
-./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart
+# Initialize quickstart submodule once
+git submodule update --init --recursive vendor/lean-quickstart
+
+# Wrapper script (kept) with pass/fail checks
+./scripts/interop/run-lean-quickstart-devnet2.sh
+# Override quickstart checkout path if needed:
+# ./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart
+# Run a specific topology (example: nlean + ethlambda):
+# ./scripts/interop/run-lean-quickstart-devnet2.sh --nodes nlean_0,ethlambda_0
 # Disable sudo shim if your quickstart setup requires real sudo:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart --no-sudo-shim
+# ./scripts/interop/run-lean-quickstart-devnet2.sh --no-sudo-shim
 # Override gossip network name if needed:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart --network-name devnet2
+# ./scripts/interop/run-lean-quickstart-devnet2.sh --network-name devnet2
 # Keep network running after checks:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart --keep-running
+# ./scripts/interop/run-lean-quickstart-devnet2.sh --keep-running
 # Skip checks and only boot the network:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart --skip-checks
+# ./scripts/interop/run-lean-quickstart-devnet2.sh --skip-checks
 ```
+
+Direct `spin-node.sh` interop (nlean + ethlambda):
+
+```bash
+# Install nlean client command into quickstart
+install -m 755 ./client-cmds/nlean-cmd.sh ./vendor/lean-quickstart/client-cmds/nlean-cmd.sh
+
+# Start nlean + ethlambda from quickstart
+cd ./vendor/lean-quickstart
+NETWORK_DIR=local-devnet-nlean-ethlambda \
+NLEAN_REPO="$(cd ../.. && pwd)" \
+NLEAN_QUICKSTART_SETUP=docker \
+NLEAN_DOCKER_IMAGE=nlean-local:devnet2 \
+NLEAN_NETWORK_NAME=devnet0 \
+NLEAN_QUICKSTART_NODES=nlean_0,ethlambda_0 \
+./spin-node.sh --node nlean_0,ethlambda_0 --generateGenesis --metrics
+```
+
+`local-devnet-nlean-ethlambda` is intended for local interop iteration under `vendor/lean-quickstart`.
 
 Notes:
 - On macOS, if `--nlean-setup binary` is used with non-`nlean_*` peers, the script auto-switches nlean to docker mode to avoid QUIC handshake timeouts in mixed host/docker runs.
@@ -40,10 +66,9 @@ What this does:
 - uses `config/validator-config.quickstart.yaml` as the devnet validator layout
 - builds patched pubsub package, publishes `Lean.Client`, builds Rust FFI native library, and starts quickstart via `spin-node.sh`
 - maps consensus scenarios to interop checks on nlean metrics:
-  - from-genesis progress: `lean_consensus_head_slot` reaches target (`--min-head-slot`, default `3`)
-  - finalize progression: `lean_consensus_finalized_slot` reaches target (`--min-finalized-slot`, default `0`; raise it when running finalized-gated interop)
+  - from-genesis progress: `lean_head_slot` reaches target (`--min-head-slot`, default `3`)
+  - finalize progression: `lean_latest_finalized_slot` reaches target (`--min-finalized-slot`, default `0`; raise it when running finalized-gated interop)
   - multi-node consistency: min/max finalized slot across selected `nlean_*` jobs converge
-  - optional recovery signal: `--require-blocks-by-root` requires `lean_sync_blocks_by_root_requests_total > 0`
 
 ## Crypto binding tests
 

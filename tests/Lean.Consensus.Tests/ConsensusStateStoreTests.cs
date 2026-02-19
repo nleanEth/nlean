@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using Lean.Consensus;
+using Lean.Consensus.Types;
 using Lean.Storage;
 using NUnit.Framework;
 
@@ -110,6 +111,57 @@ public sealed class ConsensusStateStoreTests
         Assert.That(reloaded.LatestFinalizedRoot, Is.EqualTo(expected.LatestFinalizedRoot));
         Assert.That(reloaded.SafeTargetSlot, Is.EqualTo(expected.SafeTargetSlot));
         Assert.That(reloaded.SafeTargetRoot, Is.EqualTo(expected.SafeTargetRoot));
+    }
+
+    [Test]
+    public void SaveLoad_RoundTripsHeadChainStateSnapshot()
+    {
+        var keyValueStore = new InMemoryKeyValueStore();
+        var store = new ConsensusStateStore(keyValueStore);
+        var headRoot = Enumerable.Repeat((byte)0xA1, 32).ToArray();
+        var state = new ConsensusHeadState(7, headRoot);
+        var chainState = new State(
+            new Config(123),
+            new Slot(7),
+            new BlockHeader(
+                new Slot(7),
+                1,
+                new Bytes32(Enumerable.Repeat((byte)0x10, 32).ToArray()),
+                new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray()),
+                new Bytes32(Enumerable.Repeat((byte)0x12, 32).ToArray())),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x21, 32).ToArray()), new Slot(6)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray()), new Slot(5)),
+            new[]
+            {
+                new Bytes32(Enumerable.Repeat((byte)0x31, 32).ToArray()),
+                new Bytes32(Enumerable.Repeat((byte)0x32, 32).ToArray())
+            },
+            new[] { true, false, true },
+            new[]
+            {
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), 0),
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), 1)
+            },
+            new[]
+            {
+                new Bytes32(Enumerable.Repeat((byte)0x51, 32).ToArray())
+            },
+            new[] { true, false });
+
+        store.Save(state, chainState);
+        var loaded = store.TryLoad(out var reloadedState, out var reloadedChainState);
+
+        Assert.That(loaded, Is.True);
+        Assert.That(reloadedState, Is.Not.Null);
+        Assert.That(reloadedState!.HeadSlot, Is.EqualTo(state.HeadSlot));
+        Assert.That(reloadedChainState, Is.Not.Null);
+        Assert.That(reloadedChainState!.Config.GenesisTime, Is.EqualTo(chainState.Config.GenesisTime));
+        Assert.That(reloadedChainState.Slot.Value, Is.EqualTo(chainState.Slot.Value));
+        Assert.That(reloadedChainState.LatestBlockHeader.ProposerIndex, Is.EqualTo(chainState.LatestBlockHeader.ProposerIndex));
+        Assert.That(reloadedChainState.HistoricalBlockHashes.Count, Is.EqualTo(chainState.HistoricalBlockHashes.Count));
+        Assert.That(reloadedChainState.Validators.Count, Is.EqualTo(chainState.Validators.Count));
+        Assert.That(reloadedChainState.JustifiedSlots, Is.EqualTo(chainState.JustifiedSlots));
+        Assert.That(reloadedChainState.JustificationsValidators, Is.EqualTo(chainState.JustificationsValidators));
     }
 
     [Test]
