@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Lean.Consensus.Types;
 
@@ -40,16 +41,7 @@ public sealed class AggregationBits
 
     public IReadOnlyList<ulong> ToValidatorIndices()
     {
-        var indices = new List<ulong>();
-        for (var i = 0; i < _bits.Length; i++)
-        {
-            if (_bits[i])
-            {
-                indices.Add((ulong)i);
-            }
-        }
-
-        if (indices.Count == 0)
+        if (!TryToValidatorIndices(out var indices))
         {
             throw new InvalidOperationException("Aggregated attestation must reference at least one validator.");
         }
@@ -57,8 +49,29 @@ public sealed class AggregationBits
         return indices;
     }
 
+    public bool TryToValidatorIndices([NotNullWhen(true)] out IReadOnlyList<ulong>? indices)
+    {
+        var values = new List<ulong>();
+        for (var i = 0; i < _bits.Length; i++)
+        {
+            if (_bits[i])
+            {
+                values.Add((ulong)i);
+            }
+        }
+
+        if (values.Count == 0)
+        {
+            indices = null;
+            return false;
+        }
+
+        indices = values;
+        return true;
+    }
+
     public byte[] HashTreeRoot()
     {
-        return SszInterop.HashBitlist(_bits);
+        return SszInterop.HashBitlist(_bits, SszEncoding.ValidatorRegistryLimit);
     }
 }

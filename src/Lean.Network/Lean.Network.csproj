@@ -14,7 +14,7 @@
     <PackageReference Include="Nethermind.Libp2p.Protocols.Noise" />
     <PackageReference Include="Nethermind.Libp2p.Protocols.Yamux" />
     <PackageReference Include="Nethermind.Libp2p.Protocols.Identify" />
-    <PackageReference Include="Nethermind.Libp2p.Protocols.RequestResponse" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Snappier" />
   </ItemGroup>
 </Project>

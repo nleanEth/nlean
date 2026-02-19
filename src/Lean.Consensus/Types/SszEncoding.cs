@@ -14,7 +14,7 @@ public static class SszEncoding
     public const int RandomnessLength = Randomness.Length * FpLength;
     public const int HashDigestVectorLength = HashDigestVector.Length * FpLength;
     public const int ValidatorLength = Bytes52Length + UInt64Length;
-    public const int NodeListLimit = 1 << 17;
+    public const int NodeListLimit = 1 << 18;
     public const int ValidatorRegistryLimit = 1 << 12;
     public const int CheckpointLength = Bytes32Length + UInt64Length;
     public const int AttestationDataLength = UInt64Length + (CheckpointLength * 3);

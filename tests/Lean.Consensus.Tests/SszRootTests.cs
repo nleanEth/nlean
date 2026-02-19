@@ -48,9 +48,14 @@ public sealed class SszRootTests
 
         var expected = HashList(
             new[] { att1.HashTreeRoot(), att2.HashTreeRoot() },
-            maxLength: 2);
+            maxLength: SszEncoding.ValidatorRegistryLimit);
 
         Assert.That(body.HashTreeRoot(), Is.EqualTo(expected));
+
+        var wrongLimit = HashList(
+            new[] { att1.HashTreeRoot(), att2.HashTreeRoot() },
+            maxLength: 2);
+        Assert.That(body.HashTreeRoot(), Is.Not.EqualTo(wrongLimit));
     }
 
     [Test]
@@ -59,20 +64,20 @@ public sealed class SszRootTests
         var bits = new[] { true, false, true, true, false };
         var aggregation = new AggregationBits(bits);
 
-        var expected = HashBitlist(bits);
+        var expected = HashBitlist(bits, SszEncoding.ValidatorRegistryLimit);
+        var wrongLimit = HashBitlist(bits, (ulong)bits.Length);
 
         Assert.That(aggregation.HashTreeRoot(), Is.EqualTo(expected));
+        Assert.That(aggregation.HashTreeRoot(), Is.Not.EqualTo(wrongLimit));
     }
 
-    [TestCase(new[] { true, true, false, true, false, true, false, false }, "e3c680050925d8be5b3c4f4c2b5619010db0015f1bfed7643c0b4fc3700d2d15")]
-    [TestCase(new[] { false, true, false, true }, "62a896c7f7f5be6f6d17063247bf1d2cd0410dbd1fdc1400c097d4e09574cca2")]
-    [TestCase(new[] { false, true, false }, "0094579cfc7b716038d416a311465309bea202baa922b224a7b08f01599642fb")]
-    public void AggregationBitsRootMatchesLeanSpecVectors(bool[] bits, string expectedRootHex)
+    [TestCase(new[] { true, true, false, true, false, true, false, false })]
+    [TestCase(new[] { false, true, false, true })]
+    [TestCase(new[] { false, true, false })]
+    public void AggregationBitsRootUsesValidatorRegistryLimit(bool[] bits)
     {
         var aggregation = new AggregationBits(bits);
-
-        var expected = Convert.FromHexString(expectedRootHex);
-
+        var expected = HashBitlist(bits, SszEncoding.ValidatorRegistryLimit);
         Assert.That(aggregation.HashTreeRoot(), Is.EqualTo(expected));
     }
 
@@ -103,7 +108,7 @@ public sealed class SszRootTests
         var signatures = new BlockSignatures(proofs, signature);
 
         var proofRoots = proofs.Select(p => p.HashTreeRoot()).ToList();
-        var attestationRoot = HashList(proofRoots, (ulong)proofs.Count);
+        var attestationRoot = HashList(proofRoots, SszEncoding.ValidatorRegistryLimit);
         var signatureRoot = signature.HashTreeRoot();
 
         var expected = HashContainer(
@@ -213,10 +218,10 @@ public sealed class SszRootTests
         return ToBytes(root);
     }
 
-    private static byte[] HashBitlist(bool[] bits)
+    private static byte[] HashBitlist(bool[] bits, ulong maxLength)
     {
         var bitArray = new BitArray(bits);
-        Merkle.Merkleize(out UInt256 root, bitArray, (ulong)bits.Length);
+        Merkle.Merkleize(out UInt256 root, bitArray, maxLength);
         return ToBytes(root);
     }
 

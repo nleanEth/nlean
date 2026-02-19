@@ -1,0 +1,97 @@
+diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/Libp2p.Protocols.Pubsub.csproj b/src/libp2p/Libp2p.Protocols.Pubsub/Libp2p.Protocols.Pubsub.csproj
+index a887926..9d04a0f 100644
+--- a/src/libp2p/Libp2p.Protocols.Pubsub/Libp2p.Protocols.Pubsub.csproj
++++ b/src/libp2p/Libp2p.Protocols.Pubsub/Libp2p.Protocols.Pubsub.csproj
+@@ -27,6 +27,8 @@
+   <ItemGroup>
+     <PackageReference Include="Google.Protobuf" />
+     <PackageReference Include="BouncyCastle.Cryptography" />
++    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
++    <PackageReference Include="Nethermind.Multiformats.Address" />
+     <PackageReference Include="Microsoft.SourceLink.GitHub">
+       <PrivateAssets>all</PrivateAssets>
+       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
+index 53840a6..47115cf 100644
+--- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
++++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
+@@ -128,7 +128,13 @@ public partial class PubsubRouter
+         ulong seqNo = this.seqNo++;
+         Span<byte> seqNoBytes = stackalloc byte[8];
+         BinaryPrimitives.WriteUInt64BigEndian(seqNoBytes, seqNo);
+-        Rpc rpc = new Rpc().WithMessages(topicId, seqNo, localPeer!.Identity.PeerId.Bytes, message, localPeer.Identity);
++        Rpc rpc = new Rpc().WithMessages(
++            topicId,
++            seqNo,
++            localPeer!.Identity.PeerId.Bytes,
++            message,
++            localPeer.Identity,
++            _settings.DefaultSignaturePolicy);
+ 
+         foreach (PeerId peerId in fPeers[topicId])
+         {
+diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
+index 4e732c4..0942f2a 100644
+--- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
++++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
+@@ -225,7 +225,13 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+             if (!peerState.ContainsKey(session.RemoteAddress.Get<P2P>().ToString()))
+             {
+                 string[]? protocols = _peerStore.GetPeerInfo(session.RemoteAddress.GetPeerId()!)?.SupportedProtocols ?? [];
+-                if (protocols.Contains(GossipsubProtocolVersionV12))
++                if (protocols.Length == 0)
++                {
++                    // Identify protocol and protocol list propagation are racy on fresh peers.
++                    // Optimistically dial the latest gossipsub version and let multistream negotiation decide.
++                    await session.DialAsync<GossipsubProtocolV12>(token);
++                }
++                else if (protocols.Contains(GossipsubProtocolVersionV12))
+                 {
+                     await session.DialAsync<GossipsubProtocolV12>(token);
+                 }
+diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs b/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
+index c2a5a90..3904a85 100644
+--- a/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
++++ b/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
+@@ -16,21 +16,32 @@ internal static class RpcExtensions
+ {
+     private const string SignaturePayloadPrefix = "libp2p-pubsub:";
+ 
+-    public static Rpc WithMessages(this Rpc rpc, string topic, ulong seqNo, byte[] from, byte[] message, Identity identity)
++    public static Rpc WithMessages(
++        this Rpc rpc,
++        string topic,
++        ulong seqNo,
++        byte[] from,
++        byte[] message,
++        Identity identity,
++        PubsubSettings.SignaturePolicy signaturePolicy)
+     {
+         Message msg = new();
+         msg.Topic = topic;
+-        Span<byte> seqNoBytes = new byte[8];
+-        BinaryPrimitives.WriteUInt64BigEndian(seqNoBytes, seqNo);
+-        msg.Seqno = ByteString.CopyFrom(seqNoBytes);
+-        msg.From = ByteString.CopyFrom(from);
+         msg.Data = ByteString.CopyFrom(message);
+ 
+-        byte[] signingContent = Encoding.UTF8.GetBytes(SignaturePayloadPrefix)
+-            .Concat(msg.ToByteArray())
+-            .ToArray();
++        if (signaturePolicy is PubsubSettings.SignaturePolicy.StrictSign)
++        {
++            Span<byte> seqNoBytes = new byte[8];
++            BinaryPrimitives.WriteUInt64BigEndian(seqNoBytes, seqNo);
++            msg.Seqno = ByteString.CopyFrom(seqNoBytes);
++            msg.From = ByteString.CopyFrom(from);
+ 
+-        msg.Signature = ByteString.CopyFrom(identity.Sign(signingContent));
++            byte[] signingContent = Encoding.UTF8.GetBytes(SignaturePayloadPrefix)
++                .Concat(msg.ToByteArray())
++                .ToArray();
++
++            msg.Signature = ByteString.CopyFrom(identity.Sign(signingContent));
++        }
+         rpc.Publish.Add(msg);
+         return rpc;
+     }

@@ -22,9 +22,14 @@ public sealed class PrometheusMetricsService : IMetricsService
             return Task.CompletedTask;
         }
 
-        _server = new MetricServer(_config.Host, _config.Port);
+        var listenHost = NormalizeMetricServerHost(_config.Host);
+        _server = new MetricServer(listenHost, _config.Port);
         _server.Start();
-        _logger.LogInformation("Metrics server listening on {Host}:{Port}", _config.Host, _config.Port);
+        _logger.LogInformation(
+            "Metrics server listening on {Host}:{Port} (configured host: {ConfiguredHost})",
+            listenHost,
+            _config.Port,
+            _config.Host);
         return Task.CompletedTask;
     }
 
@@ -33,5 +38,22 @@ public sealed class PrometheusMetricsService : IMetricsService
         _server?.Stop();
         _server = null;
         return Task.CompletedTask;
+    }
+
+    private static string NormalizeMetricServerHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return "+";
+        }
+
+        var trimmed = host.Trim();
+        return trimmed switch
+        {
+            "0.0.0.0" => "+",
+            "::" => "+",
+            "[::]" => "+",
+            _ => trimmed,
+        };
     }
 }

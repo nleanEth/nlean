@@ -12,7 +12,7 @@ validators:
     metricsPort: 18081
     count: 1
 
-  - name: "zeam_0"
+  - name: "nlean_1"
     privkey: "bdf953adc161873ba026330c56450453f582e3c4ee6cb713644794bcfdd85fe5"
     enrFields:
       ip: "127.0.0.1"

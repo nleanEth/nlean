@@ -50,7 +50,14 @@ public sealed class NodeService : BackgroundService
             }
         }
 
-        await _metricsService.StartAsync(stoppingToken);
+        try
+        {
+            await _metricsService.StartAsync(stoppingToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Metrics service failed to start; continuing without metrics.");
+        }
         await _networkService.StartAsync(stoppingToken);
         await _consensusService.StartAsync(stoppingToken);
 

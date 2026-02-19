@@ -9,7 +9,7 @@ namespace Lean.Node.Configuration;
 public sealed class NodeOptions
 {
     public string DataDir { get; set; } = "data";
-    public string Network { get; set; } = "devnet2";
+    public string Network { get; set; } = "devnet0";
     public string? Libp2pConfigPath { get; set; }
     public string? ValidatorConfigPath { get; set; }
     public string? NodeName { get; set; }
@@ -101,8 +101,10 @@ public sealed class ValidatorRuntimeConfig
     public string? KeystorePath { get; set; }
     public string? PublicKeyHex { get; set; }
     public string? SecretKeyHex { get; set; }
+    public string? PublicKeyPath { get; set; }
+    public string? SecretKeyPath { get; set; }
     public ulong ValidatorIndex { get; set; }
     public uint ActivationEpoch { get; set; }
     public uint NumActiveEpochs { get; set; } = 1024;
-    public bool PublishAggregates { get; set; } = true;
+    public bool PublishAggregates { get; set; } = false;
 }

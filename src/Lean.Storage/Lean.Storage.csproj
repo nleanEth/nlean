@@ -3,6 +3,6 @@
     <AssemblyName>Lean.Storage</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="RocksDbSharp" />
+    <PackageReference Include="RocksDB" />
   </ItemGroup>
 </Project>

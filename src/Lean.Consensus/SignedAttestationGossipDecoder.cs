@@ -22,33 +22,61 @@ public sealed class SignedAttestationGossipDecoder
                 "Gossip payload must be non-empty.");
         }
 
-        if (payload.Length != SignedAttestationLength)
+        if (!TryDecodeSignedAttestation(payload, out var attestation, out var reason))
         {
             return AttestationGossipDecodeResult.Fail(
                 AttestationGossipDecodeFailure.InvalidSsz,
-                $"SignedAttestation must be exactly {SignedAttestationLength} bytes, got {payload.Length}.");
+                reason);
         }
+
+        return AttestationGossipDecodeResult.Success(attestation);
+    }
+
+    private static bool TryDecodeSignedAttestation(
+        ReadOnlySpan<byte> payload,
+        out SignedAttestation value,
+        out string reason)
+    {
+        value = null!;
+        reason = string.Empty;
+
+        if (payload.Length == SignedAttestationLength &&
+            TryDecodeSignedAttestationFixed(payload, out value, out reason))
+        {
+            return true;
+        }
+
+        reason =
+            $"SignedAttestation must be exactly {SignedAttestationLength} bytes, got {payload.Length}.";
+        return false;
+    }
+
+    private static bool TryDecodeSignedAttestationFixed(
+        ReadOnlySpan<byte> payload,
+        out SignedAttestation value,
+        out string reason)
+    {
+        value = null!;
+        reason = string.Empty;
 
         var validatorId = BinaryPrimitives.ReadUInt64LittleEndian(payload[..SszEncoding.UInt64Length]);
         var dataBytes = payload.Slice(SszEncoding.UInt64Length, SszEncoding.AttestationDataLength);
-        if (!TryDecodeAttestationData(dataBytes, out var data, out var reason))
+        if (!TryDecodeAttestationData(dataBytes, out var data, out reason))
         {
-            return AttestationGossipDecodeResult.Fail(
-                AttestationGossipDecodeFailure.InvalidSsz,
-                $"Invalid attestation data: {reason}");
+            reason = $"Invalid attestation data: {reason}";
+            return false;
         }
 
         try
         {
-            var signatureBytes = payload[^XmssSignature.Length..];
-            var signature = XmssSignature.FromBytes(signatureBytes);
-            return AttestationGossipDecodeResult.Success(new SignedAttestation(validatorId, data, signature));
+            var signature = XmssSignature.FromBytes(payload[^XmssSignature.Length..]);
+            value = new SignedAttestation(validatorId, data, signature);
+            return true;
         }
         catch (Exception ex)
         {
-            return AttestationGossipDecodeResult.Fail(
-                AttestationGossipDecodeFailure.InvalidSsz,
-                $"Invalid XMSS signature bytes: {ex.Message}");
+            reason = $"Invalid XMSS signature bytes: {ex.Message}";
+            return false;
         }
     }
 

@@ -107,6 +107,15 @@ public sealed class XmssSignature
     }
 
     /// <summary>
+    /// Create an XMSS signature from wire bytes.
+    /// Lean peers encode signatures as 3112-byte SSZ vectors.
+    /// </summary>
+    public static XmssSignature FromWireBytes(ReadOnlySpan<byte> bytes)
+    {
+        return FromBytes(bytes);
+    }
+
+    /// <summary>
     /// Returns a zero-filled XMSS signature (all zeros, length 3112 bytes).
     /// </summary>
     public static XmssSignature Empty() => new(new byte[Length]);

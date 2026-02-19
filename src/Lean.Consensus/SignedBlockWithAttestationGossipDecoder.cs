@@ -9,7 +9,6 @@ public sealed class SignedBlockWithAttestationGossipDecoder
     private const int BlockWithAttestationFixedLength = SszEncoding.UInt32Length + SszEncoding.AttestationLength;
     private const int BlockFixedLength = (SszEncoding.UInt64Length * 2) + (SszEncoding.Bytes32Length * 2) + SszEncoding.UInt32Length;
     private const int BlockBodyFixedLength = SszEncoding.UInt32Length;
-    private const int BlockSignaturesFixedLength = SszEncoding.UInt32Length + XmssSignature.Length;
     private const int AggregatedAttestationFixedLength = SszEncoding.UInt32Length + SszEncoding.AttestationDataLength;
     private const int AggregatedSignatureProofFixedLength = SszEncoding.UInt32Length * 2;
 
@@ -169,32 +168,41 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         out BlockSignatures value,
         out string reason)
     {
+        return TryDecodeBlockSignaturesContainer(bytes, out value, out reason);
+    }
+
+    private static bool TryDecodeBlockSignaturesContainer(
+        ReadOnlySpan<byte> bytes,
+        out BlockSignatures value,
+        out string reason)
+    {
         value = null!;
         reason = string.Empty;
 
-        if (bytes.Length < BlockSignaturesFixedLength)
+        if (bytes.Length < SszEncoding.UInt32Length + XmssSignature.Length)
         {
             reason = $"BlockSignatures payload is too short: {bytes.Length} bytes.";
             return false;
         }
 
         var attestationSignaturesOffset = ReadOffset(bytes, 0);
-        if (attestationSignaturesOffset != BlockSignaturesFixedLength)
-        {
-            reason = $"BlockSignatures offset must be {BlockSignaturesFixedLength}, got {attestationSignaturesOffset}.";
-            return false;
-        }
-
         if (attestationSignaturesOffset > bytes.Length)
         {
             reason = $"BlockSignatures offset {attestationSignaturesOffset} exceeds payload length {bytes.Length}.";
             return false;
         }
 
+        var proposerSignatureLength = attestationSignaturesOffset - SszEncoding.UInt32Length;
+        if (proposerSignatureLength != XmssSignature.Length)
+        {
+            reason = $"BlockSignatures proposer-signature length must be {XmssSignature.Length}, got {proposerSignatureLength}.";
+            return false;
+        }
+
         XmssSignature proposerSignature;
         try
         {
-            proposerSignature = XmssSignature.FromBytes(bytes.Slice(SszEncoding.UInt32Length, XmssSignature.Length));
+            proposerSignature = XmssSignature.FromBytes(bytes.Slice(SszEncoding.UInt32Length, proposerSignatureLength));
         }
         catch (Exception ex)
         {
@@ -378,37 +386,36 @@ public sealed class SignedBlockWithAttestationGossipDecoder
             return true;
         }
 
-        if (!TryReadVariableListOffsets(bytes, "AggregatedAttestation", out var offsets, out reason))
+        if (TryReadVariableListOffsets(bytes, "AggregatedAttestation", out var offsets, out reason))
         {
-            value = null!;
-            return false;
-        }
-
-        var attestations = new List<AggregatedAttestation>(offsets.Length);
-        for (var i = 0; i < offsets.Length; i++)
-        {
-            var start = offsets[i];
-            var end = i == offsets.Length - 1 ? bytes.Length : offsets[i + 1];
-            if (end < start)
+            var attestations = new List<AggregatedAttestation>(offsets.Length);
+            for (var i = 0; i < offsets.Length; i++)
             {
-                value = null!;
-                reason = $"AggregatedAttestation element {i} has invalid slice bounds [{start}, {end}).";
-                return false;
+                var start = offsets[i];
+                var end = i == offsets.Length - 1 ? bytes.Length : offsets[i + 1];
+                if (end < start)
+                {
+                    value = null!;
+                    reason = $"AggregatedAttestation element {i} has invalid slice bounds [{start}, {end}).";
+                    return false;
+                }
+
+                var elementBytes = bytes.Slice(start, end - start);
+                if (!TryDecodeAggregatedAttestation(elementBytes, out var attestation, out reason))
+                {
+                    value = null!;
+                    reason = $"Invalid AggregatedAttestation[{i}]: {reason}";
+                    return false;
+                }
+
+                attestations.Add(attestation);
             }
 
-            var elementBytes = bytes.Slice(start, end - start);
-            if (!TryDecodeAggregatedAttestation(elementBytes, out var attestation, out reason))
-            {
-                value = null!;
-                reason = $"Invalid AggregatedAttestation[{i}]: {reason}";
-                return false;
-            }
-
-            attestations.Add(attestation);
+            value = attestations;
+            return true;
         }
-
-        value = attestations;
-        return true;
+        value = null!;
+        return false;
     }
 
     private static bool TryDecodeAggregatedAttestation(

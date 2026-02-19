@@ -41,7 +41,7 @@ internal static class Program
 
     private static void PrintHelp()
     {
-        Console.WriteLine(@"Lean Client Devnet-2
+        Console.WriteLine(@"Lean Client
 
 Usage:
   lean-client [options]

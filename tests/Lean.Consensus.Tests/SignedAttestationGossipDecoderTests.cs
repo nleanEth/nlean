@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Linq;
 using Lean.Consensus;
 using Lean.Consensus.Types;
 using NUnit.Framework;
@@ -46,6 +48,42 @@ public sealed class SignedAttestationGossipDecoderTests
         Assert.That(result.Failure, Is.EqualTo(AttestationGossipDecodeFailure.InvalidSsz));
     }
 
+    [Test]
+    public void DecodeAndValidate_ReturnsFailure_ForOffsetContainerSignedAttestation()
+    {
+        var decoder = new SignedAttestationGossipDecoder();
+        var attestation = CreateSignedAttestation();
+        var payload = EncodeOffsetContainer(attestation);
+
+        var result = decoder.DecodeAndValidate(payload);
+
+        Assert.That(result.IsSuccess, Is.False);
+        Assert.That(result.Failure, Is.EqualTo(AttestationGossipDecodeFailure.InvalidSsz));
+    }
+
+    [Test]
+    public void DecodeAndValidate_ReturnsFailure_ForLegacySignatureLength()
+    {
+        var decoder = new SignedAttestationGossipDecoder();
+        var attestation = CreateSignedAttestation();
+        var payload = SszEncoding.Encode(attestation);
+        var fixedSectionLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
+        const int legacyLength = 3028;
+        var legacySignatureBytes = Enumerable.Range(0, legacyLength)
+            .Select(i => (byte)(i % 251))
+            .ToArray();
+
+        var legacyPayload = new byte[fixedSectionLength + legacyLength];
+        payload.AsSpan(0, fixedSectionLength).CopyTo(legacyPayload);
+        legacySignatureBytes.CopyTo(legacyPayload.AsSpan(fixedSectionLength));
+
+        var result = decoder.DecodeAndValidate(legacyPayload);
+
+        Assert.That(result.IsSuccess, Is.False);
+        Assert.That(result.Failure, Is.EqualTo(AttestationGossipDecodeFailure.InvalidSsz));
+        Assert.That(result.Reason, Does.Contain("exactly"));
+    }
+
     private static SignedAttestation CreateSignedAttestation()
     {
         var data = new AttestationData(
@@ -55,5 +93,21 @@ public sealed class SignedAttestationGossipDecoderTests
             new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x03, 32).ToArray()), new Slot(1)));
 
         return new SignedAttestation(7, data, XmssSignature.Empty());
+    }
+
+    private static byte[] EncodeOffsetContainer(SignedAttestation attestation)
+    {
+        var fixedLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + SszEncoding.UInt32Length;
+        var payload = new byte[fixedLength + XmssSignature.Length];
+
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0, SszEncoding.UInt64Length), attestation.ValidatorId);
+        var encodedData = SszEncoding.Encode(attestation.Message);
+        encodedData.CopyTo(payload.AsSpan(SszEncoding.UInt64Length, encodedData.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            payload.AsSpan(SszEncoding.UInt64Length + SszEncoding.AttestationDataLength, SszEncoding.UInt32Length),
+            (uint)fixedLength);
+        attestation.Signature.Bytes.CopyTo(payload.AsSpan(fixedLength, XmssSignature.Length));
+
+        return payload;
     }
 }
