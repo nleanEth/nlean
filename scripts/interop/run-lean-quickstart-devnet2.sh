@@ -2,10 +2,10 @@
 set -euo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-quickstart_dir=""
+quickstart_dir="${NLEAN_QUICKSTART_DIR:-$root_dir/vendor/lean-quickstart}"
 network_dir="local-devnet-nlean"
 network_name="${NLEAN_NETWORK_NAME:-devnet0}"
-nodes="nlean_0,zeam_0,ream_0"
+nodes="nlean_0,ethlambda_0"
 with_metrics="true"
 nlean_setup="${NLEAN_QUICKSTART_SETUP:-docker}"
 nlean_docker_image="${NLEAN_DOCKER_IMAGE:-nlean-local:devnet2}"
@@ -17,18 +17,17 @@ check_timeout_seconds="${NLEAN_INTEROP_CHECK_TIMEOUT_SECONDS:-600}"
 check_poll_seconds="${NLEAN_INTEROP_CHECK_POLL_SECONDS:-5}"
 min_finalized_slot="${NLEAN_INTEROP_MIN_FINALIZED_SLOT:-0}"
 min_head_slot="${NLEAN_INTEROP_MIN_HEAD_SLOT:-3}"
-require_blocks_by_root="${NLEAN_INTEROP_REQUIRE_BLOCKS_BY_ROOT:-false}"
 
 usage() {
   cat <<USAGE
 Usage:
-  run-lean-quickstart-devnet2.sh --quickstart-dir PATH [options]
+  run-lean-quickstart-devnet2.sh [options]
 
 Options:
-  --quickstart-dir PATH   Path to lean-quickstart checkout (required)
+  --quickstart-dir PATH   Path to lean-quickstart checkout (default: vendor/lean-quickstart)
   --network-dir NAME      Network directory under lean-quickstart (default: local-devnet-nlean)
   --network-name NAME     Gossip network name for nlean topics (default: devnet0)
-  --nodes CSV             Node list for spin-node.sh (default: nlean_0,zeam_0,ream_0)
+  --nodes CSV             Node list for spin-node.sh (default: nlean_0,ethlambda_0)
   --nlean-setup MODE      nlean run mode: binary|docker (default: docker)
   --nlean-docker-image    Docker image tag used when nlean-setup=docker (default: nlean-local:devnet2)
   --no-sudo-shim          Do not inject sudo shim when calling spin-node.sh
@@ -39,7 +38,6 @@ Options:
   --check-poll SEC        Poll interval seconds for checks (default: 5)
   --min-finalized-slot N  Required finalized slot for nlean nodes (default: 0)
   --min-head-slot N       Required head slot for nlean nodes (default: 3)
-  --require-blocks-by-root Require lean_sync_blocks_by_root_requests_total > 0
 USAGE
 }
 
@@ -101,10 +99,6 @@ while [[ $# -gt 0 ]]; do
       min_head_slot="$2"
       shift 2
       ;;
-    --require-blocks-by-root)
-      require_blocks_by_root="true"
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -117,9 +111,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$quickstart_dir" ]]; then
-  usage >&2
-  exit 1
+if [[ -z "${quickstart_dir// }" ]]; then
+  quickstart_dir="$root_dir/vendor/lean-quickstart"
 fi
 
 if [[ "$nlean_setup" != "binary" && "$nlean_setup" != "docker" ]]; then
@@ -150,12 +143,6 @@ if [[ "$keep_running" != "true" && "$keep_running" != "false" ]]; then
   exit 1
 fi
 
-require_blocks_by_root=$(echo "$require_blocks_by_root" | tr '[:upper:]' '[:lower:]')
-if [[ "$require_blocks_by_root" != "true" && "$require_blocks_by_root" != "false" ]]; then
-  echo "Invalid blocks-by-root requirement value: $require_blocks_by_root (expected true|false)." >&2
-  exit 1
-fi
-
 if ! [[ "$check_timeout_seconds" =~ ^[0-9]+$ ]] || [[ "$check_timeout_seconds" == "0" ]]; then
   echo "Invalid --check-timeout: $check_timeout_seconds (expected positive integer)." >&2
   exit 1
@@ -178,6 +165,9 @@ fi
 
 if [[ ! -d "$quickstart_dir" || ! -f "$quickstart_dir/spin-node.sh" ]]; then
   echo "Invalid lean-quickstart directory: $quickstart_dir" >&2
+  if [[ "$quickstart_dir" == "$root_dir/vendor/lean-quickstart" ]]; then
+    echo "Initialize submodule first: git submodule update --init --recursive vendor/lean-quickstart" >&2
+  fi
   exit 1
 fi
 
@@ -224,9 +214,57 @@ network_root="$quickstart_dir/$network_dir"
 network_genesis_dir="$network_root/genesis"
 mkdir -p "$network_genesis_dir" "$network_root/data"
 
+prepare_validator_config() {
+  local source_file="$1"
+  local dest_file="$2"
+  local selected_nodes_csv="$3"
+
+  cp "$source_file" "$dest_file"
+
+  if [[ "$selected_nodes_csv" == "all" ]]; then
+    return 0
+  fi
+
+  local node_entries=()
+  local node_name=""
+  local selector=""
+  local parsed_count=0
+  IFS=',' read -r -a node_entries <<<"$selected_nodes_csv"
+
+  for node_name in "${node_entries[@]}"; do
+    node_name="${node_name#${node_name%%[![:space:]]*}}"
+    node_name="${node_name%${node_name##*[![:space:]]}}"
+    if [[ -z "$node_name" || "$node_name" == "all" ]]; then
+      continue
+    fi
+
+    if [[ -n "$selector" ]]; then
+      selector="${selector} or "
+    fi
+    selector="${selector}.name == \"${node_name}\""
+    parsed_count=$((parsed_count + 1))
+  done
+
+  if [[ "$parsed_count" -eq 0 ]]; then
+    return 0
+  fi
+
+  yq eval -i ".validators = [.validators[] | select(${selector})]" "$dest_file"
+
+  local selected_count=""
+  selected_count=$(yq eval '.validators | length' "$dest_file")
+  if [[ -z "$selected_count" || "$selected_count" == "0" ]]; then
+    echo "Filtered validator set is empty for --nodes ${selected_nodes_csv}." >&2
+    exit 1
+  fi
+}
+
 "$root_dir/scripts/libp2p/build-patched-pubsub-package.sh"
 
-cp "$root_dir/config/validator-config.quickstart.yaml" "$network_genesis_dir/validator-config.yaml"
+prepare_validator_config \
+  "$root_dir/config/validator-config.quickstart.yaml" \
+  "$network_genesis_dir/validator-config.yaml" \
+  "$nodes"
 install -m 755 "$root_dir/client-cmds/nlean-cmd.sh" "$quickstart_dir/client-cmds/nlean-cmd.sh"
 force_client_mode "$quickstart_dir/client-cmds/ream-cmd.sh" "docker"
 force_client_mode "$quickstart_dir/client-cmds/zeam-cmd.sh" "docker"
@@ -437,12 +475,6 @@ extract_metric_value() {
   echo "$payload" | awk -v metric="$metric_name" '$1 ~ ("^" metric "({|$)") { print $2; exit }'
 }
 
-extract_metric_sum() {
-  local payload="$1"
-  local metric_name="$2"
-  echo "$payload" | awk -v metric="$metric_name" '$1 ~ ("^" metric "({|$)") { sum += $2; found = 1 } END { if (found) print sum }'
-}
-
 run_interop_checks() {
   if [[ "$skip_checks" == "true" ]]; then
     echo "Skipping interop checks as requested."
@@ -467,7 +499,6 @@ run_interop_checks() {
     local finalized_min=""
     local finalized_max=""
     local head_min=""
-    local blocks_by_root_requests_total="0"
     local scrape_failures=0
 
     for node_name in "${nlean_nodes[@]}"; do
@@ -475,7 +506,6 @@ run_interop_checks() {
       local payload=""
       local finalized_value=""
       local head_value=""
-      local blocks_by_root_value=""
 
       metrics_port=$(resolve_metrics_port "$node_name")
       if [[ -z "$metrics_port" || "$metrics_port" == "null" ]]; then
@@ -489,9 +519,8 @@ run_interop_checks() {
         continue
       fi
 
-      finalized_value=$(extract_metric_value "$payload" "lean_consensus_finalized_slot")
-      head_value=$(extract_metric_value "$payload" "lean_consensus_head_slot")
-      blocks_by_root_value=$(extract_metric_sum "$payload" "lean_sync_blocks_by_root_requests_total")
+      finalized_value=$(extract_metric_value "$payload" "lean_latest_finalized_slot")
+      head_value=$(extract_metric_value "$payload" "lean_head_slot")
 
       if [[ -z "$finalized_value" || -z "$head_value" ]]; then
         scrape_failures=$((scrape_failures + 1))
@@ -509,24 +538,15 @@ run_interop_checks() {
       if [[ -z "$head_min" ]] || float_lt "$head_value" "$head_min"; then
         head_min="$head_value"
       fi
-
-      if [[ -n "$blocks_by_root_value" ]]; then
-        blocks_by_root_requests_total=$(awk -v total="$blocks_by_root_requests_total" -v value="$blocks_by_root_value" 'BEGIN { print total + value }')
-      fi
     done
 
     if [[ "$collected_nodes" -gt 0 ]]; then
-      echo "interop-check: collected=${collected_nodes}/${#nlean_nodes[@]}, scrape_failures=${scrape_failures}, finalized_min=${finalized_min}, finalized_max=${finalized_max}, head_min=${head_min}, blocks_by_root_requests_total=${blocks_by_root_requests_total}"
+      echo "interop-check: collected=${collected_nodes}/${#nlean_nodes[@]}, scrape_failures=${scrape_failures}, finalized_min=${finalized_min}, finalized_max=${finalized_max}, head_min=${head_min}"
 
       if [[ "$collected_nodes" -eq "${#nlean_nodes[@]}" ]] &&
          float_ge "$finalized_min" "$min_finalized_slot" &&
          float_ge "$head_min" "$min_head_slot" &&
          ! float_lt "$finalized_min" "$finalized_max"; then
-        if [[ "$require_blocks_by_root" == "true" ]] && ! float_ge "$blocks_by_root_requests_total" 1; then
-          sleep "$check_poll_seconds"
-          continue
-        fi
-
         echo "Interop checks passed: finalized/head targets reached for nlean nodes."
         return 0
       fi

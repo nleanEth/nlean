@@ -1,3 +1,6 @@
 [submodule "vendor/nethermind"]
 	path = vendor/nethermind
 	url = https://github.com/NethermindEth/nethermind.git
+[submodule "vendor/lean-quickstart"]
+	path = vendor/lean-quickstart
+	url = https://github.com/blockblaz/lean-quickstart.git
