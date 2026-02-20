@@ -5,6 +5,7 @@ using Lean.Node.Configuration;
 using Lean.Validator;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Reflection;
 
 namespace Lean.Node;
 
@@ -50,7 +51,15 @@ public sealed class NodeService : BackgroundService
             }
         }
 
-        await _metricsService.StartAsync(stoppingToken);
+        try
+        {
+            await _metricsService.StartAsync(stoppingToken);
+            LeanMetrics.SetNodeInfo(_options.NodeName ?? string.Empty, ResolveNodeVersion());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Metrics service failed to start; continuing without metrics.");
+        }
         await _networkService.StartAsync(stoppingToken);
         await _consensusService.StartAsync(stoppingToken);
 
@@ -78,5 +87,19 @@ public sealed class NodeService : BackgroundService
         await _networkService.StopAsync(cancellationToken);
         await _metricsService.StopAsync(cancellationToken);
         await base.StopAsync(cancellationToken);
+    }
+
+    private static string ResolveNodeVersion()
+    {
+        var assembly = Assembly.GetEntryAssembly() ?? typeof(NodeService).Assembly;
+        var informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            return informationalVersion;
+        }
+
+        return assembly.GetName().Version?.ToString() ?? "unknown";
     }
 }

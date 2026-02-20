@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Lean.Consensus;
 using Lean.Metrics;
 using Lean.Network;
 using Lean.Storage;
@@ -8,11 +9,12 @@ namespace Lean.Node.Configuration;
 public sealed class NodeOptions
 {
     public string DataDir { get; set; } = "data";
-    public string Network { get; set; } = "devnet2";
+    public string Network { get; set; } = "devnet0";
     public string? Libp2pConfigPath { get; set; }
     public string? ValidatorConfigPath { get; set; }
     public string? NodeName { get; set; }
     public Libp2pConfig Libp2p { get; set; } = new();
+    public ConsensusConfig Consensus { get; set; } = new();
     public MetricsConfig Metrics { get; set; } = new();
     public StorageConfig Storage { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
@@ -38,6 +40,7 @@ public sealed class NodeOptions
         }
 
         options.Libp2p ??= new Libp2pConfig();
+        options.Consensus ??= new ConsensusConfig();
         options.Metrics ??= new MetricsConfig();
         options.Storage ??= new StorageConfig();
         options.Logging ??= new LoggingConfig();
@@ -96,4 +99,12 @@ public sealed class ValidatorRuntimeConfig
 {
     public bool Enabled { get; set; } = true;
     public string? KeystorePath { get; set; }
+    public string? PublicKeyHex { get; set; }
+    public string? SecretKeyHex { get; set; }
+    public string? PublicKeyPath { get; set; }
+    public string? SecretKeyPath { get; set; }
+    public ulong ValidatorIndex { get; set; }
+    public uint ActivationEpoch { get; set; }
+    public uint NumActiveEpochs { get; set; } = 1024;
+    public bool PublishAggregates { get; set; } = false;
 }

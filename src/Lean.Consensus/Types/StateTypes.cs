@@ -1,8 +1,24 @@
+using System.Linq;
+
 namespace Lean.Consensus.Types;
 
-public sealed record Config(ulong GenesisTime);
+public sealed record Config(ulong GenesisTime)
+{
+    public byte[] HashTreeRoot()
+    {
+        return SszInterop.HashContainer(SszInterop.HashUInt64(GenesisTime));
+    }
+}
 
-public sealed record Validator(Bytes52 Pubkey, ulong Index);
+public sealed record Validator(Bytes52 Pubkey, ulong Index)
+{
+    public byte[] HashTreeRoot()
+    {
+        return SszInterop.HashContainer(
+            SszInterop.HashBytesVector(Pubkey.AsSpan()),
+            SszInterop.HashUInt64(Index));
+    }
+}
 
 public sealed record State(
     Config Config,
@@ -14,4 +30,26 @@ public sealed record State(
     IReadOnlyList<bool> JustifiedSlots,
     IReadOnlyList<Validator> Validators,
     IReadOnlyList<Bytes32> JustificationsRoots,
-    IReadOnlyList<bool> JustificationsValidators);
+    IReadOnlyList<bool> JustificationsValidators)
+{
+    private const ulong JustificationsValidatorsLimit = 1UL << 30;
+
+    public byte[] HashTreeRoot()
+    {
+        var historicalRoots = HistoricalBlockHashes.Select(hash => hash.HashTreeRoot()).ToList();
+        var validatorRoots = Validators.Select(validator => validator.HashTreeRoot()).ToList();
+        var justificationRoots = JustificationsRoots.Select(hash => hash.HashTreeRoot()).ToList();
+
+        return SszInterop.HashContainer(
+            Config.HashTreeRoot(),
+            SszInterop.HashUInt64(Slot.Value),
+            LatestBlockHeader.HashTreeRoot(),
+            LatestJustified.HashTreeRoot(),
+            LatestFinalized.HashTreeRoot(),
+            SszInterop.HashList(historicalRoots, SszEncoding.NodeListLimit),
+            SszInterop.HashBitlist(JustifiedSlots.ToArray(), SszEncoding.NodeListLimit),
+            SszInterop.HashList(validatorRoots, SszEncoding.ValidatorRegistryLimit),
+            SszInterop.HashList(justificationRoots, SszEncoding.NodeListLimit),
+            SszInterop.HashBitlist(JustificationsValidators.ToArray(), JustificationsValidatorsLimit));
+    }
+}

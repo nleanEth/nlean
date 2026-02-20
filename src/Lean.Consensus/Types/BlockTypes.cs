@@ -7,7 +7,7 @@ public sealed record BlockBody(IReadOnlyList<AggregatedAttestation> Attestations
     public byte[] HashTreeRoot()
     {
         var roots = Attestations.Select(att => att.HashTreeRoot()).ToList();
-        return SszInterop.HashList(roots, (ulong)Attestations.Count);
+        return SszInterop.HashList(roots, SszEncoding.ValidatorRegistryLimit);
     }
 }
 
@@ -65,7 +65,7 @@ public sealed record BlockSignatures(
     {
         var attestationRoots = AttestationSignatures.Select(sig => sig.HashTreeRoot()).ToList();
         return SszInterop.HashContainer(
-            SszInterop.HashList(attestationRoots, (ulong)AttestationSignatures.Count),
+            SszInterop.HashList(attestationRoots, SszEncoding.ValidatorRegistryLimit),
             ProposerSignature.HashTreeRoot());
     }
 }

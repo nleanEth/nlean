@@ -31,12 +31,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.NUGET_PACKAGES }}
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json', 'NuGet.config', 'scripts/libp2p/build-patched-pubsub-package.sh', 'scripts/libp2p/patches/pubsub-anonymous.patch') }}
           restore-keys: nuget-${{ runner.os }}-
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native/lean-crypto-ffi
+      - name: Build patched pubsub package
+        run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Install dotnet-format
         run: dotnet tool install --tool-path ./.dotnet-tools dotnet-format
       - name: Format check
@@ -71,12 +73,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.NUGET_PACKAGES }}
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json', 'NuGet.config', 'scripts/libp2p/build-patched-pubsub-package.sh', 'scripts/libp2p/patches/pubsub-anonymous.patch') }}
           restore-keys: nuget-${{ runner.os }}-
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native/lean-crypto-ffi
+      - name: Build patched pubsub package
+        run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Test
         run: dotnet test Lean.sln -c Release
       - name: Publish
@@ -86,3 +90,34 @@ jobs:
         with:
           name: lean-client-${{ matrix.rid }}
           path: artifacts/lean-client-${{ matrix.rid }}
+
+  consensus-simulation:
+    name: consensus-simulation
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json', 'NuGet.config', 'scripts/libp2p/build-patched-pubsub-package.sh', 'scripts/libp2p/patches/pubsub-anonymous.patch') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: Build patched pubsub package
+        run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+      - name: Run consensus simulation tests
+        run: >
+          dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj
+          -c Release
+          --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests"
+          /m:1
+          /nodeReuse:false

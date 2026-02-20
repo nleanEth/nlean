@@ -1,13 +1,12 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use leansig::{
+use leansig_hashsig::{
     MESSAGE_LENGTH,
-    serialization::Serializable,
-    signature::SignatureScheme,
+    serialization::Serializable as HashsigSerializable,
+    signature::SignatureScheme as HashsigSignatureSchemeTrait,
 };
 use lean_multisig::{
-    Devnet2XmssAggregateSignature,
     xmss_aggregate_signatures,
     xmss_verify_aggregated_signatures,
     xmss_aggregation_setup_prover,
@@ -16,11 +15,14 @@ use lean_multisig::{
 use rand::rng;
 use ssz::{Decode, Encode};
 
-pub type LeanSigScheme = leansig::signature::generalized_xmss::instantiations_poseidon_top_level::lifetime_2_to_the_32::hashing_optimized::SIGTopLevelTargetSumLifetime32Dim64Base8;
+pub type LeanSigHashsigScheme = leansig_hashsig::signature::generalized_xmss::instantiations_poseidon_top_level::lifetime_2_to_the_32::hashing_optimized::SIGTopLevelTargetSumLifetime32Dim64Base8;
 
-type LeanSigPublicKey = <LeanSigScheme as SignatureScheme>::PublicKey;
-type LeanSigSecretKey = <LeanSigScheme as SignatureScheme>::SecretKey;
-type LeanSigSignature = <LeanSigScheme as SignatureScheme>::Signature;
+type LeanSigHashsigPublicKey = <LeanSigHashsigScheme as leansig_hashsig::signature::SignatureScheme>::PublicKey;
+type LeanSigHashsigSecretKey = <LeanSigHashsigScheme as leansig_hashsig::signature::SignatureScheme>::SecretKey;
+type LeanSigHashsigSignature = <LeanSigHashsigScheme as leansig_hashsig::signature::SignatureScheme>::Signature;
+
+type LeanSigAggPublicKey = LeanSigHashsigPublicKey;
+type LeanSigAggSignature = LeanSigHashsigSignature;
 
 #[repr(C)]
 pub struct LeanBuffer {
@@ -61,7 +63,7 @@ pub extern "C" fn leansig_key_gen(
         ensure_out_ptrs(&[out_pk_ptr.cast(), out_pk_len.cast(), out_sk_ptr.cast(), out_sk_len.cast()])?;
 
         let mut rng = rng();
-        let (pk, sk) = LeanSigScheme::key_gen(&mut rng, activation_epoch as usize, num_active_epochs as usize);
+        let (pk, sk) = LeanSigHashsigScheme::key_gen(&mut rng, activation_epoch as usize, num_active_epochs as usize);
         write_output(pk.to_bytes(), out_pk_ptr, out_pk_len)?;
         write_output(sk.to_bytes(), out_sk_ptr, out_sk_len)?;
         Ok(())
@@ -82,10 +84,10 @@ pub extern "C" fn leansig_sign(
         ensure_out_ptrs(&[out_sig_ptr.cast(), out_sig_len.cast()])?;
 
         let sk_bytes = read_slice(sk_ptr, sk_len)?;
-        let sk = LeanSigSecretKey::from_bytes(sk_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+        let sk = LeanSigHashsigSecretKey::from_bytes(sk_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
 
         let message = read_message(msg_ptr, msg_len)?;
-        let sig = LeanSigScheme::sign(&sk, epoch, &message).map_err(|_| LeanCryptoError::SigningFailed)?;
+        let sig = LeanSigHashsigScheme::sign(&sk, epoch, &message).map_err(|_| LeanCryptoError::SigningFailed)?;
         write_output(sig.to_bytes(), out_sig_ptr, out_sig_len)?;
         Ok(())
     })
@@ -108,11 +110,11 @@ pub extern "C" fn leansig_verify(
         let pk_bytes = read_slice(pk_ptr, pk_len)?;
         let sig_bytes = read_slice(sig_ptr, sig_len)?;
 
-        let pk = LeanSigPublicKey::from_bytes(pk_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
-        let sig = LeanSigSignature::from_bytes(sig_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+        let pk = LeanSigHashsigPublicKey::from_bytes(pk_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+        let sig = LeanSigHashsigSignature::from_bytes(sig_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
 
         let message = read_message(msg_ptr, msg_len)?;
-        let valid = LeanSigScheme::verify(&pk, epoch, &message, &sig);
+        let valid = LeanSigHashsigScheme::verify(&pk, epoch, &message, &sig);
 
         unsafe {
             *out_is_valid = if valid { 1 } else { 0 };
@@ -158,12 +160,12 @@ pub extern "C" fn leanmultisig_aggregate(
         let message = read_message(msg_ptr, msg_len)?;
         let pub_keys = read_buffers(pub_keys_ptr, pub_keys_len)?
             .into_iter()
-            .map(|bytes| LeanSigPublicKey::from_bytes(bytes).map_err(|_| LeanCryptoError::DeserializeError))
+            .map(|bytes| LeanSigAggPublicKey::from_bytes(bytes).map_err(|_| LeanCryptoError::DeserializeError))
             .collect::<Result<Vec<_>, _>>()?;
 
         let signatures = read_buffers(sigs_ptr, sigs_len)?
             .into_iter()
-            .map(|bytes| LeanSigSignature::from_bytes(bytes).map_err(|_| LeanCryptoError::DeserializeError))
+            .map(|bytes| LeanSigAggSignature::from_bytes(bytes).map_err(|_| LeanCryptoError::DeserializeError))
             .collect::<Result<Vec<_>, _>>()?;
 
         let agg = xmss_aggregate_signatures(&pub_keys, &signatures, &message, epoch)
@@ -191,11 +193,11 @@ pub extern "C" fn leanmultisig_verify_aggregate(
         let message = read_message(msg_ptr, msg_len)?;
         let pub_keys = read_buffers(pub_keys_ptr, pub_keys_len)?
             .into_iter()
-            .map(|bytes| LeanSigPublicKey::from_bytes(bytes).map_err(|_| LeanCryptoError::DeserializeError))
+            .map(|bytes| LeanSigAggPublicKey::from_bytes(bytes).map_err(|_| LeanCryptoError::DeserializeError))
             .collect::<Result<Vec<_>, _>>()?;
 
         let agg_bytes = read_slice(agg_ptr, agg_len)?;
-        let agg = Devnet2XmssAggregateSignature::from_ssz_bytes(agg_bytes)
+        let agg = Decode::from_ssz_bytes(agg_bytes)
             .map_err(|_| LeanCryptoError::DeserializeError)?;
 
         let is_valid = xmss_verify_aggregated_signatures(&pub_keys, &message, &agg, epoch).is_ok();
@@ -207,6 +209,7 @@ pub extern "C" fn leanmultisig_verify_aggregate(
         Ok(())
     })
 }
+
 
 #[no_mangle]
 pub extern "C" fn lean_free(ptr: *mut u8, len: usize) {

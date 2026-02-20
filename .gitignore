@@ -11,6 +11,7 @@
 .idea/
 .vscode/
 .dotnet-tools/
+.nuget/
 
 # Build results
 [Dd]ebug/

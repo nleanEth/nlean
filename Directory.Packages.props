@@ -18,11 +18,12 @@
     <PackageVersion Include="Nethermind.Libp2p.Protocols.Identify" Version="1.0.0-preview.51" />
     <PackageVersion Include="Nethermind.Libp2p.Protocols.RequestResponse" Version="1.0.0-preview.51" />
 
-    <PackageVersion Include="RocksDbSharp" Version="6.2.2" />
+    <PackageVersion Include="RocksDB" Version="10.4.2.64152" />
 
     <PackageVersion Include="prometheus-net" Version="8.0.0" />
     <PackageVersion Include="prometheus-net.AspNetCore" Version="8.0.0" />
     <PackageVersion Include="YamlDotNet" Version="15.1.2" />
+    <PackageVersion Include="Snappier" Version="1.2.0" />
 
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageVersion Include="NUnit" Version="4.4.0" />
