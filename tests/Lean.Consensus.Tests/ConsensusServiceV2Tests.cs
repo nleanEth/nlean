@@ -1,5 +1,6 @@
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
+using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
 using NUnit.Framework;
 
@@ -91,8 +92,36 @@ public sealed class ConsensusServiceV2Tests
         await svc.StopAsync(CancellationToken.None);
     }
 
+    [Test]
+    public void HasUnknownBlockRootsInFlight_FalseWithoutSync()
+    {
+        var (svc, _, _, _) = CreateService();
+        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.False);
+    }
+
+    [Test]
+    public void HasUnknownBlockRootsInFlight_TrueWhenSyncing()
+    {
+        var (svc, _, _, _) = CreateServiceWithSync(SyncState.Syncing);
+        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.True);
+    }
+
+    [Test]
+    public void HasUnknownBlockRootsInFlight_FalseWhenSynced()
+    {
+        var (svc, _, _, _) = CreateServiceWithSync(SyncState.Synced);
+        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.False);
+    }
+
     private static (ConsensusServiceV2 svc, FakeTimeSource time,
-        ProtoArrayForkChoiceStore store, SlotClock clock) CreateService()
+        ProtoArrayForkChoiceStore store, SlotClock clock) CreateServiceWithSync(SyncState state)
+    {
+        var (svc, time, store, clock) = CreateService(new FakeSyncService(state));
+        return (svc, time, store, clock);
+    }
+
+    private static (ConsensusServiceV2 svc, FakeTimeSource time,
+        ProtoArrayForkChoiceStore store, SlotClock clock) CreateService(ISyncService? syncService = null)
     {
         var config = new ConsensusConfig
         {
@@ -105,7 +134,7 @@ public sealed class ConsensusServiceV2Tests
         var time = new FakeTimeSource(GenesisTime);
         var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
             ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
-        var svc = new ConsensusServiceV2(store, clock, config);
+        var svc = new ConsensusServiceV2(store, clock, config, syncService);
         return (svc, time, store, clock);
     }
 
@@ -140,5 +169,18 @@ public sealed class ConsensusServiceV2Tests
     {
         public FakeTimeSource(DateTimeOffset utcNow) => UtcNow = utcNow;
         public DateTimeOffset UtcNow { get; set; }
+    }
+
+    private sealed class FakeSyncService : ISyncService
+    {
+        public FakeSyncService(SyncState state) => State = state;
+        public SyncState State { get; }
+        public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId) => Task.CompletedTask;
+        public Task OnGossipAttestationAsync(SignedAttestation attestation) => Task.CompletedTask;
+        public Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot) => Task.CompletedTask;
+        public void OnPeerConnected(string peerId) { }
+        public void OnPeerDisconnected(string peerId) { }
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
     }
 }

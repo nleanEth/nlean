@@ -1,5 +1,6 @@
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
+using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
 
 namespace Lean.Consensus;
@@ -9,13 +10,16 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
     private readonly ProtoArrayForkChoiceStore _store;
     private readonly SlotClock _clock;
     private readonly ChainService _chainService;
+    private readonly ISyncService? _syncService;
     private CancellationTokenSource? _cts;
     private Task? _runTask;
 
-    public ConsensusServiceV2(ProtoArrayForkChoiceStore store, SlotClock clock, ConsensusConfig config)
+    public ConsensusServiceV2(ProtoArrayForkChoiceStore store, SlotClock clock, ConsensusConfig config,
+        ISyncService? syncService = null)
     {
         _store = store;
         _clock = clock;
+        _syncService = syncService;
         _chainService = new ChainService(clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
     }
 
@@ -23,7 +27,10 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
     public ulong HeadSlot => _store.HeadSlot;
     public ulong JustifiedSlot => _store.JustifiedSlot;
     public ulong FinalizedSlot => _store.FinalizedSlot;
-    public bool HasUnknownBlockRootsInFlight => false;
+
+    public bool HasUnknownBlockRootsInFlight =>
+        _syncService is not null && _syncService.State != SyncState.Synced;
+
     public byte[] HeadRoot => _store.HeadRoot.AsSpan().ToArray();
 
     public byte[] GetProposalHeadRoot() => HeadRoot;
@@ -68,6 +75,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _runTask = _chainService.RunAsync(_cts.Token);
+        _syncService?.StartAsync(_cts.Token);
         return Task.CompletedTask;
     }
 
@@ -76,6 +84,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
         if (_cts is not null)
         {
             await _cts.CancelAsync();
+            if (_syncService is not null)
+            {
+                try { await _syncService.StopAsync(cancellationToken); }
+                catch (OperationCanceledException) { }
+            }
+
             if (_runTask is not null)
             {
                 try { await _runTask; }
