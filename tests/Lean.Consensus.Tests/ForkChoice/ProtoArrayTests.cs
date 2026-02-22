@@ -102,6 +102,56 @@ public sealed class ProtoArrayTests
         Assert.That(genNode.BestDescendant, Is.Not.Null);
     }
 
+    [Test]
+    public void FindHead_ReturnsGenesis_WhenNoVotes()
+    {
+        var genesis = MakeRoot(0x01);
+        var array = new ProtoArray(genesis, 0, 0);
+        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(genesis));
+    }
+
+    [Test]
+    public void FindHead_FollowsBestDescendant()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.ApplyScoreChanges(
+            new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 1 }, 0, 0);
+
+        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(b));
+    }
+
+    [Test]
+    public void FindHead_PicksHeavierFork()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, genesis, 1, 0, 0);
+        array.ApplyScoreChanges(new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(a)] = 2,
+            [ProtoArray.RootKey(b)] = 1
+        }, 0, 0);
+
+        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(a));
+    }
+
+    [Test]
+    public void FindHead_UnknownJustifiedRoot_ReturnsDefault()
+    {
+        var genesis = MakeRoot(0x01);
+        var array = new ProtoArray(genesis, 0, 0);
+        var unknown = MakeRoot(0xFF);
+        Assert.That(array.FindHead(unknown, 0, 0), Is.EqualTo(default(Bytes32)));
+    }
+
     internal static Bytes32 MakeRoot(byte fill) =>
         new(Enumerable.Repeat(fill, 32).ToArray());
 }

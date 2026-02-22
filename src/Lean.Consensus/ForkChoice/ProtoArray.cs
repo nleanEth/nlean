@@ -124,6 +124,27 @@ public sealed class ProtoArray
         }
     }
 
+    /// <summary>
+    /// Returns the head block root by following the BestDescendant chain from the justified root.
+    /// Must be called after ApplyScoreChanges to get correct results.
+    /// </summary>
+    public Bytes32 FindHead(Bytes32 justifiedRoot, ulong justifiedSlot, ulong finalizedSlot)
+    {
+        if (!_indices.TryGetValue(RootKey(justifiedRoot), out var justifiedIdx))
+            return default;
+
+        var justified = _nodes[justifiedIdx];
+
+        if (justified.BestDescendant is { } bestDescIdx)
+        {
+            var bestDesc = _nodes[bestDescIdx];
+            if (IsViable(bestDesc, justifiedSlot, finalizedSlot))
+                return bestDesc.Root;
+        }
+
+        return justified.Root;
+    }
+
     private static bool IsViable(ProtoNode node, ulong justifiedSlot, ulong finalizedSlot)
     {
         if (justifiedSlot == 0 && finalizedSlot == 0) return true;
