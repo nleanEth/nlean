@@ -47,6 +47,13 @@ public sealed class ProtoArray
         return null;
     }
 
+    public ProtoNode? GetNodeByIndex(int index)
+    {
+        if (index >= 0 && index < _nodes.Count)
+            return _nodes[index];
+        return null;
+    }
+
     /// <summary>
     /// Applies vote deltas to self-weights and recomputes tree weights bottom-up.
     /// Updates BestChild/BestDescendant pointers for O(1) head lookups.
@@ -213,8 +220,9 @@ public sealed class ProtoArray
 
     private static bool IsViable(ProtoNode node, ulong justifiedSlot, ulong finalizedSlot)
     {
-        if (justifiedSlot == 0 && finalizedSlot == 0) return true;
-        return node.JustifiedSlot >= justifiedSlot || node.FinalizedSlot >= finalizedSlot;
+        // A node is viable if its checkpoints are at least as recent as the store's.
+        // Both conditions must hold (AND), matching Lighthouse/Prysm behavior.
+        return node.JustifiedSlot >= justifiedSlot && node.FinalizedSlot >= finalizedSlot;
     }
 
     public static string RootKey(Bytes32 root) => Convert.ToHexString(root.AsSpan());
