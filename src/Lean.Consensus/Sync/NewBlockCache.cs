@@ -2,7 +2,9 @@ using Lean.Consensus.Types;
 
 namespace Lean.Consensus.Sync;
 
-public sealed record PendingBlock(Bytes32 Root, Bytes32 ParentRoot, ulong Slot, string? ReceivedFrom);
+public sealed record PendingBlock(
+    Bytes32 Root, Bytes32 ParentRoot, ulong Slot, string? ReceivedFrom,
+    SignedBlockWithAttestation? SignedBlock = null);
 
 public sealed class NewBlockCache
 {
