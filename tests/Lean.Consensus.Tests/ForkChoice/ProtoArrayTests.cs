@@ -152,6 +152,87 @@ public sealed class ProtoArrayTests
         Assert.That(array.FindHead(unknown, 0, 0), Is.EqualTo(default(Bytes32)));
     }
 
+    [Test]
+    public void GetSlot_ReturnsSlotForKnownBlock()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 5, 0, 0);
+
+        Assert.That(array.GetSlot(a), Is.EqualTo(5UL));
+        Assert.That(array.GetSlot(genesis), Is.EqualTo(0UL));
+    }
+
+    [Test]
+    public void GetSlot_ReturnsNull_ForUnknownBlock()
+    {
+        var genesis = MakeRoot(0x01);
+        var array = new ProtoArray(genesis, 0, 0);
+        Assert.That(array.GetSlot(MakeRoot(0xFF)), Is.Null);
+    }
+
+    [Test]
+    public void GetParentRoot_ReturnsParentForKnownBlock()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+
+        Assert.That(array.GetParentRoot(a), Is.EqualTo(genesis));
+    }
+
+    [Test]
+    public void Prune_RemovesAncestorsOfFinalizedRoot()
+    {
+        // genesis -> a -> b (finalized) -> c
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var c = MakeRoot(0x04);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.RegisterBlock(c, b, 3, 0, 0);
+
+        array.Prune(b);
+
+        Assert.That(array.ContainsBlock(genesis), Is.False);
+        Assert.That(array.ContainsBlock(a), Is.False);
+        Assert.That(array.ContainsBlock(b), Is.True);
+        Assert.That(array.ContainsBlock(c), Is.True);
+        Assert.That(array.NodeCount, Is.EqualTo(2));
+    }
+
+    [Test]
+    public void Prune_PreservesWeightsAndParentLinks()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+
+        array.ApplyScoreChanges(
+            new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 5 }, 0, 0);
+        array.Prune(a);
+
+        Assert.That(array.GetWeight(b), Is.EqualTo(5));
+        Assert.That(array.GetWeight(a), Is.EqualTo(5));
+        Assert.That(array.GetParentRoot(b), Is.EqualTo(a));
+    }
+
+    [Test]
+    public void Prune_UnknownRoot_DoesNothing()
+    {
+        var genesis = MakeRoot(0x01);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.Prune(MakeRoot(0xFF));
+        Assert.That(array.NodeCount, Is.EqualTo(1));
+    }
+
     internal static Bytes32 MakeRoot(byte fill) =>
         new(Enumerable.Repeat(fill, 32).ToArray());
 }

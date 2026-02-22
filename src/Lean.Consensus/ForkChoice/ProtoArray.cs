@@ -145,6 +145,72 @@ public sealed class ProtoArray
         return justified.Root;
     }
 
+    public ulong? GetSlot(Bytes32 root)
+    {
+        if (_indices.TryGetValue(RootKey(root), out var idx))
+            return _nodes[idx].Slot;
+        return null;
+    }
+
+    public Bytes32? GetParentRoot(Bytes32 root)
+    {
+        if (_indices.TryGetValue(RootKey(root), out var idx))
+            return _nodes[idx].ParentRoot;
+        return null;
+    }
+
+    /// <summary>
+    /// Removes all nodes that are not descendants of the finalized root.
+    /// Rebuilds the index mapping after removal.
+    /// </summary>
+    public void Prune(Bytes32 finalizedRoot)
+    {
+        if (!_indices.TryGetValue(RootKey(finalizedRoot), out var finalizedIdx))
+            return;
+
+        if (finalizedIdx == 0) return; // Nothing to prune
+
+        // Collect indices of nodes to keep: finalizedIdx and all descendants
+        var keepSet = new HashSet<int>();
+        for (int i = finalizedIdx; i < _nodes.Count; i++)
+        {
+            var node = _nodes[i];
+            // Keep if it IS the finalized node, or its parent is in the keep set
+            if (i == finalizedIdx || (node.ParentIndex is { } pi && keepSet.Contains(pi)))
+                keepSet.Add(i);
+        }
+
+        // Build new lists preserving order
+        var newNodes = new List<ProtoNode>(keepSet.Count);
+        var newSelfWeights = new List<long>(keepSet.Count);
+        var oldToNew = new Dictionary<int, int>();
+
+        foreach (var oldIdx in keepSet.OrderBy(x => x))
+        {
+            oldToNew[oldIdx] = newNodes.Count;
+            newNodes.Add(_nodes[oldIdx]);
+            newSelfWeights.Add(_selfWeights[oldIdx]);
+        }
+
+        // Remap parent indices
+        foreach (var node in newNodes)
+        {
+            if (node.ParentIndex is { } pi && oldToNew.TryGetValue(pi, out var newPi))
+                node.ParentIndex = newPi;
+            else
+                node.ParentIndex = null; // finalized root has no parent
+        }
+
+        // Replace internal state
+        _nodes.Clear();
+        _nodes.AddRange(newNodes);
+        _selfWeights.Clear();
+        _selfWeights.AddRange(newSelfWeights);
+        _indices.Clear();
+        for (int i = 0; i < _nodes.Count; i++)
+            _indices[RootKey(_nodes[i].Root)] = i;
+    }
+
     private static bool IsViable(ProtoNode node, ulong justifiedSlot, ulong finalizedSlot)
     {
         if (justifiedSlot == 0 && finalizedSlot == 0) return true;
