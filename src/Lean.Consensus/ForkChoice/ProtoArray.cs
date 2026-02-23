@@ -20,6 +20,7 @@ public sealed class ProtoArray
     public int NodeCount => _nodes.Count;
 
     public bool ContainsBlock(Bytes32 root) => _indices.ContainsKey(RootKey(root));
+    public bool ContainsKey(string rootKey) => _indices.ContainsKey(rootKey);
 
     public void RegisterBlock(Bytes32 root, Bytes32 parentRoot, ulong slot,
         ulong justifiedSlot, ulong finalizedSlot)
@@ -199,13 +200,18 @@ public sealed class ProtoArray
             newSelfWeights.Add(_selfWeights[oldIdx]);
         }
 
-        // Remap parent indices
+        // Remap parent indices and clear stale BestChild/BestDescendant
         foreach (var node in newNodes)
         {
             if (node.ParentIndex is { } pi && oldToNew.TryGetValue(pi, out var newPi))
                 node.ParentIndex = newPi;
             else
                 node.ParentIndex = null; // finalized root has no parent
+
+            // BestChild/BestDescendant are index-based and become stale after pruning.
+            // Clear them so ApplyScoreChanges recomputes them correctly.
+            node.BestChild = null;
+            node.BestDescendant = null;
         }
 
         // Replace internal state

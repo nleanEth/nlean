@@ -161,7 +161,7 @@ public sealed class SyncServiceTests
         return new SignedAttestation(validatorId, data, new XmssSignature(new byte[3112]));
     }
 
-    private sealed class FakeSyncBlockProcessor : IBlockProcessor, IHeadSlotProvider
+    private sealed class FakeSyncBlockProcessor : IBlockProcessor
     {
         public HashSet<Bytes32> KnownRoots { get; } = new();
         public int ProcessedCount { get; private set; }

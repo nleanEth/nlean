@@ -37,12 +37,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
 
     public AttestationData CreateAttestationData(ulong slot)
     {
-        var headRoot = _store.HeadRoot;
         return new AttestationData(
             new Slot(slot),
-            new Checkpoint(headRoot, new Slot(_store.HeadSlot)),
-            new Checkpoint(headRoot, new Slot(_store.JustifiedSlot)),
-            new Checkpoint(headRoot, new Slot(_store.FinalizedSlot)));
+            new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
+            new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)),
+            new Checkpoint(_store.FinalizedRoot, new Slot(_store.FinalizedSlot)));
     }
 
     public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason)
@@ -71,12 +70,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
         _store.TickInterval(slot, intervalInSlot);
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _runTask = _chainService.RunAsync(_cts.Token);
-        _syncService?.StartAsync(_cts.Token);
-        return Task.CompletedTask;
+        if (_syncService is not null)
+            await _syncService.StartAsync(_cts.Token);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)

@@ -180,6 +180,7 @@ public sealed class BackfillSyncTests
     {
         public HashSet<Bytes32> KnownRoots { get; } = new();
         public List<SignedBlockWithAttestation> ProcessedBlocks { get; } = new();
+        public ulong HeadSlot { get; private set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
 
@@ -188,7 +189,8 @@ public sealed class BackfillSyncTests
             ProcessedBlocks.Add(signedBlock);
             var root = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
             KnownRoots.Add(root);
-            return ForkChoiceApplyResult.AcceptedResult(false, 0, Bytes32.Zero());
+            HeadSlot = Math.Max(HeadSlot, signedBlock.Message.Block.Slot.Value);
+            return ForkChoiceApplyResult.AcceptedResult(false, HeadSlot, root);
         }
     }
 }

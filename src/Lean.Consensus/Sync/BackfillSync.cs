@@ -11,6 +11,8 @@ public sealed class BackfillSync : IBackfillTrigger
     private readonly IBlockProcessor _processor;
     private readonly SyncPeerManager _peerManager;
     private readonly int _maxDepth;
+    private readonly HashSet<Bytes32> _pendingBackfills = new();
+    private CancellationToken _shutdownToken;
 
     public BackfillSync(INetworkRequester network, IBlockProcessor processor,
         SyncPeerManager peerManager, int maxDepth = DefaultMaxBackfillDepth)
@@ -21,10 +23,30 @@ public sealed class BackfillSync : IBackfillTrigger
         _maxDepth = maxDepth;
     }
 
+    public void SetShutdownToken(CancellationToken ct) => _shutdownToken = ct;
+
     public void RequestBackfill(Bytes32 parentRoot)
     {
-        // Fire-and-forget; SyncService will manage the async lifecycle
-        _ = RequestParentsAsync(new List<Bytes32> { parentRoot }, CancellationToken.None);
+        // Deduplicate: skip if already in-flight
+        if (!_pendingBackfills.Add(parentRoot))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RequestParentsAsync(new List<Bytes32> { parentRoot }, _shutdownToken);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception)
+            {
+                // Swallow — in production, this would log the exception.
+            }
+            finally
+            {
+                _pendingBackfills.Remove(parentRoot);
+            }
+        }, _shutdownToken);
     }
 
     public async Task RequestParentsAsync(List<Bytes32> roots, CancellationToken ct)
@@ -34,6 +56,8 @@ public sealed class BackfillSync : IBackfillTrigger
 
         while (pending.Count > 0 && depth < _maxDepth)
         {
+            ct.ThrowIfCancellationRequested();
+
             // Filter out already-known roots
             var batch = new List<Bytes32>();
             while (pending.Count > 0 && batch.Count < MaxBlocksPerRequest)
@@ -68,7 +92,6 @@ public sealed class BackfillSync : IBackfillTrigger
                     var result = _processor.ProcessBlock(block);
                     if (result.Accepted)
                     {
-                        // If the parent of this fetched block is still unknown, enqueue it
                         var parentRoot = block.Message.Block.ParentRoot;
                         if (!_processor.IsBlockKnown(parentRoot))
                             pending.Enqueue(parentRoot);

@@ -44,7 +44,9 @@ public sealed class ProtoArrayForkChoiceStore
     public Bytes32 HeadRoot => _headRoot;
     public ulong HeadSlot => _headSlot;
     public ulong JustifiedSlot => _latestJustified.Slot.Value;
+    public Bytes32 JustifiedRoot => _latestJustified.Root;
     public ulong FinalizedSlot => _latestFinalized.Slot.Value;
+    public Bytes32 FinalizedRoot => _latestFinalized.Root;
     public bool ContainsBlock(Bytes32 root) => _protoArray.ContainsBlock(root);
 
     public ForkChoiceApplyResult OnBlock(SignedBlockWithAttestation signedBlock)
@@ -97,6 +99,17 @@ public sealed class ProtoArrayForkChoiceStore
         {
             _latestFinalized = postState.LatestFinalized;
             _protoArray.Prune(_latestFinalized.Root);
+
+            // Clean up states for pruned nodes to prevent memory leak
+            var staleKeys = new List<string>();
+            foreach (var key in _states.Keys)
+            {
+                if (!_protoArray.ContainsKey(key))
+                    staleKeys.Add(key);
+            }
+
+            foreach (var key in staleKeys)
+                _states.Remove(key);
         }
 
         return ForkChoiceApplyResult.AcceptedResult(false, _headSlot, _headRoot);

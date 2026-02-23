@@ -11,6 +11,7 @@ public sealed class NewBlockCache
     private readonly int _capacity;
     private readonly Dictionary<Bytes32, PendingBlock> _blocks = new();
     private readonly LinkedList<Bytes32> _insertionOrder = new();
+    private readonly Dictionary<Bytes32, LinkedListNode<Bytes32>> _orderNodes = new();
     private readonly Dictionary<Bytes32, HashSet<Bytes32>> _childrenByParent = new();
     private readonly HashSet<Bytes32> _orphanParents = new();
 
@@ -31,7 +32,8 @@ public sealed class NewBlockCache
             EvictOldest();
 
         _blocks[block.Root] = block;
-        _insertionOrder.AddLast(block.Root);
+        var node = _insertionOrder.AddLast(block.Root);
+        _orderNodes[block.Root] = node;
 
         if (!_childrenByParent.TryGetValue(block.ParentRoot, out var siblings))
         {
@@ -51,7 +53,11 @@ public sealed class NewBlockCache
             return;
 
         _blocks.Remove(root);
-        _insertionOrder.Remove(root);
+        if (_orderNodes.TryGetValue(root, out var orderNode))
+        {
+            _insertionOrder.Remove(orderNode); // O(1)
+            _orderNodes.Remove(root);
+        }
 
         if (_childrenByParent.TryGetValue(block.ParentRoot, out var siblings))
         {
@@ -102,6 +108,7 @@ public sealed class NewBlockCache
 
         var root = oldest.Value;
         _insertionOrder.RemoveFirst();
+        _orderNodes.Remove(root);
 
         if (_blocks.TryGetValue(root, out var block))
         {

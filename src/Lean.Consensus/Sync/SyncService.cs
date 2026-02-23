@@ -71,7 +71,7 @@ public sealed class SyncService : ISyncService
         }
 
         var networkFinalized = _peerManager.GetNetworkFinalizedSlot();
-        var localHead = GetLocalHeadSlot();
+        var localHead = _processor.HeadSlot;
         var hasOrphans = _cache.OrphanCount > 0;
 
         if (localHead >= networkFinalized && !hasOrphans)
@@ -80,23 +80,11 @@ public sealed class SyncService : ISyncService
             _state = SyncState.Syncing;
     }
 
-    public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+    public Task StartAsync(CancellationToken ct)
+    {
+        _backfillSync.SetShutdownToken(ct);
+        return Task.CompletedTask;
+    }
 
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
-
-    private ulong GetLocalHeadSlot()
-    {
-        // Walk through known blocks to find highest slot
-        // In production, this delegates to ForkChoiceStore.HeadSlot
-        // For now we use a simple approach: check if processor reports it
-        if (_processor is IHeadSlotProvider provider)
-            return provider.HeadSlot;
-
-        return 0;
-    }
-}
-
-public interface IHeadSlotProvider
-{
-    ulong HeadSlot { get; }
 }

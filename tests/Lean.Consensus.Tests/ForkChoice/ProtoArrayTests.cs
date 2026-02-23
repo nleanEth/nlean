@@ -550,6 +550,31 @@ public sealed class ProtoArrayTests
         Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(b));
     }
 
+    [Test]
+    public void FindHead_AfterPrune_WithoutApplyScoreChanges_StillWorks()
+    {
+        // Regression: Prune must clear BestChild/BestDescendant so
+        // FindHead doesn't follow stale index pointers.
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var c = MakeRoot(0x04);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.RegisterBlock(c, b, 3, 0, 0);
+
+        array.ApplyScoreChanges(
+            new Dictionary<string, long> { [ProtoArray.RootKey(c)] = 1 }, 0, 0);
+
+        // Prune genesis — a becomes new root
+        array.Prune(a);
+
+        // FindHead without ApplyScoreChanges should still work (returns justified root
+        // since BestDescendant was cleared)
+        Assert.DoesNotThrow(() => array.FindHead(a, 0, 0));
+    }
+
     internal static Bytes32 MakeRoot(byte fill) =>
         new(Enumerable.Repeat(fill, 32).ToArray());
 }
