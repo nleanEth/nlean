@@ -5,7 +5,7 @@ using Lean.Consensus.Types;
 
 namespace Lean.Consensus;
 
-public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
+public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockProcessor
 {
     private readonly ProtoArrayForkChoiceStore _store;
     private readonly SlotClock _clock;
@@ -43,6 +43,10 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget
             new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)),
             new Checkpoint(_store.FinalizedRoot, new Slot(_store.FinalizedSlot)));
     }
+
+    // IBlockProcessor
+    public bool IsBlockKnown(Bytes32 root) => _store.ContainsBlock(root);
+    public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock) => _store.OnBlock(signedBlock);
 
     public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason)
     {
