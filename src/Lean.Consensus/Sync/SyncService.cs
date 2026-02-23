@@ -24,7 +24,10 @@ public sealed class SyncService : ISyncService
         _peerManager = peerManager;
         _cache = cache;
         _attestationSink = attestationSink;
-        _backfillSync = new BackfillSync(network, processor, peerManager);
+        // Note: _headSync is captured by the lambda and assigned on the next line.
+        // This is safe because the callback only executes after construction completes.
+        _backfillSync = new BackfillSync(network, processor, peerManager,
+            onBlockAccepted: root => _headSync!.CascadeChildren(root));
         _headSync = new HeadSync(processor, cache, _backfillSync);
     }
 

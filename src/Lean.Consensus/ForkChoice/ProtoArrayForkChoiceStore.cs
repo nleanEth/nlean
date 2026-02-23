@@ -1,8 +1,9 @@
+using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
 
 namespace Lean.Consensus.ForkChoice;
 
-public sealed class ProtoArrayForkChoiceStore
+public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 {
     public const int IntervalsPerSlot = 5;
 
@@ -52,7 +53,7 @@ public sealed class ProtoArrayForkChoiceStore
     public ForkChoiceApplyResult OnBlock(SignedBlockWithAttestation signedBlock)
     {
         var block = signedBlock.Message.Block;
-        var blockRoot = new Bytes32(signedBlock.HashTreeRoot());
+        var blockRoot = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
         var blockKey = ProtoArray.RootKey(blockRoot);
 
         // Reject duplicates
@@ -119,6 +120,8 @@ public sealed class ProtoArrayForkChoiceStore
     {
         _pendingAttestations[attestation.ValidatorId] = attestation.Message;
     }
+
+    void IAttestationSink.AddAttestation(SignedAttestation attestation) => OnAttestation(attestation);
 
     /// <summary>
     /// Called at each interval within a slot.

@@ -35,6 +35,20 @@ public sealed class HeadSync
         }
     }
 
+    /// <summary>
+    /// Called by BackfillSync after a block is accepted via backfill,
+    /// so that cached children can be cascaded.
+    /// </summary>
+    public void CascadeChildren(Bytes32 acceptedRoot)
+    {
+        var children = _cache.GetChildren(acceptedRoot);
+        foreach (var child in children)
+        {
+            if (child.SignedBlock is not null)
+                ProcessAndCascade(child.SignedBlock, child.Root);
+        }
+    }
+
     private void ProcessAndCascade(SignedBlockWithAttestation signedBlock, Bytes32 blockRoot)
     {
         var result = _processor.ProcessBlock(signedBlock);

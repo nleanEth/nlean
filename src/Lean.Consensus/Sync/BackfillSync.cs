@@ -11,16 +11,19 @@ public sealed class BackfillSync : IBackfillTrigger
     private readonly IBlockProcessor _processor;
     private readonly SyncPeerManager _peerManager;
     private readonly int _maxDepth;
+    private readonly Action<Bytes32>? _onBlockAccepted;
     private readonly HashSet<Bytes32> _pendingBackfills = new();
     private CancellationToken _shutdownToken;
 
     public BackfillSync(INetworkRequester network, IBlockProcessor processor,
-        SyncPeerManager peerManager, int maxDepth = DefaultMaxBackfillDepth)
+        SyncPeerManager peerManager, int maxDepth = DefaultMaxBackfillDepth,
+        Action<Bytes32>? onBlockAccepted = null)
     {
         _network = network;
         _processor = processor;
         _peerManager = peerManager;
         _maxDepth = maxDepth;
+        _onBlockAccepted = onBlockAccepted;
     }
 
     public void SetShutdownToken(CancellationToken ct) => _shutdownToken = ct;
@@ -53,7 +56,9 @@ public sealed class BackfillSync : IBackfillTrigger
     {
         var pending = new Queue<Bytes32>(roots);
         var depth = 0;
+        var collected = new List<(SignedBlockWithAttestation Block, Bytes32 Root)>();
 
+        // Phase 1: Fetch blocks backwards until we reach known ancestors
         while (pending.Count > 0 && depth < _maxDepth)
         {
             ct.ThrowIfCancellationRequested();
@@ -89,13 +94,13 @@ public sealed class BackfillSync : IBackfillTrigger
 
                 foreach (var block in fetched)
                 {
-                    var result = _processor.ProcessBlock(block);
-                    if (result.Accepted)
-                    {
-                        var parentRoot = block.Message.Block.ParentRoot;
-                        if (!_processor.IsBlockKnown(parentRoot))
-                            pending.Enqueue(parentRoot);
-                    }
+                    var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
+                    collected.Add((block, blockRoot));
+
+                    // Always continue backwards if parent is unknown
+                    var parentRoot = block.Message.Block.ParentRoot;
+                    if (!_processor.IsBlockKnown(parentRoot))
+                        pending.Enqueue(parentRoot);
                 }
             }
             finally
@@ -104,6 +109,14 @@ public sealed class BackfillSync : IBackfillTrigger
             }
 
             depth++;
+        }
+
+        // Phase 2: Process collected blocks in forward slot order (oldest first)
+        foreach (var (block, blockRoot) in collected.OrderBy(x => x.Block.Message.Block.Slot.Value))
+        {
+            var result = _processor.ProcessBlock(block);
+            if (result.Accepted)
+                _onBlockAccepted?.Invoke(blockRoot);
         }
     }
 }
