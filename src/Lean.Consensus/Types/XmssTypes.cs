@@ -167,18 +167,11 @@ public sealed class XmssSignature
     public ReadOnlySpan<byte> Bytes => _legacyBytes ?? EncodeBytes();
 
     /// <summary>
-    /// Create an XMSS signature from SSZ-encoded bytes.
-    /// Currently uses legacy byte[] constructor; will be replaced by SszDecoding in Task 1.3.
+    /// Create an XMSS signature from SSZ-encoded bytes (Container format).
     /// </summary>
     public static XmssSignature FromBytes(ReadOnlySpan<byte> bytes)
     {
-        // TODO: Task 1.3 will replace this with SszDecoding.DecodeXmssSignature
-        if (bytes.Length != Length)
-        {
-            throw new ArgumentException($"XmssSignature must be exactly {Length} bytes.");
-        }
-
-        return new XmssSignature(bytes.ToArray());
+        return SszDecoding.DecodeXmssSignature(bytes);
     }
 
     /// <summary>
