@@ -230,6 +230,309 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
         }
     }
 
+    [Test]
+    public async Task LateJoiner_ReplayedGossip_Finalizes()
+    {
+        const int validatorCount = 8;
+        var bus = new InMemoryGossipBus();
+        var canonicalGenesisRoot = BuildCanonicalGenesisRoot(validatorCount);
+        var earlyNodes = new[]
+        {
+            CreateNodeV2(bus, validatorCount, "n0"),
+            CreateNodeV2(bus, validatorCount, "n1")
+        };
+
+        try
+        {
+            foreach (var node in earlyNodes)
+            {
+                await node.Service.StartAsync(CancellationToken.None);
+                node.SyncService.OnPeerConnected("external");
+                await node.SyncService.OnPeerStatusAsync("external", 0, 0);
+            }
+
+            var atSlotOne = await WaitUntilAsync(
+                () => earlyNodes.All(n => n.Service.CurrentSlot >= 1),
+                TimeSpan.FromSeconds(8));
+            Assert.That(atSlotOne, Is.True);
+
+            var blockOne = CreateSignedBlock(
+                blockSlot: 1,
+                parentRoot: Bytes32.Zero(), parentSlot: 0,
+                sourceRoot: Bytes32.Zero(), sourceSlot: 0,
+                proposerAttesterId: 0, proposerIndex: 0,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            await PublishBlockToAll(bus, earlyNodes, blockOne);
+
+            var earlyHeadOne = await WaitUntilAsync(
+                () => earlyNodes.All(n => n.Service.HeadSlot >= 1),
+                TimeSpan.FromSeconds(8));
+            Assert.That(earlyHeadOne, Is.True);
+
+            var blockTwo = CreateSignedBlock(
+                blockSlot: 2,
+                parentRoot: blockOneRoot, parentSlot: 1,
+                sourceRoot: Bytes32.Zero(), sourceSlot: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
+                targetRoot: blockOneRoot, targetSlot: 1,
+                headRoot: blockOneRoot, headSlot: 1,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            await PublishBlockToAll(bus, earlyNodes, blockTwo);
+
+            var earlyHeadTwo = await WaitUntilAsync(
+                () => earlyNodes.All(n => n.Service.HeadSlot >= 2),
+                TimeSpan.FromSeconds(8));
+            Assert.That(earlyHeadTwo, Is.True);
+
+            // Late joiner starts after blocks 1-2 are already published
+            var lateNode = CreateNodeV2(bus, validatorCount, "n-late");
+            await lateNode.Service.StartAsync(CancellationToken.None);
+            lateNode.SyncService.OnPeerConnected("external");
+            // Trigger sync — peer reports head at slot 2
+            await lateNode.SyncService.OnPeerStatusAsync("external", 2, 0);
+
+            var lateAtSlotOne = await WaitUntilAsync(
+                () => lateNode.Service.CurrentSlot >= 1,
+                TimeSpan.FromSeconds(8));
+            Assert.That(lateAtSlotOne, Is.True);
+
+            // Replay blocks 1-2 to the late joiner via gossip
+            await lateNode.SyncService.OnGossipBlockAsync(blockOne, blockOneRoot, "external");
+            await lateNode.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
+
+            var syncedToTwo = await WaitUntilAsync(
+                () => lateNode.Service.HeadSlot >= 2,
+                TimeSpan.FromSeconds(8));
+            Assert.That(syncedToTwo, Is.True);
+
+            // Publish block 3 to all including late joiner
+            var allNodes = new[] { earlyNodes[0], earlyNodes[1], lateNode };
+            var blockThree = CreateSignedBlock(
+                blockSlot: 3,
+                parentRoot: blockTwoRoot, parentSlot: 2,
+                sourceRoot: blockOneRoot, sourceSlot: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
+                targetRoot: blockTwoRoot, targetSlot: 2,
+                headRoot: blockTwoRoot, headSlot: 2,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockThreeRoot = new Bytes32(blockThree.Message.Block.HashTreeRoot());
+            await PublishBlockToAll(bus, allNodes, blockThree);
+
+            // Late joiner should finalize
+            var lateFinalized = await WaitUntilAsync(
+                () => lateNode.Service.HeadSlot >= 3 &&
+                      lateNode.Service.FinalizedSlot >= 1,
+                TimeSpan.FromSeconds(12));
+            Assert.That(lateFinalized, Is.True,
+                $"late joiner finalization failed: head={lateNode.Service.HeadSlot}, finalized={lateNode.Service.FinalizedSlot}");
+        }
+        finally
+        {
+            foreach (var node in earlyNodes)
+                await node.Service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Test]
+    public async Task MultiNodeGossip_WithMessageLoss_RecoversViaBackfillAndFinalizes()
+    {
+        const int validatorCount = 8;
+        var bus = new InMemoryGossipBus();
+        var canonicalGenesisRoot = BuildCanonicalGenesisRoot(validatorCount);
+        var nodes = Enumerable.Range(0, validatorCount)
+            .Select(index => CreateNodeV2(bus, validatorCount, $"n{index}"))
+            .ToArray();
+
+        try
+        {
+            foreach (var node in nodes)
+            {
+                await node.Service.StartAsync(CancellationToken.None);
+                node.SyncService.OnPeerConnected("external");
+                await node.SyncService.OnPeerStatusAsync("external", 0, 0);
+            }
+
+            var atSlotOne = await WaitUntilAsync(
+                () => nodes.All(n => n.Service.CurrentSlot >= 1),
+                TimeSpan.FromSeconds(8));
+            Assert.That(atSlotOne, Is.True);
+
+            var blockOne = CreateSignedBlock(
+                blockSlot: 1,
+                parentRoot: Bytes32.Zero(), parentSlot: 0,
+                sourceRoot: Bytes32.Zero(), sourceSlot: 0,
+                proposerAttesterId: 0, proposerIndex: 0,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            bus.StoreBlock(blockOne);
+
+            // Simulate message loss: skip delivery of block 1 to n4 and n5
+            var blockOneRecipients = nodes.Where(n => n.NodeId != "n4" && n.NodeId != "n5").ToArray();
+            foreach (var node in blockOneRecipients)
+                await node.SyncService.OnGossipBlockAsync(blockOne, blockOneRoot, "external");
+
+            var blockTwo = CreateSignedBlock(
+                blockSlot: 2,
+                parentRoot: blockOneRoot, parentSlot: 1,
+                sourceRoot: Bytes32.Zero(), sourceSlot: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
+                targetRoot: blockOneRoot, targetSlot: 1,
+                headRoot: blockOneRoot, headSlot: 1,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            bus.StoreBlock(blockTwo);
+
+            // Simulate message loss: skip delivery of block 2 to n0 and n2
+            var blockTwoRecipients = nodes.Where(n => n.NodeId != "n0" && n.NodeId != "n2").ToArray();
+            foreach (var node in blockTwoRecipients)
+                await node.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
+
+            // Now deliver block 2 to the nodes that missed block 1 — they should backfill block 1
+            // n4 and n5 receive block 2 (which has parent=block1), triggering missing-parent recovery
+            foreach (var node in nodes.Where(n => n.NodeId == "n4" || n.NodeId == "n5"))
+                await node.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
+
+            // Deliver block 1 to n0 and n2 who missed block 2 — then deliver block 2
+            foreach (var node in nodes.Where(n => n.NodeId == "n0" || n.NodeId == "n2"))
+                await node.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
+
+            var blockThree = CreateSignedBlock(
+                blockSlot: 3,
+                parentRoot: blockTwoRoot, parentSlot: 2,
+                sourceRoot: blockOneRoot, sourceSlot: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
+                targetRoot: blockTwoRoot, targetSlot: 2,
+                headRoot: blockTwoRoot, headSlot: 2,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            await PublishBlockToAll(bus, nodes, blockThree);
+
+            var converged = await WaitUntilAsync(
+                () => nodes.All(n => n.Service.HeadSlot >= 3),
+                TimeSpan.FromSeconds(12));
+            Assert.That(converged, Is.True,
+                $"convergence failed: heads=[{string.Join(",", nodes.Select(n => n.Service.HeadSlot))}]");
+
+            var finalized = await WaitUntilAsync(
+                () => nodes.All(n => n.Service.FinalizedSlot >= 1),
+                TimeSpan.FromSeconds(12));
+            Assert.That(finalized, Is.True,
+                $"finalization failed: finalized=[{string.Join(",", nodes.Select(n => n.Service.FinalizedSlot))}]");
+        }
+        finally
+        {
+            foreach (var node in nodes)
+                await node.Service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Test]
+    public async Task MultiNodeGossip_WithNetworkPartition_HealsAndFinalizes()
+    {
+        const int validatorCount = 8;
+        var bus = new InMemoryGossipBus();
+        var canonicalGenesisRoot = BuildCanonicalGenesisRoot(validatorCount);
+        var nodes = Enumerable.Range(0, validatorCount)
+            .Select(index => CreateNodeV2(bus, validatorCount, $"n{index}"))
+            .ToArray();
+
+        var partitionA = nodes.Where(n => n.NodeId is "n0" or "n1" or "n2" or "n3").ToArray();
+        var partitionB = nodes.Where(n => n.NodeId is "n4" or "n5" or "n6" or "n7").ToArray();
+
+        try
+        {
+            foreach (var node in nodes)
+            {
+                await node.Service.StartAsync(CancellationToken.None);
+                node.SyncService.OnPeerConnected("external");
+                await node.SyncService.OnPeerStatusAsync("external", 0, 0);
+            }
+
+            var atSlotOne = await WaitUntilAsync(
+                () => nodes.All(n => n.Service.CurrentSlot >= 1),
+                TimeSpan.FromSeconds(8));
+            Assert.That(atSlotOne, Is.True);
+
+            // Partition: deliver blocks 1-2 only to partition A
+            var blockOne = CreateSignedBlock(
+                blockSlot: 1,
+                parentRoot: Bytes32.Zero(), parentSlot: 0,
+                sourceRoot: Bytes32.Zero(), sourceSlot: 0,
+                proposerAttesterId: 0, proposerIndex: 0,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            bus.StoreBlock(blockOne);
+            foreach (var node in partitionA)
+                await node.SyncService.OnGossipBlockAsync(blockOne, blockOneRoot, "external");
+
+            var blockTwo = CreateSignedBlock(
+                blockSlot: 2,
+                parentRoot: blockOneRoot, parentSlot: 1,
+                sourceRoot: Bytes32.Zero(), sourceSlot: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
+                targetRoot: blockOneRoot, targetSlot: 1,
+                headRoot: blockOneRoot, headSlot: 1,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            bus.StoreBlock(blockTwo);
+            foreach (var node in partitionA)
+                await node.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
+
+            // Verify partition A has progressed but partition B has not
+            var partitionDiverged = await WaitUntilAsync(
+                () => partitionA.All(n => n.Service.HeadSlot >= 2) &&
+                      partitionB.All(n => n.Service.HeadSlot < 2),
+                TimeSpan.FromSeconds(8));
+            Assert.That(partitionDiverged, Is.True,
+                $"partition divergence failed: A-heads=[{string.Join(",", partitionA.Select(n => n.Service.HeadSlot))}], B-heads=[{string.Join(",", partitionB.Select(n => n.Service.HeadSlot))}]");
+
+            // Heal partition: deliver blocks 1-2 to partition B (via backfill/gossip replay)
+            foreach (var node in partitionB)
+            {
+                await node.SyncService.OnGossipBlockAsync(blockOne, blockOneRoot, "external");
+                await node.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
+            }
+
+            // Publish block 3 to all nodes (partition healed)
+            var blockThree = CreateSignedBlock(
+                blockSlot: 3,
+                parentRoot: blockTwoRoot, parentSlot: 2,
+                sourceRoot: blockOneRoot, sourceSlot: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
+                targetRoot: blockTwoRoot, targetSlot: 2,
+                headRoot: blockTwoRoot, headSlot: 2,
+                aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
+                canonicalGenesisRoot: canonicalGenesisRoot);
+            await PublishBlockToAll(bus, nodes, blockThree);
+
+            var converged = await WaitUntilAsync(
+                () => nodes.All(n => n.Service.HeadSlot >= 3),
+                TimeSpan.FromSeconds(8));
+            Assert.That(converged, Is.True,
+                $"convergence failed: heads=[{string.Join(",", nodes.Select(n => n.Service.HeadSlot))}]");
+
+            var finalized = await WaitUntilAsync(
+                () => nodes.All(n => n.Service.FinalizedSlot >= 1),
+                TimeSpan.FromSeconds(12));
+            Assert.That(finalized, Is.True,
+                $"finalization failed: finalized=[{string.Join(",", nodes.Select(n => n.Service.FinalizedSlot))}]");
+        }
+        finally
+        {
+            foreach (var node in nodes)
+                await node.Service.StopAsync(CancellationToken.None);
+        }
+    }
+
     #region Test Infrastructure
 
     private static TestNodeV2 CreateNodeV2(
