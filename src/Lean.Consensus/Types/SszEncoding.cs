@@ -81,14 +81,16 @@ public static class SszEncoding
     public static byte[] Encode(SignedAttestation value)
     {
         var signatureBytes = Encode(value.Signature);
-        var fixedSize = UInt64Length + AttestationDataLength + XmssSignature.Length;
-        var buffer = new byte[fixedSize];
+        // Fixed part: ValidatorId(8) + AttestationData(104) + offset(4) = 116
+        var fixedSize = UInt64Length + AttestationDataLength + UInt32Length;
+        var buffer = new byte[fixedSize + signatureBytes.Length];
         var offset = 0;
         Ssz.Encode(buffer.AsSpan(offset, UInt64Length), value.ValidatorId);
         offset += UInt64Length;
         EncodeInto(buffer, offset, value.Message);
         offset += AttestationDataLength;
-        signatureBytes.CopyTo(buffer.AsSpan(offset, XmssSignature.Length));
+        WriteOffset(buffer, offset, fixedSize);
+        signatureBytes.CopyTo(buffer.AsSpan(fixedSize));
         return buffer;
     }
 
@@ -137,11 +139,13 @@ public static class SszEncoding
     {
         var attestationSignaturesBytes = Encode(value.AttestationSignatures);
         var proposerSignatureBytes = Encode(value.ProposerSignature);
-        var fixedSize = UInt32Length + XmssSignature.Length;
-        var buffer = new byte[fixedSize + attestationSignaturesBytes.Length];
+        // Both fields are variable-size: 2 offsets
+        var fixedSize = UInt32Length + UInt32Length;
+        var buffer = new byte[fixedSize + attestationSignaturesBytes.Length + proposerSignatureBytes.Length];
         WriteOffset(buffer, 0, fixedSize);
-        proposerSignatureBytes.CopyTo(buffer.AsSpan(UInt32Length, XmssSignature.Length));
+        WriteOffset(buffer, UInt32Length, fixedSize + attestationSignaturesBytes.Length);
         attestationSignaturesBytes.CopyTo(buffer.AsSpan(fixedSize));
+        proposerSignatureBytes.CopyTo(buffer.AsSpan(fixedSize + attestationSignaturesBytes.Length));
         return buffer;
     }
 
@@ -160,7 +164,29 @@ public static class SszEncoding
 
     public static byte[] Encode(XmssSignature value)
     {
-        return value.EncodeBytes();
+        // SSZ Container: path (variable), rho (fixed), hashes (variable)
+        // Fixed part: offset_path(4) + rho(28) + offset_hashes(4) = 36
+        var rhoBytes = Encode(value.Rho);
+        var pathBytes = Encode(value.Path);
+        var hashesBytes = Encode(value.Hashes);
+
+        var fixedSize = UInt32Length + RandomnessLength + UInt32Length;
+        var buffer = new byte[fixedSize + pathBytes.Length + hashesBytes.Length];
+
+        var dynamicOffset = fixedSize;
+        // offset_path
+        WriteOffset(buffer, 0, dynamicOffset);
+        // rho (fixed, inline)
+        rhoBytes.CopyTo(buffer.AsSpan(UInt32Length, RandomnessLength));
+        // offset_hashes
+        dynamicOffset += pathBytes.Length;
+        WriteOffset(buffer, UInt32Length + RandomnessLength, dynamicOffset);
+        // path data
+        pathBytes.CopyTo(buffer.AsSpan(fixedSize));
+        // hashes data
+        hashesBytes.CopyTo(buffer.AsSpan(fixedSize + pathBytes.Length));
+
+        return buffer;
     }
 
     public static byte[] Encode(HashTreeOpening value)

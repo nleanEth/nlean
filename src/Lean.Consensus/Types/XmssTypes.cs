@@ -200,8 +200,7 @@ public sealed class XmssSignature
 
     /// <summary>
     /// SSZ-encode this signature. If constructed from legacy bytes, returns those bytes.
-    /// Otherwise encodes as a container with variable-length fields.
-    /// Note: Container encoding will be finalized in Task 1.2.
+    /// Otherwise delegates to SszEncoding.Encode for proper Container encoding.
     /// </summary>
     public byte[] EncodeBytes()
     {
@@ -210,36 +209,7 @@ public sealed class XmssSignature
             return _legacyBytes.ToArray();
         }
 
-        var pathBytes = SszEncoding.Encode(Path);
-        var rhoBytes = SszEncoding.Encode(Rho);
-        var hashesBytes = SszEncoding.Encode(Hashes);
-
-        // Container with: offset(path) | rho (fixed) | offset(hashes) | path_data | hashes_data
-        var fixedSize = SszEncoding.UInt32Length + SszEncoding.RandomnessLength + SszEncoding.UInt32Length;
-        var buffer = new byte[fixedSize + pathBytes.Length + hashesBytes.Length];
-
-        var offset = 0;
-        // offset for path (variable-size)
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(
-            buffer.AsSpan(offset, SszEncoding.UInt32Length), (uint)fixedSize);
-        offset += SszEncoding.UInt32Length;
-
-        // rho (fixed-size)
-        rhoBytes.CopyTo(buffer.AsSpan(offset, SszEncoding.RandomnessLength));
-        offset += SszEncoding.RandomnessLength;
-
-        // offset for hashes (variable-size)
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(
-            buffer.AsSpan(offset, SszEncoding.UInt32Length), (uint)(fixedSize + pathBytes.Length));
-        offset += SszEncoding.UInt32Length;
-
-        // path data
-        pathBytes.CopyTo(buffer.AsSpan(fixedSize));
-
-        // hashes data
-        hashesBytes.CopyTo(buffer.AsSpan(fixedSize + pathBytes.Length));
-
-        return buffer;
+        return SszEncoding.Encode(this);
     }
 
     /// <summary>
