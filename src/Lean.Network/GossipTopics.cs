@@ -18,6 +18,8 @@ public static class GossipTopics
 
     public static string Aggregate(string network) => Format(network, "aggregate");
 
+    public static string AttestationSubnet(string network, int subnetId) => Format(network, $"attestation_{subnetId}");
+
     private static string Format(string network, string topic)
     {
         if (string.IsNullOrWhiteSpace(network))

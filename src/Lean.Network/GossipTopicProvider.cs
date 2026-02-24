@@ -18,6 +18,8 @@ public sealed class GossipTopicProvider : IGossipTopicProvider
 
     public string AggregateTopic { get; }
 
+    public string AttestationSubnetTopic(int subnetId) => GossipTopics.AttestationSubnet(Network, subnetId);
+
     private static string NormalizeNetwork(string? network)
     {
         if (string.IsNullOrWhiteSpace(network))

@@ -54,6 +54,7 @@ public sealed class ValidatorService : IValidatorService
     private ulong _validatorCount;
     private bool _aggregateEnabled;
     private int _observedBlockDumpCounter;
+    private ulong _lastUnknownRootSuppressedSlot = ulong.MaxValue;
 
     public ValidatorService(
         ILogger<ValidatorService> logger,
@@ -203,6 +204,12 @@ public sealed class ValidatorService : IValidatorService
                     // Match ream/zeam behavior: skip proposing at genesis slot 0.
                     if (slot > 0 && IsProposerSlot(slot))
                     {
+                        if (ShouldSuppressDutyForUnknownRoots(slot))
+                        {
+                            PruneOldSlots(slot);
+                            continue;
+                        }
+
                         var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
                         if (publishedBlock)
                         {
@@ -225,6 +232,13 @@ public sealed class ValidatorService : IValidatorService
                     var proposerAttestedInBlock = lastPublishedProposerSlot == slot;
                     if (!proposerAttestedInBlock)
                     {
+                        if (ShouldSuppressDutyForUnknownRoots(slot))
+                        {
+                            lastAttestedSlot = slot;
+                            PruneOldSlots(slot);
+                            continue;
+                        }
+
                         try
                         {
                             await PublishStandaloneAttestationAsync(slot, cancellationToken);
@@ -332,7 +346,6 @@ public sealed class ValidatorService : IValidatorService
 
         var signature = XmssSignature.FromBytes(signatureBytes);
         var signedAttestation = new SignedAttestation(_validatorId, attestationData, signature);
-        RecordObservedAttestation(signedAttestation);
         if (!_consensusService.TryApplyLocalAttestation(signedAttestation, out var localAttestationReason))
         {
             _logger.LogWarning(
@@ -340,10 +353,13 @@ public sealed class ValidatorService : IValidatorService
                 slot,
                 _validatorId,
                 localAttestationReason);
+            return;
         }
 
+        RecordObservedAttestation(signedAttestation);
         var attestationPayload = SszEncoding.Encode(signedAttestation);
-        await PublishToTopicAsync(_gossipTopics.AttestationTopic, attestationPayload, cancellationToken);
+        var subnetId = new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
+        await PublishToTopicAsync(_gossipTopics.AttestationSubnetTopic(subnetId), attestationPayload, cancellationToken);
         TrackSignature(slot, messageRoot, epoch, signatureBytes);
 
         if (_aggregateEnabled)
@@ -384,6 +400,12 @@ public sealed class ValidatorService : IValidatorService
 
     private async Task ExecuteSlotDutyAsync(ulong slot, CancellationToken cancellationToken)
     {
+        if (ShouldSuppressDutyForUnknownRoots(slot))
+        {
+            PruneOldSlots(slot);
+            return;
+        }
+
         if (slot > 0 && IsProposerSlot(slot))
         {
             var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
@@ -408,6 +430,29 @@ public sealed class ValidatorService : IValidatorService
     {
         var validatorCount = Math.Max(1UL, _validatorCount);
         return slot % validatorCount == _validatorId;
+    }
+
+    private bool ShouldSuppressDutyForUnknownRoots(ulong slot)
+    {
+        if (!_consensusService.HasUnknownBlockRootsInFlight)
+        {
+            return false;
+        }
+
+        if (_lastUnknownRootSuppressedSlot == slot)
+        {
+            return true;
+        }
+
+        _lastUnknownRootSuppressedSlot = slot;
+        _logger.LogInformation(
+            "Skipping validator duty while unknown-root recovery is in flight. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
+            slot,
+            _validatorId,
+            _consensusService.HeadSlot,
+            _consensusService.JustifiedSlot,
+            _consensusService.FinalizedSlot);
+        return true;
     }
 
     private async Task<bool> TryPublishProposerBlockAsync(ulong slot, CancellationToken cancellationToken)
@@ -468,7 +513,6 @@ public sealed class ValidatorService : IValidatorService
         var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
         var proposerAttestation = new Attestation(_validatorId, proposerAttestationData);
         var signedProposerAttestation = new SignedAttestation(_validatorId, proposerAttestationData, proposerSignature);
-        RecordObservedAttestation(signedProposerAttestation);
 
         var signedBlock = new SignedBlockWithAttestation(
             new BlockWithAttestation(block, proposerAttestation),
@@ -484,6 +528,7 @@ public sealed class ValidatorService : IValidatorService
             return false;
         }
 
+        RecordObservedAttestation(signedProposerAttestation);
         var payload = SszEncoding.Encode(signedBlock);
         TryDumpProposerBlock(slot, payload, parentRoot, blockRoot, signedBlock);
         await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
@@ -874,10 +919,12 @@ public sealed class ValidatorService : IValidatorService
 
     private async Task SubscribeAttestationTopicsAsync(CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_gossipTopics.AttestationTopic))
+        var subnetId = new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
+        var subnetTopic = _gossipTopics.AttestationSubnetTopic(subnetId);
+        if (!string.IsNullOrWhiteSpace(subnetTopic))
         {
             await _networkService.SubscribeAsync(
-                _gossipTopics.AttestationTopic,
+                subnetTopic,
                 ObserveAttestationPayload,
                 cancellationToken);
         }

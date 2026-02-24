@@ -99,13 +99,13 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(published, Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestation("devnet0")), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet("devnet0", 0)), Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregate("devnet0")), Is.True);
     }
 
@@ -125,12 +125,12 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(published, Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Attestations).Payload;
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.Attestation, Is.Not.Null);
@@ -152,12 +152,12 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(published, Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Attestations).Payload;
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         var message = decodeResult.Attestation!.Message;
@@ -186,7 +186,7 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
@@ -215,7 +215,7 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
@@ -256,7 +256,7 @@ public sealed class ValidatorServiceTests
         Assert.That(publishedBlock, Is.True);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.GreaterThan(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
 
         var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Blocks).Payload;
         var decodeResult = new SignedBlockWithAttestationGossipDecoder().DecodeAndValidate(payload);
@@ -280,7 +280,7 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var publishedAttestation = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
@@ -315,7 +315,7 @@ public sealed class ValidatorServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(attemptedLocalApply, Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
     }
 
     [Test]
@@ -344,7 +344,7 @@ public sealed class ValidatorServiceTests
 
         Assert.That(dutyLoopObserved, Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
     }
@@ -390,7 +390,7 @@ public sealed class ValidatorServiceTests
 
         await service.StartAsync(CancellationToken.None);
         var publishedAttestation = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
             TimeSpan.FromSeconds(3));
         await service.StopAsync(CancellationToken.None);
 
@@ -481,10 +481,10 @@ public sealed class ValidatorServiceTests
 
         var slotTwoData = consensus.CreateAttestationData(2);
         network.Emit(
-            GossipTopics.Attestations,
+            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
             SszEncoding.Encode(new SignedAttestation(2, slotTwoData, XmssSignature.Empty())));
         network.Emit(
-            GossipTopics.Attestations,
+            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
             SszEncoding.Encode(new SignedAttestation(1, slotTwoData, XmssSignature.Empty())));
 
         var publishedBlock = await WaitUntilAsync(
@@ -538,10 +538,10 @@ public sealed class ValidatorServiceTests
         network.Emit(GossipTopics.Blocks, SszEncoding.Encode(fallbackSignedBlock));
 
         network.Emit(
-            GossipTopics.Attestations,
+            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
             SszEncoding.Encode(new SignedAttestation(2, slotTwoData, XmssSignature.Empty())));
         network.Emit(
-            GossipTopics.Attestations,
+            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
             SszEncoding.Encode(new SignedAttestation(1, slotTwoData, XmssSignature.Empty())));
 
         var publishedBlock = await WaitUntilAsync(
