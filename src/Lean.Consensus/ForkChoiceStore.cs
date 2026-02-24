@@ -10,10 +10,10 @@ public sealed class ForkChoiceStore
 {
     public const int IntervalsPerSlot = 4;
 
-    private readonly Dictionary<string, Block> _blocks = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, ForkChoiceNodeState> _states = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, State> _chainStates = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _chainStateFailures = new(StringComparer.Ordinal);
+    private readonly Dictionary<Bytes32, Block> _blocks = new();
+    private readonly Dictionary<Bytes32, ForkChoiceNodeState> _states = new();
+    private readonly Dictionary<Bytes32, State> _chainStates = new();
+    private readonly Dictionary<Bytes32, string> _chainStateFailures = new();
     private readonly Dictionary<ulong, AttestationData> _latestKnownAttestations = new();
     private readonly Dictionary<ulong, AttestationData> _latestPendingAttestations = new();
     private readonly IForkChoiceStateTransition _stateTransition;
@@ -23,9 +23,9 @@ public sealed class ForkChoiceStore
     private readonly ILeanMultiSig? _leanMultiSig;
     private readonly ulong _initialValidatorCount;
     private readonly Bytes32 _canonicalGenesisRoot;
-    private readonly string _genesisKey;
-    private string _startKey;
-    private string _headKey;
+    private readonly Bytes32 _genesisKey;
+    private Bytes32 _startKey;
+    private Bytes32 _headKey;
     private ulong _headSlot;
     private Bytes32 _headRoot = Bytes32.Zero();
     private Checkpoint _latestJustified = Checkpoint.Default();
@@ -65,7 +65,7 @@ public sealed class ForkChoiceStore
         var genesisState = _chainStateTransition.CreateGenesisState(_initialValidatorCount);
         _canonicalGenesisRoot = ComputeCanonicalGenesisRoot(genesisState);
         _headRoot = _canonicalGenesisRoot;
-        _headKey = ToKey(_headRoot);
+        _headKey = _headRoot;
         _genesisKey = _headKey;
         _startKey = _genesisKey;
         _blocks[_headKey] = CreateAnchorBlock(0, _headRoot);
@@ -120,7 +120,7 @@ public sealed class ForkChoiceStore
 
     public bool ContainsBlock(Bytes32 root)
     {
-        return _blocks.ContainsKey(ToKey(root));
+        return _blocks.ContainsKey(root);
     }
 
     public bool TryGetHeadChainState([NotNullWhen(true)] out State? headChainState)
@@ -150,7 +150,7 @@ public sealed class ForkChoiceStore
         var anchorRoot = new Bytes32(state.HeadRoot);
         _headRoot = anchorRoot;
         _headSlot = state.HeadSlot;
-        _headKey = ToKey(anchorRoot);
+        _headKey = anchorRoot;
         _startKey = _headKey;
         _blocks[_headKey] = CreateAnchorBlock(state.HeadSlot, anchorRoot);
 
@@ -185,13 +185,35 @@ public sealed class ForkChoiceStore
         {
             _safeTargetSlot = _headSlot;
         }
+
+        EnsureCheckpointAnchor(_latestJustified);
+        EnsureCheckpointAnchor(_latestFinalized);
+        EnsureCheckpointAnchor(new Checkpoint(_safeTarget, new Slot(_safeTargetSlot)));
+    }
+
+    private void EnsureCheckpointAnchor(Checkpoint checkpoint)
+    {
+        if (checkpoint.Root.Equals(Bytes32.Zero()))
+        {
+            return;
+        }
+
+        if (!_blocks.ContainsKey(checkpoint.Root))
+        {
+            _blocks[checkpoint.Root] = CreateAnchorBlock(checkpoint.Slot.Value, checkpoint.Root);
+        }
+
+        if (!_states.ContainsKey(checkpoint.Root))
+        {
+            _states[checkpoint.Root] = new ForkChoiceNodeState(_latestJustified, _latestFinalized, _initialValidatorCount);
+        }
     }
 
     public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason)
     {
         ArgumentNullException.ThrowIfNull(candidateBlock);
 
-        var parentKey = ToKey(candidateBlock.ParentRoot);
+        var parentKey = candidateBlock.ParentRoot;
         if (!_chainStates.TryGetValue(parentKey, out var parentState))
         {
             stateRoot = Bytes32.Zero();
@@ -240,7 +262,7 @@ public sealed class ForkChoiceStore
                 _headRoot);
         }
 
-        var targetKey = ToKey(signedAttestation.Message.Target.Root);
+        var targetKey = signedAttestation.Message.Target.Root;
         if (!_states.TryGetValue(targetKey, out var targetState))
         {
             return ForkChoiceApplyResult.Rejected(
@@ -279,7 +301,7 @@ public sealed class ForkChoiceStore
         UpdateSafeTarget();
         PromotePendingAttestations();
         UpdateHeadFromKnownAttestations();
-        return ForkChoiceApplyResult.AcceptedResult(previousHeadKey != _headKey, _headSlot, _headRoot);
+        return ForkChoiceApplyResult.AcceptedResult(!previousHeadKey.Equals(_headKey), _headSlot, _headRoot);
     }
 
     public ForkChoiceApplyResult OnIntervalTick(ulong currentSlot, int intervalInSlot)
@@ -298,7 +320,7 @@ public sealed class ForkChoiceStore
             UpdateHeadFromKnownAttestations();
         }
 
-        return ForkChoiceApplyResult.AcceptedResult(previousHeadKey != _headKey, _headSlot, _headRoot);
+        return ForkChoiceApplyResult.AcceptedResult(!previousHeadKey.Equals(_headKey), _headSlot, _headRoot);
     }
 
     public ForkChoiceApplyResult PrepareProposalHead()
@@ -306,7 +328,7 @@ public sealed class ForkChoiceStore
         var previousHeadKey = _headKey;
         PromotePendingAttestations();
         UpdateHeadFromKnownAttestations();
-        return ForkChoiceApplyResult.AcceptedResult(previousHeadKey != _headKey, _headSlot, _headRoot);
+        return ForkChoiceApplyResult.AcceptedResult(!previousHeadKey.Equals(_headKey), _headSlot, _headRoot);
     }
 
     public ForkChoiceApplyResult ApplyBlock(
@@ -318,7 +340,7 @@ public sealed class ForkChoiceStore
 
         var block = signedBlock.Message.Block;
         var proposerAttestation = signedBlock.Message.ProposerAttestation;
-        var blockKey = ToKey(blockRoot);
+        var blockKey = blockRoot;
         if (_blocks.ContainsKey(blockKey))
         {
             return ForkChoiceApplyResult.Rejected(
@@ -337,7 +359,7 @@ public sealed class ForkChoiceStore
                 _headRoot);
         }
 
-        var parentKey = ToKey(block.ParentRoot);
+        var parentKey = block.ParentRoot;
         if (!_blocks.TryGetValue(parentKey, out var parentBlock))
         {
             return ForkChoiceApplyResult.Rejected(
@@ -586,7 +608,7 @@ public sealed class ForkChoiceStore
 
         UpsertAttestation(_latestPendingAttestations, proposerAttestation.ValidatorId, proposerAttestation.Data);
 
-        var headChanged = previousHeadKey != _headKey;
+        var headChanged = !previousHeadKey.Equals(_headKey);
         return ForkChoiceApplyResult.AcceptedResult(headChanged, _headSlot, _headRoot);
     }
 
@@ -595,9 +617,9 @@ public sealed class ForkChoiceStore
         ulong currentSlot,
         bool allowUnknownRoots,
         out string reason,
-        string? pendingHeadKey = null,
+        Bytes32? pendingHeadKey = null,
         ulong pendingHeadSlot = 0,
-        string? pendingHeadParentKey = null,
+        Bytes32? pendingHeadParentKey = null,
         bool requirePendingHeadAncestry = true,
         bool enforceChainTopology = true)
     {
@@ -613,15 +635,18 @@ public sealed class ForkChoiceStore
             return false;
         }
 
-        var sourceKey = ToKey(data.Source.Root);
+        var sourceKey = data.Source.Root;
         var sourceKnown = _blocks.TryGetValue(sourceKey, out var sourceBlock);
-        if (!sourceKnown && !allowUnknownRoots)
+        // Source checkpoints at/before finalized are informational for voting context.
+        // They do not require eager recovery and should not block head progression.
+        var requireSourceKnown = data.Source.Slot.Value > _latestFinalized.Slot.Value;
+        if (!sourceKnown && !allowUnknownRoots && requireSourceKnown)
         {
             reason = $"Unknown source root {sourceKey}.";
             return false;
         }
 
-        var targetKey = ToKey(data.Target.Root);
+        var targetKey = data.Target.Root;
         var targetKnown = _blocks.TryGetValue(targetKey, out var targetBlock);
         if (!targetKnown && !allowUnknownRoots)
         {
@@ -629,11 +654,11 @@ public sealed class ForkChoiceStore
             return false;
         }
 
-        var headKey = ToKey(data.Head.Root);
+        var headKey = data.Head.Root;
         var headKnown = _blocks.TryGetValue(headKey, out var headBlock);
         var headMatchesPending =
             pendingHeadKey is not null &&
-            string.Equals(headKey, pendingHeadKey, StringComparison.Ordinal) &&
+            headKey.Equals(pendingHeadKey.Value) &&
             data.Head.Slot.Value == pendingHeadSlot;
 
         if (!headKnown && headMatchesPending)
@@ -670,7 +695,7 @@ public sealed class ForkChoiceStore
         {
             if (targetKnown &&
                 pendingHeadKey is not null &&
-                !IsAncestorOfPendingHead(targetKey, pendingHeadKey, pendingHeadParentKey))
+                !IsAncestorOfPendingHead(targetKey, pendingHeadKey.Value, pendingHeadParentKey))
             {
                 reason = $"Target checkpoint root {targetKey} is not on parent chain for pending head {pendingHeadKey}.";
                 return false;
@@ -678,7 +703,7 @@ public sealed class ForkChoiceStore
 
             if (headKnown &&
                 pendingHeadKey is not null &&
-                !IsAncestorOfPendingHead(headKey, pendingHeadKey, pendingHeadParentKey))
+                !IsAncestorOfPendingHead(headKey, pendingHeadKey.Value, pendingHeadParentKey))
             {
                 reason = $"Head checkpoint root {headKey} is not on parent chain for pending head {pendingHeadKey}.";
                 return false;
@@ -725,10 +750,10 @@ public sealed class ForkChoiceStore
     {
         var headState = CurrentHeadStateSnapshot();
         var minScore = ComputeTwoThirdsThreshold(headState.ValidatorCount);
-        var key = ComputeLmdGhostHead(ToKey(_latestJustified.Root), _latestPendingAttestations, minScore);
+        var key = ComputeLmdGhostHead(_latestJustified.Root, _latestPendingAttestations, minScore);
         if (_blocks.TryGetValue(key, out var block))
         {
-            return new SafeTargetValue(ToRoot(key), block.Slot.Value);
+            return new SafeTargetValue(key, block.Slot.Value);
         }
 
         return new SafeTargetValue(_latestJustified.Root, _latestJustified.Slot.Value);
@@ -740,8 +765,8 @@ public sealed class ForkChoiceStore
         while (_blocks.TryGetValue(targetKey, out var targetBlock) &&
                !IsSlotJustifiableAfterFinalized(targetBlock.Slot.Value))
         {
-            var parentKey = ToKey(targetBlock.ParentRoot);
-            if (parentKey == targetKey || !_blocks.ContainsKey(parentKey))
+            var parentKey = targetBlock.ParentRoot;
+            if (parentKey.Equals(targetKey) || !_blocks.ContainsKey(parentKey))
             {
                 break;
             }
@@ -752,13 +777,13 @@ public sealed class ForkChoiceStore
         if (_blocks.TryGetValue(targetKey, out var selectedBlock) &&
             IsSlotJustifiableAfterFinalized(selectedBlock.Slot.Value))
         {
-            return new Checkpoint(ToRoot(targetKey), selectedBlock.Slot);
+            return new Checkpoint(targetKey, selectedBlock.Slot);
         }
 
         return _latestJustified;
     }
 
-    private string WalkBackForSafeTarget(string startKey, int safeTargetLookbackSlots)
+    private Bytes32 WalkBackForSafeTarget(Bytes32 startKey, int safeTargetLookbackSlots)
     {
         var targetKey = startKey;
         var lookbackSlots = Math.Max(0, safeTargetLookbackSlots);
@@ -774,8 +799,8 @@ public sealed class ForkChoiceStore
                 break;
             }
 
-            var parentKey = ToKey(targetBlock.ParentRoot);
-            if (parentKey == targetKey || !_blocks.ContainsKey(parentKey))
+            var parentKey = targetBlock.ParentRoot;
+            if (parentKey.Equals(targetKey) || !_blocks.ContainsKey(parentKey))
             {
                 break;
             }
@@ -840,20 +865,20 @@ public sealed class ForkChoiceStore
     private void UpdateHeadFromKnownAttestations()
     {
         var previousHeadKey = _headKey;
-        var newHeadKey = ComputeLmdGhostHead(ToKey(_latestJustified.Root), _latestKnownAttestations);
+        var newHeadKey = ComputeLmdGhostHead(_latestJustified.Root, _latestKnownAttestations);
         if (_blocks.TryGetValue(newHeadKey, out var newHeadBlock))
         {
             var reorgDepth = ComputeReorgDepth(previousHeadKey, newHeadKey);
             LeanMetrics.RecordForkChoiceReorg(reorgDepth);
             _headKey = newHeadKey;
             _headSlot = newHeadBlock.Slot.Value;
-            _headRoot = ToRoot(newHeadKey);
+            _headRoot = newHeadKey;
         }
     }
 
-    private ulong ComputeReorgDepth(string oldHeadKey, string newHeadKey)
+    private ulong ComputeReorgDepth(Bytes32 oldHeadKey, Bytes32 newHeadKey)
     {
-        if (string.Equals(oldHeadKey, newHeadKey, StringComparison.Ordinal))
+        if (oldHeadKey.Equals(newHeadKey))
         {
             return 0;
         }
@@ -863,7 +888,7 @@ public sealed class ForkChoiceStore
             return 0;
         }
 
-        var ancestorDepthFromOld = new Dictionary<string, ulong>(StringComparer.Ordinal);
+        var ancestorDepthFromOld = new Dictionary<Bytes32, ulong>();
         var current = oldHeadKey;
         ulong depth = 0;
         var maxTraversal = _blocks.Count + 1;
@@ -874,8 +899,8 @@ public sealed class ForkChoiceStore
                 break;
             }
 
-            var parentKey = ToKey(block.ParentRoot);
-            if (string.Equals(parentKey, current, StringComparison.Ordinal))
+            var parentKey = block.ParentRoot;
+            if (parentKey.Equals(current))
             {
                 break;
             }
@@ -893,8 +918,8 @@ public sealed class ForkChoiceStore
                 return oldDepth;
             }
 
-            var parentKey = ToKey(block.ParentRoot);
-            if (string.Equals(parentKey, current, StringComparison.Ordinal))
+            var parentKey = block.ParentRoot;
+            if (parentKey.Equals(current))
             {
                 break;
             }
@@ -914,7 +939,7 @@ public sealed class ForkChoiceStore
             return true;
         }
 
-        var targetKey = ToKey(signedAttestation.Message.Target.Root);
+        var targetKey = signedAttestation.Message.Target.Root;
         if (!_chainStates.TryGetValue(targetKey, out var targetChainState))
         {
             reason = $"Missing chain state snapshot for attestation target root {targetKey}.";
@@ -933,7 +958,7 @@ public sealed class ForkChoiceStore
             return false;
         }
 
-        var publicKey = targetChainState.Validators[checked((int)signedAttestation.ValidatorId)].Pubkey.AsSpan();
+        var publicKey = targetChainState.Validators[checked((int)signedAttestation.ValidatorId.Value)].Pubkey.AsSpan();
         if (publicKey.Length == 0)
         {
             reason = $"Missing public key for attestation validator {signedAttestation.ValidatorId}.";
@@ -963,7 +988,7 @@ public sealed class ForkChoiceStore
         return true;
     }
 
-    private bool TryVerifyBlockSignatures(string parentKey, SignedBlockWithAttestation signedBlock, out string reason)
+    private bool TryVerifyBlockSignatures(Bytes32 parentKey, SignedBlockWithAttestation signedBlock, out string reason)
     {
         if (_leanSig is null || _leanMultiSig is null)
         {
@@ -991,7 +1016,7 @@ public sealed class ForkChoiceStore
             return false;
         }
 
-        var proposerPublicKey = validators[checked((int)block.ProposerIndex)].Pubkey.AsSpan();
+        var proposerPublicKey = validators[checked((int)block.ProposerIndex.Value)].Pubkey.AsSpan();
         if (proposerPublicKey.Length == 0)
         {
             reason = $"Missing public key for block proposer {block.ProposerIndex}.";
@@ -1102,8 +1127,8 @@ public sealed class ForkChoiceStore
 
     // TODO(proto-array): this keeps leanSpec-compatible full recomputation on each head update.
     // Replace with an incremental ProtoArray implementation once behavior parity tests are locked.
-    private string ComputeLmdGhostHead(
-        string startKey,
+    private Bytes32 ComputeLmdGhostHead(
+        Bytes32 startKey,
         IReadOnlyDictionary<ulong, AttestationData> attestations,
         int minScore = 0)
     {
@@ -1113,16 +1138,16 @@ public sealed class ForkChoiceStore
         }
 
         var startSlot = _blocks[startKey].Slot.Value;
-        var weights = new Dictionary<string, int>(StringComparer.Ordinal);
+        var weights = new Dictionary<Bytes32, int>();
 
         foreach (var attestation in attestations.Values)
         {
-            var currentKey = ToKey(attestation.Head.Root);
+            var currentKey = attestation.Head.Root;
             while (_blocks.TryGetValue(currentKey, out var currentBlock) && currentBlock.Slot.Value > startSlot)
             {
                 weights.TryGetValue(currentKey, out var currentWeight);
                 weights[currentKey] = currentWeight + 1;
-                currentKey = ToKey(currentBlock.ParentRoot);
+                currentKey = currentBlock.ParentRoot;
             }
         }
 
@@ -1143,26 +1168,26 @@ public sealed class ForkChoiceStore
             // 1) vote weight, 2) root hash.
             head = candidates
                 .OrderByDescending(key => weights.TryGetValue(key, out var weight) ? weight : 0)
-                .ThenByDescending(key => key, StringComparer.Ordinal)
+                .ThenByDescending(key => Convert.ToHexString(key.AsSpan()), StringComparer.Ordinal)
                 .First();
         }
 
         return head;
     }
 
-    private Dictionary<string, List<string>> BuildChildrenMap()
+    private Dictionary<Bytes32, List<Bytes32>> BuildChildrenMap()
     {
-        var children = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var children = new Dictionary<Bytes32, List<Bytes32>>();
         foreach (var (key, block) in _blocks)
         {
-            var parentKey = ToKey(block.ParentRoot);
+            var parentKey = block.ParentRoot;
             if (!children.TryGetValue(parentKey, out var childList))
             {
-                childList = new List<string>();
+                childList = new List<Bytes32>();
                 children[parentKey] = childList;
             }
 
-            if (key != parentKey)
+            if (!key.Equals(parentKey))
             {
                 childList.Add(key);
             }
@@ -1173,13 +1198,12 @@ public sealed class ForkChoiceStore
 
     private ulong GetSlotForRoot(Bytes32 root)
     {
-        var key = ToKey(root);
-        return _blocks.TryGetValue(key, out var block) ? block.Slot.Value : 0;
+        return _blocks.TryGetValue(root, out var block) ? block.Slot.Value : 0;
     }
 
-    private bool IsAncestorOrSelf(string ancestorKey, string descendantKey)
+    private bool IsAncestorOrSelf(Bytes32 ancestorKey, Bytes32 descendantKey)
     {
-        if (string.Equals(ancestorKey, descendantKey, StringComparison.Ordinal))
+        if (ancestorKey.Equals(descendantKey))
         {
             return true;
         }
@@ -1189,13 +1213,13 @@ public sealed class ForkChoiceStore
         var maxTraversal = _blocks.Count + 1;
         while (traversed < maxTraversal && _blocks.TryGetValue(currentKey, out var block))
         {
-            var parentKey = ToKey(block.ParentRoot);
-            if (string.Equals(parentKey, ancestorKey, StringComparison.Ordinal))
+            var parentKey = block.ParentRoot;
+            if (parentKey.Equals(ancestorKey))
             {
                 return true;
             }
 
-            if (string.Equals(parentKey, currentKey, StringComparison.Ordinal))
+            if (parentKey.Equals(currentKey))
             {
                 break;
             }
@@ -1208,21 +1232,21 @@ public sealed class ForkChoiceStore
     }
 
     private bool IsAncestorOfPendingHead(
-        string ancestorKey,
-        string pendingHeadKey,
-        string? pendingHeadParentKey)
+        Bytes32 ancestorKey,
+        Bytes32 pendingHeadKey,
+        Bytes32? pendingHeadParentKey)
     {
-        if (string.Equals(ancestorKey, pendingHeadKey, StringComparison.Ordinal))
+        if (ancestorKey.Equals(pendingHeadKey))
         {
             return true;
         }
 
-        if (string.IsNullOrWhiteSpace(pendingHeadParentKey))
+        if (pendingHeadParentKey is null)
         {
             return false;
         }
 
-        return IsAncestorOrSelf(ancestorKey, pendingHeadParentKey);
+        return IsAncestorOrSelf(ancestorKey, pendingHeadParentKey.Value);
     }
 
     private static ForkChoiceNodeState ToForkChoiceNodeState(State state)
@@ -1231,11 +1255,6 @@ public sealed class ForkChoiceStore
             state.LatestJustified,
             state.LatestFinalized,
             (ulong)state.Validators.Count);
-    }
-
-    private static string ToKey(Bytes32 root)
-    {
-        return Convert.ToHexString(root.AsSpan());
     }
 
     private static Bytes32 ComputeCanonicalGenesisRoot(State genesisState)
@@ -1247,11 +1266,6 @@ public sealed class ForkChoiceStore
         }
 
         return new Bytes32(latestBlockHeader.HashTreeRoot());
-    }
-
-    private static Bytes32 ToRoot(string key)
-    {
-        return new Bytes32(Convert.FromHexString(key));
     }
 
     private static Block CreateAnchorBlock(ulong slot, Bytes32 root)

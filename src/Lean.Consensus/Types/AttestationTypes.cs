@@ -12,7 +12,7 @@ public sealed record AttestationData(Slot Slot, Checkpoint Head, Checkpoint Targ
     }
 }
 
-public sealed record Attestation(ulong ValidatorId, AttestationData Data)
+public sealed record Attestation(ValidatorIndex ValidatorId, AttestationData Data)
 {
     public byte[] HashTreeRoot()
     {
@@ -22,7 +22,7 @@ public sealed record Attestation(ulong ValidatorId, AttestationData Data)
     }
 }
 
-public sealed record SignedAttestation(ulong ValidatorId, AttestationData Message, XmssSignature Signature);
+public sealed record SignedAttestation(ValidatorIndex ValidatorId, AttestationData Message, XmssSignature Signature);
 
 public sealed record AggregatedAttestation(AggregationBits AggregationBits, AttestationData Data)
 {

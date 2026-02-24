@@ -13,7 +13,7 @@ public sealed record BlockBody(IReadOnlyList<AggregatedAttestation> Attestations
 
 public sealed record BlockHeader(
     Slot Slot,
-    ulong ProposerIndex,
+    ValidatorIndex ProposerIndex,
     Bytes32 ParentRoot,
     Bytes32 StateRoot,
     Bytes32 BodyRoot)
@@ -31,7 +31,7 @@ public sealed record BlockHeader(
 
 public sealed record Block(
     Slot Slot,
-    ulong ProposerIndex,
+    ValidatorIndex ProposerIndex,
     Bytes32 ParentRoot,
     Bytes32 StateRoot,
     BlockBody Body)
