@@ -285,6 +285,17 @@ public static class SszEncoding
         return EncodeVariableSizeList(elements);
     }
 
+    public static byte[] Encode(SignedAggregatedAttestation value)
+    {
+        var proofBytes = Encode(value.Proof);
+        var fixedSize = AttestationDataLength + UInt32Length;
+        var buffer = new byte[fixedSize + proofBytes.Length];
+        EncodeInto(buffer, 0, value.Data);
+        WriteOffset(buffer, AttestationDataLength, fixedSize);
+        proofBytes.CopyTo(buffer.AsSpan(fixedSize));
+        return buffer;
+    }
+
     public static byte[] Encode(AggregatedAttestation value)
     {
         var aggregationBytes = EncodeBitlist(value.AggregationBits.Bits);

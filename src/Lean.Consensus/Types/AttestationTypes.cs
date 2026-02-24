@@ -33,3 +33,13 @@ public sealed record AggregatedAttestation(AggregationBits AggregationBits, Atte
             Data.HashTreeRoot());
     }
 }
+
+public sealed record SignedAggregatedAttestation(AttestationData Data, AggregatedSignatureProof Proof)
+{
+    public byte[] HashTreeRoot()
+    {
+        return SszInterop.HashContainer(
+            Data.HashTreeRoot(),
+            Proof.HashTreeRoot());
+    }
+}
