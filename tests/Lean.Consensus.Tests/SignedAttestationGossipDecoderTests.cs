@@ -49,16 +49,17 @@ public sealed class SignedAttestationGossipDecoderTests
     }
 
     [Test]
-    public void DecodeAndValidate_ReturnsFailure_ForOffsetContainerSignedAttestation()
+    public void DecodeAndValidate_AcceptsOffsetContainerSignedAttestation()
     {
         var decoder = new SignedAttestationGossipDecoder();
         var attestation = CreateSignedAttestation();
-        var payload = EncodeOffsetContainer(attestation);
+        var payload = SszEncoding.Encode(attestation);
 
         var result = decoder.DecodeAndValidate(payload);
 
-        Assert.That(result.IsSuccess, Is.False);
-        Assert.That(result.Failure, Is.EqualTo(AttestationGossipDecodeFailure.InvalidSsz));
+        Assert.That(result.IsSuccess, Is.True);
+        Assert.That(result.Attestation, Is.Not.Null);
+        Assert.That(result.Attestation!.ValidatorId, Is.EqualTo(attestation.ValidatorId));
     }
 
     [Test]
@@ -81,7 +82,7 @@ public sealed class SignedAttestationGossipDecoderTests
 
         Assert.That(result.IsSuccess, Is.False);
         Assert.That(result.Failure, Is.EqualTo(AttestationGossipDecodeFailure.InvalidSsz));
-        Assert.That(result.Reason, Does.Contain("exactly"));
+        Assert.That(result.Reason, Does.Contain("short").Or.Contain("offset").Or.Contain("signature"));
     }
 
     private static SignedAttestation CreateSignedAttestation()

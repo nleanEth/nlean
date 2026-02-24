@@ -5,7 +5,8 @@ namespace Lean.Consensus;
 
 public sealed class SignedAttestationGossipDecoder
 {
-    private const int SignedAttestationLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + XmssSignature.Length;
+    // Fixed part: ValidatorId(8) + AttestationData(104) + offset_signature(4) = 116
+    private const int SignedAttestationFixedLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + SszEncoding.UInt32Length;
 
     public AttestationGossipDecodeResult DecodeAndValidate(byte[] payload)
     {
@@ -40,24 +41,11 @@ public sealed class SignedAttestationGossipDecoder
         value = null!;
         reason = string.Empty;
 
-        if (payload.Length == SignedAttestationLength &&
-            TryDecodeSignedAttestationFixed(payload, out value, out reason))
+        if (payload.Length < SignedAttestationFixedLength)
         {
-            return true;
+            reason = $"SignedAttestation payload is too short: {payload.Length} bytes (minimum {SignedAttestationFixedLength}).";
+            return false;
         }
-
-        reason =
-            $"SignedAttestation must be exactly {SignedAttestationLength} bytes, got {payload.Length}.";
-        return false;
-    }
-
-    private static bool TryDecodeSignedAttestationFixed(
-        ReadOnlySpan<byte> payload,
-        out SignedAttestation value,
-        out string reason)
-    {
-        value = null!;
-        reason = string.Empty;
 
         var validatorId = BinaryPrimitives.ReadUInt64LittleEndian(payload[..SszEncoding.UInt64Length]);
         var dataBytes = payload.Slice(SszEncoding.UInt64Length, SszEncoding.AttestationDataLength);
@@ -67,9 +55,23 @@ public sealed class SignedAttestationGossipDecoder
             return false;
         }
 
+        var signatureOffset = ReadOffset(payload, SszEncoding.UInt64Length + SszEncoding.AttestationDataLength);
+        if (signatureOffset != SignedAttestationFixedLength)
+        {
+            reason = $"SignedAttestation signature offset must be {SignedAttestationFixedLength}, got {signatureOffset}.";
+            return false;
+        }
+
+        if (signatureOffset > payload.Length)
+        {
+            reason = $"SignedAttestation signature offset {signatureOffset} exceeds payload length {payload.Length}.";
+            return false;
+        }
+
+        var signatureBytes = payload[signatureOffset..];
         try
         {
-            var signature = XmssSignature.FromBytes(payload[^XmssSignature.Length..]);
+            var signature = SszDecoding.DecodeXmssSignature(signatureBytes);
             value = new SignedAttestation(validatorId, data, signature);
             return true;
         }
@@ -133,6 +135,11 @@ public sealed class SignedAttestationGossipDecoder
         var slot = new Slot(ReadUInt64(bytes, SszEncoding.Bytes32Length));
         value = new Checkpoint(root, slot);
         return true;
+    }
+
+    private static int ReadOffset(ReadOnlySpan<byte> bytes, int offset)
+    {
+        return (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(offset, SszEncoding.UInt32Length));
     }
 
     private static ulong ReadUInt64(ReadOnlySpan<byte> bytes, int offset)

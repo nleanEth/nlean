@@ -58,13 +58,14 @@ public sealed class BlockGossipDecoderTests
     {
         var decoder = new SignedBlockWithAttestationGossipDecoder();
         var payload = SszEncoding.Encode(CreateSignedBlock());
-        var truncated = payload[..(payload.Length - XmssSignature.Length)];
+        // Truncate a few bytes from the end to corrupt the signature container
+        var truncated = payload[..(payload.Length - 4)];
 
         var result = decoder.DecodeAndValidate(truncated);
 
         Assert.That(result.IsSuccess, Is.False);
         Assert.That(result.Failure, Is.EqualTo(BlockGossipDecodeFailure.InvalidSsz));
-        Assert.That(result.Reason, Does.Contain("offset").Or.Contain("short"));
+        Assert.That(result.Reason, Does.Contain("offset").Or.Contain("short").Or.Contain("signature"));
     }
 
     [Test]
@@ -118,18 +119,17 @@ public sealed class BlockGossipDecoderTests
     }
 
     [Test]
-    public void DecodeAndValidate_RejectsDualOffsetBlockSignatures_WithAttestationsFirstLayout()
+    public void DecodeAndValidate_AcceptsDualOffsetBlockSignatures_WithAttestationsFirstLayout()
     {
         var decoder = new SignedBlockWithAttestationGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
-        var dualOffsetSignatures = EncodeDualOffsetSignatures(signedBlock.Signature, attestationSignaturesFirst: true);
-        var payload = BuildSignedBlockPayload(messageBytes, dualOffsetSignatures);
+        var payload = SszEncoding.Encode(signedBlock);
 
         var result = decoder.DecodeAndValidate(payload);
 
-        Assert.That(result.IsSuccess, Is.False);
-        Assert.That(result.Failure, Is.EqualTo(BlockGossipDecodeFailure.InvalidSsz));
+        Assert.That(result.IsSuccess, Is.True);
+        Assert.That(result.SignedBlock, Is.Not.Null);
+        Assert.That(result.SignedBlock!.Signature.AttestationSignatures.Count, Is.EqualTo(1));
     }
 
     [Test]

@@ -179,41 +179,45 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         value = null!;
         reason = string.Empty;
 
-        if (bytes.Length < SszEncoding.UInt32Length + XmssSignature.Length)
+        // BlockSignatures is now: [offset_attestation_sigs(4) | offset_proposer_sig(4) | attestation_sigs_data | proposer_sig_data]
+        const int fixedSize = SszEncoding.UInt32Length * 2;
+        if (bytes.Length < fixedSize)
         {
             reason = $"BlockSignatures payload is too short: {bytes.Length} bytes.";
             return false;
         }
 
         var attestationSignaturesOffset = ReadOffset(bytes, 0);
-        if (attestationSignaturesOffset > bytes.Length)
+        var proposerSignatureOffset = ReadOffset(bytes, SszEncoding.UInt32Length);
+
+        if (attestationSignaturesOffset != fixedSize)
         {
-            reason = $"BlockSignatures offset {attestationSignaturesOffset} exceeds payload length {bytes.Length}.";
+            reason = $"BlockSignatures attestation-signatures offset must be {fixedSize}, got {attestationSignaturesOffset}.";
             return false;
         }
 
-        var proposerSignatureLength = attestationSignaturesOffset - SszEncoding.UInt32Length;
-        if (proposerSignatureLength != XmssSignature.Length)
+        if (proposerSignatureOffset < attestationSignaturesOffset || proposerSignatureOffset > bytes.Length)
         {
-            reason = $"BlockSignatures proposer-signature length must be {XmssSignature.Length}, got {proposerSignatureLength}.";
+            reason = $"BlockSignatures proposer-signature offset {proposerSignatureOffset} is outside payload bounds.";
             return false;
         }
 
+        var attestationSignaturesBytes = bytes.Slice(attestationSignaturesOffset, proposerSignatureOffset - attestationSignaturesOffset);
+        if (!TryDecodeAggregatedSignatureProofList(attestationSignaturesBytes, out var attestationSignatures, out reason))
+        {
+            reason = $"Invalid attestation signatures list: {reason}";
+            return false;
+        }
+
+        var proposerSignatureBytes = bytes[proposerSignatureOffset..];
         XmssSignature proposerSignature;
         try
         {
-            proposerSignature = XmssSignature.FromBytes(bytes.Slice(SszEncoding.UInt32Length, proposerSignatureLength));
+            proposerSignature = SszDecoding.DecodeXmssSignature(proposerSignatureBytes);
         }
         catch (Exception ex)
         {
             reason = $"Invalid proposer XMSS signature bytes: {ex.Message}";
-            return false;
-        }
-
-        var attestationSignaturesBytes = bytes[attestationSignaturesOffset..];
-        if (!TryDecodeAggregatedSignatureProofList(attestationSignaturesBytes, out var attestationSignatures, out reason))
-        {
-            reason = $"Invalid attestation signatures list: {reason}";
             return false;
         }
 
