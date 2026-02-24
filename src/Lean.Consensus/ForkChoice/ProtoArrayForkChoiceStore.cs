@@ -12,6 +12,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private readonly Dictionary<string, ForkChoiceNodeState> _states = new(StringComparer.Ordinal);
     private readonly Dictionary<ulong, AttestationData> _pendingAttestations = new();
     private readonly Dictionary<ulong, AttestationData> _knownAttestations = new();
+    private readonly Dictionary<(ulong, string), XmssSignature> _gossipSignatures = new();
+    private readonly Dictionary<string, AttestationData> _attestationDataByRoot = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<AggregatedSignatureProof>> _newAggregatedPayloads = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<AggregatedSignatureProof>> _knownAggregatedPayloads = new(StringComparer.Ordinal);
 
     private Bytes32 _headRoot;
     private ulong _headSlot;
@@ -49,6 +53,49 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public ulong FinalizedSlot => _latestFinalized.Slot.Value;
     public Bytes32 FinalizedRoot => _latestFinalized.Root;
     public bool ContainsBlock(Bytes32 root) => _protoArray.ContainsBlock(root);
+    public int PendingAggregatedPayloadCount => _newAggregatedPayloads.Values.Sum(v => v.Count);
+
+    public void OnGossipSignature(ulong validatorId, Bytes32 dataRoot, XmssSignature signature)
+    {
+        var key = (validatorId, ProtoArray.RootKey(dataRoot));
+        _gossipSignatures[key] = signature;
+    }
+
+    public bool HasGossipSignature(ulong validatorId, Bytes32 dataRoot)
+    {
+        return _gossipSignatures.ContainsKey((validatorId, ProtoArray.RootKey(dataRoot)));
+    }
+
+    public void OnGossipAggregatedAttestation(SignedAggregatedAttestation signed)
+    {
+        var dataRootBytes = signed.Data.HashTreeRoot();
+        var dataRootKey = Convert.ToHexString(dataRootBytes);
+
+        _attestationDataByRoot[dataRootKey] = signed.Data;
+
+        if (!_newAggregatedPayloads.TryGetValue(dataRootKey, out var list))
+        {
+            list = new List<AggregatedSignatureProof>();
+            _newAggregatedPayloads[dataRootKey] = list;
+        }
+        list.Add(signed.Proof);
+    }
+
+    public List<AggregatedAttestation> ExtractAttestationsForBlock()
+    {
+        var result = new List<AggregatedAttestation>();
+        foreach (var (dataRootKey, payloads) in _knownAggregatedPayloads)
+        {
+            if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
+                continue;
+
+            foreach (var proof in payloads)
+            {
+                result.Add(new AggregatedAttestation(proof.Participants, data));
+            }
+        }
+        return result;
+    }
 
     public ForkChoiceApplyResult OnBlock(SignedBlockWithAttestation signedBlock)
     {
@@ -111,6 +158,18 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
             foreach (var key in staleKeys)
                 _states.Remove(key);
+
+            // Prune stale attestation data
+            _gossipSignatures.Clear();
+            var staleDataKeys = _attestationDataByRoot
+                .Where(kv => kv.Value.Slot.Value <= _latestFinalized.Slot.Value)
+                .Select(kv => kv.Key).ToList();
+            foreach (var dataKey in staleDataKeys)
+            {
+                _attestationDataByRoot.Remove(dataKey);
+                _knownAggregatedPayloads.Remove(dataKey);
+                _newAggregatedPayloads.Remove(dataKey);
+            }
         }
 
         return ForkChoiceApplyResult.AcceptedResult(false, _headSlot, _headRoot);
@@ -155,6 +214,18 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
 
         _pendingAttestations.Clear();
+
+        // Promote aggregated payloads: new → known
+        foreach (var (key, payloads) in _newAggregatedPayloads)
+        {
+            if (!_knownAggregatedPayloads.TryGetValue(key, out var knownList))
+            {
+                knownList = new List<AggregatedSignatureProof>();
+                _knownAggregatedPayloads[key] = knownList;
+            }
+            knownList.AddRange(payloads);
+        }
+        _newAggregatedPayloads.Clear();
 
         // Apply deltas and find head
         _protoArray.ApplyScoreChanges(deltas, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
