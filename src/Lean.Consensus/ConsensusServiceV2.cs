@@ -30,7 +30,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly IGossipTopicProvider _gossipTopics;
     private readonly ILogger<ConsensusServiceV2> _logger;
     private readonly string[] _attestationSubnetTopics;
-    private readonly object _storeLock = new object();
+    private object _storeLock => _store.SyncRoot;
 
     private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateBounded<ConsensusInboxMessage>(
         new BoundedChannelOptions(256)

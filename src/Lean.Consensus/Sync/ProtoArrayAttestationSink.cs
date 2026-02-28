@@ -19,7 +19,7 @@ public sealed class ProtoArrayAttestationSink : IAttestationSink
 
     public void AddAttestation(SignedAttestation attestation)
     {
-        lock (_store)
+        lock (_store.SyncRoot)
         {
             _ = _store.TryOnAttestation(attestation, _storeSignatures, out _);
         }

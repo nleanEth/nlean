@@ -11,6 +11,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public const int JustificationLookbackSlots = 3;
     public const int MaxAttestationAgeSlots = 16;
 
+    public object SyncRoot { get; } = new object();
+
     private readonly ProtoArray _protoArray;
     private readonly Dictionary<ulong, AttestationData> _pendingAttestations = new();
     private readonly Dictionary<ulong, AttestationData> _knownAttestations = new();

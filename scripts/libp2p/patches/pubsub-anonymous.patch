@@ -77,70 +77,15 @@ index 4663ba6..fddeb64 100644
          dialTcs.SetResult();
          context.Activity?.AddEvent(new ActivityEvent($"Finished dial({context.Id}) {context.State.RemoteAddress}"));
      }
-diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs
-index 38c42d6..80e00ce 100644
---- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs
-+++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs
-@@ -85,6 +85,8 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
- 
-             if (_limboMessageCache.Contains(messageId) || _messageCache!.Contains(messageId))
-             {
-+                logger?.LogDebug("Duplicate message topic={Topic} dataLen={Len} from={Peer}",
-+                    message.Topic, message.Data.Length, peerId);
-                 continue;
-             }
- 
-@@ -93,20 +95,26 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
-                 case MessageValidity.Rejected:
-                 case MessageValidity.Ignored:
-                     _limboMessageCache.Add(messageId, new(messageId, message));
-+                    logger?.LogDebug("Rejected message topic={Topic} dataLen={Len}", message.Topic, message.Data.Length);
-                     continue;
-                 case MessageValidity.Throttled:
-+                    logger?.LogDebug("Throttled message topic={Topic} dataLen={Len}", message.Topic, message.Data.Length);
-                     continue;
-             }
- 
-             if (!message.VerifySignature(_settings.DefaultSignaturePolicy))
-             {
-                 _limboMessageCache!.Add(messageId, new(messageId, message));
-+                logger?.LogWarning("Bad signature topic={Topic} dataLen={Len} sigLen={SigLen} sigEmpty={Empty}",
-+                    message.Topic, message.Data.Length, message.Signature.Length, message.Signature.IsEmpty);
-                 continue;
-             }
- 
-             _messageCache.Add(messageId, new(messageId, message));
- 
-             PeerId author = new(message.From.ToArray());
-+            logger?.LogDebug("Accepted message topic={Topic} dataLen={Len} from={Peer}",
-+                message.Topic, message.Data.Length, peerId);
-             OnMessage?.Invoke(message.Topic, message.Data.ToByteArray());
- 
-             if (fPeers.TryGetValue(message.Topic, out HashSet<PeerId>? topicPeers))
-@@ -141,8 +149,12 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
-             PubsubPeer? state = peerState.GetValueOrDefault(peerId);
-             if (state is null)
-             {
-+                logger?.LogDebug("Subscription from unknown peer={Peer} topic={Topic} sub={Sub}",
-+                    peerId, sub.Topicid, sub.Subscribe);
-                 return;
-             }
-+            logger?.LogDebug("Subscription peer={Peer} topic={Topic} sub={Sub} isGossip={IsGossip} isFlood={IsFlood}",
-+                peerId, sub.Topicid, sub.Subscribe, state.IsGossipSub, state.IsFloodSub);
-             if (sub.Subscribe)
-             {
-                 if (state.IsGossipSub)
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
-index 53840a6..d200a8c 100644
+index 53840a6..47115cf 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
 +++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
-@@ -128,18 +128,35 @@ public partial class PubsubRouter
+@@ -128,7 +128,13 @@ public partial class PubsubRouter
          ulong seqNo = this.seqNo++;
          Span<byte> seqNoBytes = stackalloc byte[8];
          BinaryPrimitives.WriteUInt64BigEndian(seqNoBytes, seqNo);
 -        Rpc rpc = new Rpc().WithMessages(topicId, seqNo, localPeer!.Identity.PeerId.Bytes, message, localPeer.Identity);
--
--        foreach (PeerId peerId in fPeers[topicId])
 +        Rpc rpc = new Rpc().WithMessages(
 +            topicId,
 +            seqNo,
@@ -148,46 +93,11 @@ index 53840a6..d200a8c 100644
 +            message,
 +            localPeer.Identity,
 +            _settings.DefaultSignaturePolicy);
-+
-+        int fSent = 0, fNull = 0, mSent = 0, mNull = 0;
-+        bool hasFPeers = fPeers.TryGetValue(topicId, out var fSet);
-+        bool hasMesh = mesh.ContainsKey(topicId);
-+
-+        if (hasFPeers && fSet is not null)
-         {
--            peerState.GetValueOrDefault(peerId)?.Send(rpc);
-+            foreach (PeerId peerId in fSet)
-+            {
-+                var peer = peerState.GetValueOrDefault(peerId);
-+                if (peer is not null) { peer.Send(rpc); fSent++; }
-+                else fNull++;
-+            }
-         }
  
--        if (mesh.ContainsKey(topicId))
-+        if (hasMesh)
+         foreach (PeerId peerId in fPeers[topicId])
          {
-             foreach (PeerId peerId in mesh[topicId].ToList())
-             {
--                peerState.GetValueOrDefault(peerId)?.Send(rpc);
-+                var peer = peerState.GetValueOrDefault(peerId);
-+                if (peer is not null) { peer.Send(rpc); mSent++; }
-+                else mNull++;
-             }
-         }
-         else
-@@ -164,6 +181,9 @@ public partial class PubsubRouter
-                 peerState.GetValueOrDefault(peerId)?.Send(rpc);
-             }
-         }
-+
-+        logger?.LogDebug("Publish topic={Topic} msgLen={Len} fPeers={FSent}/{FNull} mesh={MSent}/{MNull} hasFPeers={HasF} hasMesh={HasM}",
-+            topicId, message.Length, fSent, fNull, mSent, mNull, hasFPeers, hasMesh);
-     }
- 
- }
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
-index 4e732c4..a395111 100644
+index 4e732c4..d70045e 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
 +++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
 @@ -95,7 +95,7 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
@@ -251,7 +161,7 @@ index 4e732c4..a395111 100644
  
          return Task.CompletedTask;
      }
-@@ -393,8 +413,13 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -393,48 +413,55 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
                  }
                  else
                  {
@@ -267,28 +177,120 @@ index 4e732c4..a395111 100644
                  }
              }
  
-@@ -403,7 +428,9 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
  
+             logger?.LogDebug("Outbound, let's dial {peerId} via remotely initiated connection", peerId);
+ 
++            var registeredTokenSource = peer.TokenSource;
              dialTask.ContinueWith(t =>
              {
 -                peerState.GetValueOrDefault(peerId)?.TokenSource.Cancel();
-+                var currentPeer = peerState.GetValueOrDefault(peerId);
-+                if (currentPeer?.TokenSource != peer.TokenSource) return;
-+                currentPeer.TokenSource.Cancel();
-                 peerState.TryRemove(peerId, out _);
-                 foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
+-                peerState.TryRemove(peerId, out _);
+-                foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
+-                {
+-                    topicPeers.Value.Remove(peerId);
+-                }
+-                foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in gPeers)
+-                {
+-                    topicPeers.Value.Remove(peerId);
+-                }
+-                foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fanout)
+-                {
+-                    topicPeers.Value.Remove(peerId);
+-                }
+-                foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in mesh)
++                lock (this)
                  {
-@@ -458,7 +485,9 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+-                    topicPeers.Value.Remove(peerId);
++                    var currentPeer = peerState.GetValueOrDefault(peerId);
++                    if (currentPeer?.TokenSource != registeredTokenSource) return;
++                    currentPeer.TokenSource.Cancel();
++                    peerState.TryRemove(peerId, out _);
++                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
++                    {
++                        topicPeers.Value.Remove(peerId);
++                    }
++                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in gPeers)
++                    {
++                        topicPeers.Value.Remove(peerId);
++                    }
++                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fanout)
++                    {
++                        topicPeers.Value.Remove(peerId);
++                    }
++                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in mesh)
++                    {
++                        topicPeers.Value.Remove(peerId);
++                    }
++                    reconnections.Add(new Reconnection([addr], _settings.ReconnectionAttempts));
+                 }
+-                reconnections.Add(new Reconnection([addr], _settings.ReconnectionAttempts));
+             });
+ 
+             string[] topics = topicState.Keys.ToArray();
+ 
+             if (topics.Any())
+             {
+-                logger?.LogDebug("Topics sent to {peerId}: {topics}", peerId, string.Join(",", topics));
+-
+                 Rpc helloMessage = new Rpc().WithTopics(topics, []);
+                 peer.Send(helloMessage);
+             }
+-
+-            logger?.LogDebug("Outbound {peerId}", peerId);
+             return peer.TokenSource.Token;
+         }
+     }
+@@ -456,27 +483,33 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+             if (newPeer is not null)
+             {
                  logger?.LogDebug("Inbound, let's dial {peerId} via remotely initiated connection", peerId);
++                var registeredTokenSource = newPeer.TokenSource;
                  listTask.ContinueWith(t =>
                  {
 -                    peerState.GetValueOrDefault(peerId)?.TokenSource.Cancel();
-+                    var currentPeer = peerState.GetValueOrDefault(peerId);
-+                    if (currentPeer?.TokenSource != newPeer!.TokenSource) return;
-+                    currentPeer.TokenSource.Cancel();
-                     peerState.TryRemove(peerId, out _);
-                     foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
+-                    peerState.TryRemove(peerId, out _);
+-                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
+-                    {
+-                        topicPeers.Value.Remove(peerId);
+-                    }
+-                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in gPeers)
+-                    {
+-                        topicPeers.Value.Remove(peerId);
+-                    }
+-                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fanout)
++                    lock (this)
                      {
+-                        topicPeers.Value.Remove(peerId);
+-                    }
+-                    foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in mesh)
+-                    {
+-                        topicPeers.Value.Remove(peerId);
++                        var currentPeer = peerState.GetValueOrDefault(peerId);
++                        if (currentPeer?.TokenSource != registeredTokenSource) return;
++                        currentPeer.TokenSource.Cancel();
++                        peerState.TryRemove(peerId, out _);
++                        foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
++                        {
++                            topicPeers.Value.Remove(peerId);
++                        }
++                        foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in gPeers)
++                        {
++                            topicPeers.Value.Remove(peerId);
++                        }
++                        foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fanout)
++                        {
++                            topicPeers.Value.Remove(peerId);
++                        }
++                        foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in mesh)
++                        {
++                            topicPeers.Value.Remove(peerId);
++                        }
++                        reconnections.Add(new Reconnection([addr], _settings.ReconnectionAttempts));
+                     }
+-                    reconnections.Add(new Reconnection([addr], _settings.ReconnectionAttempts));
+                 });
+ 
+                 subDial();
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs b/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
 index c2a5a90..4a9f21e 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
