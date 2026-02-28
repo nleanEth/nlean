@@ -1,106 +1,807 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Threading.Channels;
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
+using Lean.Metrics;
+using Lean.Network;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Lean.Consensus;
 
 public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockProcessor
 {
     private readonly ProtoArrayForkChoiceStore _store;
+    private readonly ChainStateTransition _chainStateTransition;
+    private readonly ChainStateCache _chainStateCache;
     private readonly SlotClock _clock;
+    private readonly ConsensusConfig _config;
     private readonly ChainService _chainService;
     private readonly ISyncService? _syncService;
+    private readonly INetworkService? _networkService;
+    private readonly SignedBlockWithAttestationGossipDecoder _blockDecoder;
+    private readonly SignedAttestationGossipDecoder _attestationDecoder;
+    private readonly SignedAggregatedAttestationGossipDecoder _aggregatedAttestationDecoder;
+    private readonly IStatusRpcRouter? _statusRpcRouter;
+    private readonly IBlocksByRootRpcRouter? _blocksByRootRpcRouter;
+    private readonly IBlockByRootStore _blockStore;
+    private readonly IGossipTopicProvider _gossipTopics;
+    private readonly ILogger<ConsensusServiceV2> _logger;
+    private readonly string[] _attestationSubnetTopics;
+
+    private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateBounded<ConsensusInboxMessage>(
+        new BoundedChannelOptions(256)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false,
+        });
+
     private CancellationTokenSource? _cts;
     private Task? _runTask;
+    private Task? _inboxTask;
+    private int _started;
+    private int _statusProbeInFlight;
+    private ulong _lastPrunedFinalizedSlot;
 
-    public ConsensusServiceV2(ProtoArrayForkChoiceStore store, SlotClock clock, ConsensusConfig config,
-        ISyncService? syncService = null)
+    public ConsensusServiceV2(
+        ProtoArrayForkChoiceStore store,
+        SlotClock clock,
+        ConsensusConfig config,
+        ISyncService? syncService = null,
+        INetworkService? networkService = null,
+        SignedBlockWithAttestationGossipDecoder? blockDecoder = null,
+        SignedAttestationGossipDecoder? attestationDecoder = null,
+        SignedAggregatedAttestationGossipDecoder? aggregatedAttestationDecoder = null,
+        IStatusRpcRouter? statusRpcRouter = null,
+        IBlocksByRootRpcRouter? blocksByRootRpcRouter = null,
+        IBlockByRootStore? blockStore = null,
+        IGossipTopicProvider? gossipTopics = null,
+        ChainStateCache? chainStateCache = null,
+        ILogger<ConsensusServiceV2>? logger = null)
     {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(config);
+
         _store = store;
         _clock = clock;
+        _config = config;
         _syncService = syncService;
-        _chainService = new ChainService(clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
+        _networkService = networkService;
+        _blockDecoder = blockDecoder ?? new SignedBlockWithAttestationGossipDecoder();
+        _attestationDecoder = attestationDecoder ?? new SignedAttestationGossipDecoder();
+        _aggregatedAttestationDecoder = aggregatedAttestationDecoder ?? new SignedAggregatedAttestationGossipDecoder();
+        _statusRpcRouter = statusRpcRouter;
+        _blocksByRootRpcRouter = blocksByRootRpcRouter;
+        _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
+        _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultNetwork);
+        _logger = logger ?? NullLogger<ConsensusServiceV2>.Instance;
+        _chainStateTransition = new ChainStateTransition(_config);
+        _chainStateCache = chainStateCache ?? new ChainStateCache();
+
+        _attestationSubnetTopics = BuildAttestationSubnetTopics(
+            _gossipTopics,
+            _config.AttestationCommitteeCount,
+            _config.IsAggregator,
+            _config.LocalValidatorId);
+        _chainService = new ChainService(_clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
+
+        var genesisState = _chainStateTransition.CreateGenesisState(Math.Max(1UL, _config.InitialValidatorCount));
+        _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), genesisState);
     }
 
     public ulong CurrentSlot => _clock.CurrentSlot;
-    public ulong HeadSlot => _store.HeadSlot;
-    public ulong JustifiedSlot => _store.JustifiedSlot;
-    public ulong FinalizedSlot => _store.FinalizedSlot;
+    public ulong HeadSlot
+    {
+        get
+        {
+            lock (_store)
+            {
+                return _store.HeadSlot;
+            }
+        }
+    }
 
-    public bool HasUnknownBlockRootsInFlight =>
-        _syncService is not null && _syncService.State != SyncState.Synced;
+    public ulong JustifiedSlot
+    {
+        get
+        {
+            lock (_store)
+            {
+                return _store.JustifiedSlot;
+            }
+        }
+    }
 
-    public byte[] HeadRoot => _store.HeadRoot.AsSpan().ToArray();
+    public ulong FinalizedSlot
+    {
+        get
+        {
+            lock (_store)
+            {
+                return _store.FinalizedSlot;
+            }
+        }
+    }
+
+    // Unknown roots should suppress duties only while actively syncing.
+    public bool HasUnknownBlockRootsInFlight => _syncService is not null && _syncService.State == SyncState.Syncing;
+
+    public byte[] HeadRoot
+    {
+        get
+        {
+            lock (_store)
+            {
+                return _store.HeadRoot.AsSpan().ToArray();
+            }
+        }
+    }
 
     public byte[] GetProposalHeadRoot() => HeadRoot;
 
     public AttestationData CreateAttestationData(ulong slot)
     {
-        return new AttestationData(
-            new Slot(slot),
-            new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
-            new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)),
-            new Checkpoint(_store.FinalizedRoot, new Slot(_store.FinalizedSlot)));
+        lock (_store)
+        {
+            var target = _store.ComputeTargetCheckpoint();
+            return new AttestationData(
+                new Slot(slot),
+                new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
+                target,
+                new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)));
+        }
     }
 
     // IBlockProcessor
-    public bool IsBlockKnown(Bytes32 root) => _store.ContainsBlock(root);
-    public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock) => _store.OnBlock(signedBlock);
+    public bool IsBlockKnown(Bytes32 root)
+    {
+        lock (_store)
+        {
+            return _store.ContainsBlock(root);
+        }
+    }
+
+    public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+    {
+        ArgumentNullException.ThrowIfNull(signedBlock);
+
+        var block = signedBlock.Message.Block;
+        var blockRoot = new Bytes32(block.HashTreeRoot());
+        var parentRoot = block.ParentRoot;
+
+        ForkChoiceApplyResult result;
+        lock (_store)
+        {
+            if (!_store.ContainsBlock(parentRoot))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.UnknownParent,
+                    $"Unknown parent root {parentRoot}.",
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
+
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out var parentState))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.StateTransitionFailed,
+                    $"Missing chain state snapshot for parent root {parentRoot}.",
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
+
+            if (!_chainStateTransition.TryComputeStateRoot(
+                    parentState,
+                    block,
+                    out var computedStateRoot,
+                    out var postState,
+                    out var reason))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.StateTransitionFailed,
+                    reason,
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
+
+            if (!computedStateRoot.Equals(block.StateRoot))
+            {
+                _logger.LogWarning(
+                    "State root mismatch. Slot={Slot}, BlockStateRoot={BlockStateRoot}, ComputedStateRoot={ComputedStateRoot}",
+                    block.Slot.Value,
+                    Convert.ToHexString(block.StateRoot.AsSpan()),
+                    Convert.ToHexString(computedStateRoot.AsSpan()));
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.StateTransitionFailed,
+                    $"State root mismatch at slot {block.Slot.Value}.",
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
+
+            _logger.LogDebug(
+                "ProcessBlock: Slot={Slot}, BlockAttestationCount={AttCount}, PostJustifiedSlot={PostJSlot}, PostFinalizedSlot={PostFSlot}, ValidatorCount={VCount}",
+                block.Slot.Value,
+                block.Body.Attestations.Count,
+                postState.LatestJustified.Slot.Value,
+                postState.LatestFinalized.Slot.Value,
+                postState.Validators.Count);
+
+            result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
+            if (result.Accepted)
+            {
+                _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
+            }
+        }
+        if (result.Accepted)
+        {
+            _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+            _logger.LogInformation(
+                "V2 ProcessBlock accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, ParentRoot: {ParentRoot}, ResultHeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
+                block.Slot.Value,
+                blockRoot,
+                parentRoot,
+                result.HeadSlot,
+                result.HeadChanged);
+        }
+
+        return result;
+    }
 
     public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason)
     {
-        stateRoot = Bytes32.Zero();
-        reason = "Not supported in V2 — use full chain state transition.";
-        return false;
+        return TryComputeBlockStateRoot(candidateBlock, out stateRoot, out _, out reason);
+    }
+
+    public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(candidateBlock);
+
+        lock (_store)
+        {
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(candidateBlock.ParentRoot), out var parentState))
+            {
+                stateRoot = Bytes32.Zero();
+                postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
+                reason = $"Missing chain state snapshot for parent root {candidateBlock.ParentRoot}.";
+                return false;
+            }
+
+            var success = _chainStateTransition.TryComputeStateRoot(
+                parentState,
+                candidateBlock,
+                out stateRoot,
+                out var postState,
+                out reason);
+
+            postJustified = success
+                ? postState.LatestJustified
+                : new Checkpoint(Bytes32.Zero(), new Slot(0));
+            return success;
+        }
     }
 
     public bool TryApplyLocalBlock(SignedBlockWithAttestation signedBlock, out string reason)
     {
-        var result = _store.OnBlock(signedBlock);
+        var result = ProcessBlock(signedBlock);
         reason = result.Accepted ? string.Empty : result.Reason;
         return result.Accepted;
     }
 
     public bool TryApplyLocalAttestation(SignedAttestation signedAttestation, out string reason)
     {
-        _store.OnAttestation(signedAttestation);
-        reason = string.Empty;
+        lock (_store)
+        {
+            if (!_store.TryOnAttestation(signedAttestation, _config.IsAggregator, out reason))
+            {
+                return false;
+            }
+        }
         return true;
+    }
+
+    public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
+    {
+        lock (_store)
+        {
+            return _store.TryOnGossipAggregatedAttestation(signed, out reason);
+        }
+    }
+
+    public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, List<AggregatedSignatureProof>> PayloadPool)
+        GetAllAvailableAttestationsForBlock(ulong slot)
+    {
+        lock (_store)
+        {
+            var attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
+            var pool = _store.GetKnownPayloadPool();
+            return (attestations, pool);
+        }
+    }
+
+    public IReadOnlySet<Bytes32> GetKnownBlockRoots()
+    {
+        lock (_store)
+        {
+            return _store.GetAllBlockRoots();
+        }
+    }
+
+    public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
+    {
+        lock (_store)
+        {
+            var attestations = new List<AggregatedAttestation>();
+            var proofs = new List<AggregatedSignatureProof>();
+            var pool = _store.GetKnownPayloadPool();
+
+            foreach (var (dataRootKey, payloadList) in pool)
+            {
+                if (!_store.TryGetAttestationData(dataRootKey, out var data))
+                    continue;
+                if (data.Slot.Value >= slot)
+                    continue;
+                // Don't filter by requiredSource: 3SF allows attestations with any
+                // justified source in the same block. The state transition validates
+                // source justification; filtering here drops valid attestations that
+                // target intermediate justifiable slots needed for finalization.
+
+                foreach (var proof in payloadList)
+                {
+                    attestations.Add(new AggregatedAttestation(proof.Participants, data));
+                    proofs.Add(proof);
+                }
+            }
+
+            return (attestations, proofs);
+        }
+    }
+
+    public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
+    {
+        lock (_store)
+        {
+            return _store.CollectAttestationsForAggregation();
+        }
     }
 
     public void OnTick(ulong slot, int intervalInSlot)
     {
-        _store.TickInterval(slot, intervalInSlot);
+        ulong headSlot;
+        ulong justifiedSlot;
+        ulong finalizedSlot;
+
+        lock (_store)
+        {
+            _store.TickInterval(slot, intervalInSlot);
+            headSlot = _store.HeadSlot;
+            justifiedSlot = _store.JustifiedSlot;
+            finalizedSlot = _store.FinalizedSlot;
+        }
+
+        LeanMetrics.SetCurrentSlot(slot);
+        LeanMetrics.SetHeadSlot(headSlot);
+        LeanMetrics.SetJustifiedSlot(justifiedSlot);
+        LeanMetrics.SetFinalizedSlot(finalizedSlot);
+
+        // Prune state cache when finalization advances to prevent unbounded memory growth.
+        if (finalizedSlot > _lastPrunedFinalizedSlot)
+        {
+            _lastPrunedFinalizedSlot = finalizedSlot;
+            lock (_store)
+            {
+                _chainStateCache.PruneExcept(_store.ProtoArray);
+            }
+        }
+
+        if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
+        {
+            _logger.LogInformation(
+                "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
+                slot, headSlot, justifiedSlot, finalizedSlot);
+        }
+
+        if (intervalInSlot == 0 && _networkService is not null)
+        {
+            TriggerPeerStatusProbe();
+        }
+
+        // Periodic sync: when syncing, re-trigger backfill from best known peer head.
+        // This handles cases where gossip mesh hasn't formed yet or peer status probes
+        // returned stale data after the initial backfill.
+        if (intervalInSlot == 0 && _syncService is not null)
+        {
+            _syncService.TrySyncFromBestPeer();
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _runTask = _chainService.RunAsync(_cts.Token);
-        if (_syncService is not null)
-            await _syncService.StartAsync(_cts.Token);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Interlocked.Exchange(ref _started, 1) == 1)
+            return;
+
+        try
+        {
+            _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            _blocksByRootRpcRouter?.SetHandler(ResolveBlockByRootAsync);
+            if (_statusRpcRouter is not null)
+            {
+                _statusRpcRouter.SetHandler(ResolveStatusAsync);
+                _statusRpcRouter.SetPeerStatusHandler(HandlePeerStatusAsync);
+            }
+
+            if (_networkService is not null && _config.EnableGossipProcessing)
+            {
+                await SubscribeTopicAsync(_gossipTopics.BlockTopic, _cts.Token);
+
+                foreach (var subnetTopic in _attestationSubnetTopics)
+                {
+                    await SubscribeTopicAsync(subnetTopic, _cts.Token);
+                }
+
+                await SubscribeTopicAsync(_gossipTopics.AggregateTopic, _cts.Token);
+            }
+
+            _inboxTask = ConsumeInboxAsync(_cts.Token);
+            _runTask = _chainService.RunAsync(_cts.Token);
+            if (_syncService is not null)
+                await _syncService.StartAsync(_cts.Token);
+
+            if (_networkService is not null)
+                TriggerPeerStatusProbe();
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _started, 0);
+            _blocksByRootRpcRouter?.SetHandler(null);
+            _statusRpcRouter?.SetHandler(null);
+            _statusRpcRouter?.SetPeerStatusHandler(null);
+
+            _cts?.Dispose();
+            _cts = null;
+            throw;
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_cts is not null)
+        if (Interlocked.Exchange(ref _started, 0) == 0)
+            return;
+
+        _blocksByRootRpcRouter?.SetHandler(null);
+        _statusRpcRouter?.SetHandler(null);
+        _statusRpcRouter?.SetPeerStatusHandler(null);
+
+        if (_cts is null)
+            return;
+
+        await _cts.CancelAsync();
+        _inbox.Writer.TryComplete();
+
+        if (_syncService is not null)
         {
-            await _cts.CancelAsync();
-            if (_syncService is not null)
+            try
             {
-                try { await _syncService.StopAsync(cancellationToken); }
-                catch (OperationCanceledException) { }
+                await _syncService.StopAsync(cancellationToken);
             }
-
-            if (_runTask is not null)
+            catch (OperationCanceledException)
             {
-                try { await _runTask; }
-                catch (OperationCanceledException) { }
+                // Shutdown path.
             }
+        }
 
-            _cts.Dispose();
-            _cts = null;
+        if (_inboxTask is not null)
+        {
+            try
+            {
+                await _inboxTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown path.
+            }
+        }
+
+        if (_runTask is not null)
+        {
+            try
+            {
+                await _runTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown path.
+            }
+        }
+
+        _cts.Dispose();
+        _cts = null;
+        _runTask = null;
+        _inboxTask = null;
+        Interlocked.Exchange(ref _statusProbeInFlight, 0);
+    }
+
+    private async Task ConsumeInboxAsync(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var msg in _inbox.Reader.ReadAllAsync(ct))
+            {
+                try
+                {
+                    switch (msg)
+                    {
+                        case GossipBlockMessage block:
+                            ProcessGossipBlockFromInbox(block);
+                            break;
+                        case GossipAttestationMessage att:
+                            ProcessGossipAttestationFromInbox(att);
+                            break;
+                        case GossipAggregatedAttestationMessage agg:
+                            ProcessGossipAggregatedAttestationFromInbox(agg);
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing inbox message: {Type}", msg.GetType().Name);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown path.
+        }
+    }
+
+    private void ProcessGossipBlockFromInbox(GossipBlockMessage msg)
+    {
+        var signedBlock = msg.Block;
+        var blockRoot = msg.BlockRoot;
+
+        var result = ProcessBlock(signedBlock);
+
+        _logger.LogInformation(
+            "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted={Accepted}, reason={Reason}",
+            signedBlock.Message.Block.Slot.Value,
+            Convert.ToHexString(blockRoot.AsSpan())[..8],
+            result.Accepted,
+            result.Reason);
+
+        if (result.Accepted && _syncService is not null)
+        {
+            _syncService.CascadeAcceptedBlock(blockRoot);
+        }
+        else if (result.RejectReason == ForkChoiceRejectReason.UnknownParent && _syncService is not null)
+        {
+            _ = _syncService.OnGossipBlockAsync(signedBlock, blockRoot, peerId: null);
+        }
+    }
+
+    private void ProcessGossipAttestationFromInbox(GossipAttestationMessage msg)
+    {
+        if (_syncService is not null)
+        {
+            _ = _syncService.OnGossipAttestationAsync(msg.Attestation);
+            return;
+        }
+
+        lock (_store)
+        {
+            _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _);
+        }
+    }
+
+    private void ProcessGossipAggregatedAttestationFromInbox(GossipAggregatedAttestationMessage msg)
+    {
+        lock (_store)
+        {
+            if (!_store.TryOnGossipAggregatedAttestation(msg.Attestation, out var reason))
+            {
+                _logger.LogDebug(
+                    "Dropped gossip aggregated attestation in V2 path. Reason: {Reason}",
+                    reason);
+            }
+        }
+    }
+
+    private async Task SubscribeTopicAsync(string topic, CancellationToken cancellationToken)
+    {
+        if (_networkService is null || string.IsNullOrWhiteSpace(topic))
+            return;
+
+        await _networkService.SubscribeAsync(topic, payload => HandleGossipMessage(topic, payload), cancellationToken);
+    }
+
+    private void HandleGossipMessage(string topic, byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+
+        if (string.Equals(topic, _gossipTopics.BlockTopic, StringComparison.Ordinal))
+        {
+            HandleGossipBlock(payload);
+            return;
+        }
+
+        if (string.Equals(topic, _gossipTopics.AggregateTopic, StringComparison.Ordinal))
+        {
+            HandleGossipAggregatedAttestation(payload);
+            return;
+        }
+
+        if (IsAttestationSubnetTopic(topic))
+        {
+            HandleGossipAttestation(payload);
+        }
+    }
+
+    private void HandleGossipBlock(byte[] payload)
+    {
+        _logger.LogDebug(
+            "HandleGossipBlock: payloadLen={Len}",
+            payload.Length);
+
+        var decode = _blockDecoder.DecodeAndValidate(payload);
+        if (!decode.IsSuccess || decode.SignedBlock is null)
+        {
+            _logger.LogWarning(
+                "HandleGossipBlock decode failed: {Failure} - {Reason}, payloadLen={Len}",
+                decode.Failure, decode.Reason, payload.Length);
+            return;
+        }
+
+        var signedBlock = decode.SignedBlock;
+        var blockRoot = decode.BlockMessageRoot ?? new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+
+        _inbox.Writer.TryWrite(new GossipBlockMessage(signedBlock, blockRoot));
+    }
+
+    private void HandleGossipAttestation(byte[] payload)
+    {
+        var decode = _attestationDecoder.DecodeAndValidate(payload);
+        if (!decode.IsSuccess || decode.Attestation is null)
+        {
+            _logger.LogWarning(
+                "Dropped gossip attestation. PayloadLen: {PayloadLen}, Failure: {Failure}, Reason: {Reason}",
+                payload.Length, decode.Failure, decode.Reason);
+            return;
+        }
+
+        _logger.LogDebug(
+            "Received gossip attestation. Validator: {ValidatorId}, Slot: {Slot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}",
+            decode.Attestation.ValidatorId, decode.Attestation.Message.Slot.Value,
+            Convert.ToHexString(decode.Attestation.Message.Head.Root.AsSpan())[..8],
+            Convert.ToHexString(decode.Attestation.Message.Target.Root.AsSpan())[..8],
+            Convert.ToHexString(decode.Attestation.Message.Source.Root.AsSpan())[..8]);
+
+        _inbox.Writer.TryWrite(new GossipAttestationMessage(decode.Attestation));
+    }
+
+    private void HandleGossipAggregatedAttestation(byte[] payload)
+    {
+        var decode = _aggregatedAttestationDecoder.DecodeAndValidate(payload);
+        if (!decode.IsSuccess || decode.Attestation is null)
+            return;
+
+        _inbox.Writer.TryWrite(new GossipAggregatedAttestationMessage(decode.Attestation));
+    }
+
+    private bool IsAttestationSubnetTopic(string topic)
+    {
+        for (var i = 0; i < _attestationSubnetTopics.Length; i++)
+        {
+            if (string.Equals(_attestationSubnetTopics[i], topic, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private void TriggerPeerStatusProbe()
+    {
+        if (_networkService is null)
+            return;
+
+        if (Interlocked.CompareExchange(ref _statusProbeInFlight, 1, 0) != 0)
+            return;
+
+        _ = ProbePeerStatusesAsync();
+    }
+
+    private async Task ProbePeerStatusesAsync()
+    {
+        try
+        {
+            using var probeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await _networkService!.ProbePeerStatusesAsync(probeCts.Token);
+        }
+        catch
+        {
+            // Best-effort probe path.
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _statusProbeInFlight, 0);
+        }
+    }
+
+    private ValueTask<byte[]?> ResolveBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (blockRoot.Length != SszEncoding.Bytes32Length)
+            return ValueTask.FromResult<byte[]?>(null);
+
+        var root = new Bytes32(blockRoot.ToArray());
+        return ValueTask.FromResult(_blockStore.TryLoad(root, out var payload) ? payload : null);
+    }
+
+    private ValueTask<LeanStatusMessage> ResolveStatusAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        LeanStatusMessage status;
+        lock (_store)
+        {
+            status = new LeanStatusMessage(
+                _store.FinalizedRoot.AsSpan(),
+                _store.FinalizedSlot,
+                _store.HeadRoot.AsSpan(),
+                _store.HeadSlot);
+        }
+
+        return ValueTask.FromResult(status);
+    }
+
+    private ValueTask HandlePeerStatusAsync(LeanStatusMessage status, string? peerKey, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (_syncService is null || string.IsNullOrWhiteSpace(peerKey))
+            return ValueTask.CompletedTask;
+
+        var normalizedPeer = peerKey.Trim();
+        _syncService.OnPeerConnected(normalizedPeer);
+        var headRoot = new Bytes32(status.HeadRoot);
+        return new ValueTask(_syncService.OnPeerStatusAsync(normalizedPeer, status.HeadSlot, status.FinalizedSlot, headRoot));
+    }
+
+    private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, ulong localValidatorId)
+    {
+        // Every node must subscribe to all attestation subnets so it can:
+        //  1. Receive attestations from all validators for fork-choice/finalization
+        //  2. Publish its own attestation (pubsub requires topic subscription before publish)
+        var subnetCount = Math.Max(1, attestationCommitteeCount);
+        var topics = new string[subnetCount];
+        for (var i = 0; i < subnetCount; i++)
+        {
+            topics[i] = gossipTopics.AttestationSubnetTopic(i);
+        }
+
+        return topics;
+    }
+
+    private abstract record ConsensusInboxMessage;
+    private sealed record GossipBlockMessage(SignedBlockWithAttestation Block, Bytes32 BlockRoot) : ConsensusInboxMessage;
+    private sealed record GossipAttestationMessage(SignedAttestation Attestation) : ConsensusInboxMessage;
+    private sealed record GossipAggregatedAttestationMessage(SignedAggregatedAttestation Attestation) : ConsensusInboxMessage;
+
+    private sealed class NoOpBlockByRootStore : IBlockByRootStore
+    {
+        public static readonly NoOpBlockByRootStore Instance = new();
+
+        public void Save(Bytes32 blockRoot, ReadOnlySpan<byte> payload)
+        {
+        }
+
+        public bool TryLoad(Bytes32 blockRoot, [NotNullWhen(true)] out byte[]? payload)
+        {
+            payload = null;
+            return false;
         }
     }
 }
