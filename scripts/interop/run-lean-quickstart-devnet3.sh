@@ -4,11 +4,11 @@ set -euo pipefail
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 quickstart_dir="${NLEAN_QUICKSTART_DIR:-$root_dir/vendor/lean-quickstart}"
 network_dir="local-devnet-nlean"
-network_name="${NLEAN_NETWORK_NAME:-devnet2}"
-nodes="nlean_0,ethlambda_0"
+network_name="${NLEAN_NETWORK_NAME:-devnet0}"
+nodes="${NLEAN_INTEROP_NODES:-nlean_0,nlean_1,ethlambda_0,ethlambda_1}"
 with_metrics="true"
 nlean_setup="${NLEAN_QUICKSTART_SETUP:-docker}"
-nlean_docker_image="${NLEAN_DOCKER_IMAGE:-nlean-local:devnet2}"
+nlean_docker_image="${NLEAN_DOCKER_IMAGE:-nlean-local:devnet3}"
 use_sudo_shim="${NLEAN_QUICKSTART_USE_SUDO_SHIM:-true}"
 skip_docker_build="${NLEAN_SKIP_DOCKER_BUILD:-false}"
 skip_checks="${NLEAN_INTEROP_SKIP_CHECKS:-false}"
@@ -21,13 +21,13 @@ min_head_slot="${NLEAN_INTEROP_MIN_HEAD_SLOT:-3}"
 usage() {
   cat <<USAGE
 Usage:
-  run-lean-quickstart-devnet2.sh [options]
+  run-lean-quickstart-devnet3.sh [options]
 
 Options:
   --quickstart-dir PATH   Path to lean-quickstart checkout (default: vendor/lean-quickstart)
   --network-dir NAME      Network directory under lean-quickstart (default: local-devnet-nlean)
   --network-name NAME     Gossip network name for nlean topics (default: devnet2)
-  --nodes CSV             Node list for spin-node.sh (default: nlean_0,ethlambda_0)
+  --nodes CSV             Node list for spin-node.sh (default: nlean_0,nlean_1,ethlambda_0)
   --nlean-setup MODE      nlean run mode: binary|docker (default: docker)
   --nlean-docker-image    Docker image tag used when nlean-setup=docker (default: nlean-local:devnet2)
   --no-sudo-shim          Do not inject sudo shim when calling spin-node.sh
@@ -333,6 +333,7 @@ run_spin_node() {
     export NLEAN_DOCKER_IMAGE="$nlean_docker_image"
     export NLEAN_NETWORK_NAME="$network_name"
     export NLEAN_QUICKSTART_NODES="$nodes"
+    export PRESERVE_AGGREGATORS=true
 
     if [[ "$use_sudo_shim" == "true" ]]; then
       PATH="$sudo_shim_dir:$PATH" "${cmd[@]}"
@@ -625,7 +626,7 @@ fi
 
 cleanup_preexisting_containers
 
-echo "Starting lean-quickstart devnet-2 nodes: ${nodes}"
+echo "Starting lean-quickstart devnet-3 nodes: ${nodes}"
 run_spin_node >"$spin_log" 2>&1 &
 spin_pid=$!
 echo "spin-node log: $spin_log"

@@ -63,6 +63,24 @@ public sealed class SignedAttestationGossipDecoderTests
     }
 
     [Test]
+    public void DecodeAndValidate_AcceptsFixedSignedAttestationLayoutWithoutOffset()
+    {
+        var decoder = new SignedAttestationGossipDecoder();
+        var attestation = CreateSignedAttestation();
+        var fixedSectionLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
+        var payload = new byte[fixedSectionLength + attestation.Signature.Bytes.Length];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0, SszEncoding.UInt64Length), attestation.ValidatorId);
+        SszEncoding.Encode(attestation.Message).CopyTo(payload.AsSpan(SszEncoding.UInt64Length));
+        attestation.Signature.Bytes.CopyTo(payload.AsSpan(fixedSectionLength));
+
+        var result = decoder.DecodeAndValidate(payload);
+
+        Assert.That(result.IsSuccess, Is.True);
+        Assert.That(result.Attestation, Is.Not.Null);
+        Assert.That(result.Attestation!.ValidatorId, Is.EqualTo(attestation.ValidatorId));
+    }
+
+    [Test]
     public void DecodeAndValidate_ReturnsFailure_ForLegacySignatureLength()
     {
         var decoder = new SignedAttestationGossipDecoder();
@@ -94,21 +112,5 @@ public sealed class SignedAttestationGossipDecoderTests
             new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x03, 32).ToArray()), new Slot(1)));
 
         return new SignedAttestation(7, data, XmssSignature.Empty());
-    }
-
-    private static byte[] EncodeOffsetContainer(SignedAttestation attestation)
-    {
-        var fixedLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + SszEncoding.UInt32Length;
-        var payload = new byte[fixedLength + XmssSignature.Length];
-
-        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0, SszEncoding.UInt64Length), attestation.ValidatorId);
-        var encodedData = SszEncoding.Encode(attestation.Message);
-        encodedData.CopyTo(payload.AsSpan(SszEncoding.UInt64Length, encodedData.Length));
-        BinaryPrimitives.WriteUInt32LittleEndian(
-            payload.AsSpan(SszEncoding.UInt64Length + SszEncoding.AttestationDataLength, SszEncoding.UInt32Length),
-            (uint)fixedLength);
-        attestation.Signature.Bytes.CopyTo(payload.AsSpan(fixedLength, XmssSignature.Length));
-
-        return payload;
     }
 }

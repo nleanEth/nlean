@@ -121,12 +121,9 @@ public sealed class HashTreeOpening
 public sealed class XmssSignature
 {
     /// <summary>
-    /// Legacy length constant — kept temporarily for backward compatibility.
+    /// XMSS signature byte length produced by leanSig.
     /// </summary>
     public const int Length = 3112;
-
-    // Legacy raw bytes — used when constructed from opaque byte[], will be removed after Task 1.3.
-    private readonly byte[]? _legacyBytes;
 
     /// <summary>
     /// Construct a structured XmssSignature from typed fields.
@@ -138,33 +135,11 @@ public sealed class XmssSignature
         Hashes = hashes;
     }
 
-    /// <summary>
-    /// Legacy constructor from opaque bytes — kept temporarily for backward compatibility.
-    /// Will be removed once SszDecoding.DecodeXmssSignature is implemented (Task 1.3).
-    /// </summary>
-    public XmssSignature(byte[] bytes)
-    {
-        if (bytes.Length != Length)
-        {
-            throw new ArgumentException($"XmssSignature must be exactly {Length} bytes.");
-        }
-
-        _legacyBytes = bytes.ToArray();
-        // Initialize fields to empty defaults; structured access not available in legacy mode.
-        Path = new HashTreeOpening(HashDigestList.Empty());
-        Rho = Randomness.Zero();
-        Hashes = HashDigestList.Empty();
-    }
-
     public HashTreeOpening Path { get; }
     public Randomness Rho { get; }
     public HashDigestList Hashes { get; }
 
-    /// <summary>
-    /// Backward-compatible Bytes property — returns raw bytes if constructed from legacy constructor,
-    /// otherwise returns SSZ-encoded bytes.
-    /// </summary>
-    public ReadOnlySpan<byte> Bytes => _legacyBytes ?? EncodeBytes();
+    public ReadOnlySpan<byte> Bytes => EncodeBytes();
 
     /// <summary>
     /// Create an XMSS signature from SSZ-encoded bytes (Container format).
@@ -192,16 +167,10 @@ public sealed class XmssSignature
         HashDigestList.Empty());
 
     /// <summary>
-    /// SSZ-encode this signature. If constructed from legacy bytes, returns those bytes.
-    /// Otherwise delegates to SszEncoding.Encode for proper Container encoding.
+    /// SSZ-encode this signature as a container.
     /// </summary>
     public byte[] EncodeBytes()
     {
-        if (_legacyBytes is not null)
-        {
-            return _legacyBytes.ToArray();
-        }
-
         return SszEncoding.Encode(this);
     }
 

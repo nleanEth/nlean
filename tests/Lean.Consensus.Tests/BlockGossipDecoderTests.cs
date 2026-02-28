@@ -119,6 +119,21 @@ public sealed class BlockGossipDecoderTests
     }
 
     [Test]
+    public void DecodeAndValidate_AcceptsFixedProposerBlockSignaturesLayout()
+    {
+        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var signedBlock = CreateSignedBlock();
+        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var fixedProposerSignatures = EncodeLegacyFixedProposerSignatures(signedBlock.Signature);
+        var payload = BuildSignedBlockPayload(messageBytes, fixedProposerSignatures);
+
+        var result = decoder.DecodeAndValidate(payload);
+
+        Assert.That(result.IsSuccess, Is.True);
+        Assert.That(result.SignedBlock, Is.Not.Null);
+    }
+
+    [Test]
     public void DecodeAndValidate_AcceptsDualOffsetBlockSignatures_WithAttestationsFirstLayout()
     {
         var decoder = new SignedBlockWithAttestationGossipDecoder();
@@ -187,7 +202,7 @@ public sealed class BlockGossipDecoderTests
         Assert.That(result.Failure, Is.EqualTo(BlockGossipDecodeFailure.InvalidSsz));
     }
 
-    private static SignedBlockWithAttestation CreateSignedBlock()
+    private static SignedBlockWithAttestation CreateSignedBlock(XmssSignature? proposerSignature = null)
     {
         var proposerAttestationData = new AttestationData(
             new Slot(11),
@@ -217,7 +232,7 @@ public sealed class BlockGossipDecoderTests
                     new AggregationBits(new[] { true, true, false, true }),
                     new byte[] { 0xAA, 0xBB, 0xCC })
             },
-            XmssSignature.Empty());
+            proposerSignature ?? XmssSignature.Empty());
 
         return new SignedBlockWithAttestation(blockWithAttestation, signatures);
     }
@@ -299,6 +314,20 @@ public sealed class BlockGossipDecoderTests
             attestationSignaturesBytes.CopyTo(
                 payload.AsSpan(fixedLength + proposerSignatureBytes.Length, attestationSignaturesBytes.Length));
         }
+
+        return payload;
+    }
+
+    private static byte[] EncodeLegacyFixedProposerSignatures(BlockSignatures signatures)
+    {
+        var proposerSignatureBytes = signatures.ProposerSignature.Bytes.ToArray();
+        var attestationSignaturesBytes = SszEncoding.Encode(signatures.AttestationSignatures);
+        var attestationOffset = SszEncoding.UInt32Length + proposerSignatureBytes.Length;
+        var payload = new byte[attestationOffset + attestationSignaturesBytes.Length];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(0, SszEncoding.UInt32Length), (uint)attestationOffset);
+        proposerSignatureBytes.CopyTo(payload.AsSpan(SszEncoding.UInt32Length, proposerSignatureBytes.Length));
+        attestationSignaturesBytes.CopyTo(payload.AsSpan(attestationOffset, attestationSignaturesBytes.Length));
 
         return payload;
     }

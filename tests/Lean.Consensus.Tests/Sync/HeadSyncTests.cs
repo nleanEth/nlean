@@ -181,7 +181,7 @@ public sealed class HeadSyncTests
         var attestation = new Attestation(0, new AttestationData(
             block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
         var blockWithAttestation = new BlockWithAttestation(block, attestation);
-        var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), new XmssSignature(new byte[3112]));
+        var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
         return new SignedBlockWithAttestation(blockWithAttestation, sig);
     }
 

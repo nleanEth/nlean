@@ -10,6 +10,7 @@ quic_port=""
 metrics_port=""
 enable_metrics="${NLEAN_ENABLE_METRICS:-true}"
 network_name="${NLEAN_NETWORK_NAME:-devnet2}"
+log_level="${NLEAN_LOG_LEVEL:-}"
 
 usage() {
   cat <<USAGE
@@ -87,6 +88,9 @@ if [[ -z "${network_name// }" ]]; then
   echo "NLEAN_NETWORK_NAME must not be empty." >&2
   exit 1
 fi
+
+log_level="${log_level#"${log_level%%[![:space:]]*}"}"
+log_level="${log_level%"${log_level##*[![:space:]]}"}"
 
 if [[ -z "$node_key_path" ]]; then
   node_key_path="$config_dir/$node_name.key"
@@ -198,28 +202,6 @@ if [[ -n "${NLEAN_BOOTSTRAP_PEERS:-}" ]]; then
   done
 fi
 
-bootstrap_nodes_json=""
-# Keep bootstrap-node-name derivation opt-in because peer-id derivation from
-# validator privkeys is not portable across all clients.
-enable_bootstrap_node_names=$(echo "${NLEAN_ENABLE_BOOTSTRAP_NODE_NAMES:-false}" | tr '[:upper:]' '[:lower:]')
-if [[ "$enable_bootstrap_node_names" == "true" && -n "${NLEAN_QUICKSTART_NODES:-}" ]]; then
-  quickstart_nodes="${NLEAN_QUICKSTART_NODES//,/ }"
-  for raw_node in $quickstart_nodes; do
-    candidate_node="${raw_node#${raw_node%%[![:space:]]*}}"
-    candidate_node="${candidate_node%${candidate_node##*[![:space:]]}}"
-    if [[ -z "$candidate_node" || "$candidate_node" == "all" || "$candidate_node" == "$node_name" ]]; then
-      continue
-    fi
-
-    escaped_candidate_node="${candidate_node//\\/\\\\}"
-    escaped_candidate_node="${escaped_candidate_node//\"/\\\"}"
-    if [[ -n "$bootstrap_nodes_json" ]]; then
-      bootstrap_nodes_json+=","
-    fi
-    bootstrap_nodes_json+="\"${escaped_candidate_node}\""
-  done
-fi
-
 # Use a dialable loopback listen host for local quickstart interop by default.
 # 0.0.0.0 works for binding but can surface as non-dialable peer records for pubsub reconnects.
 listen_host="${NLEAN_LISTEN_HOST:-127.0.0.1}"
@@ -240,7 +222,6 @@ cat > "$node_config" <<EOF_CONFIG
   "libp2p": {
     "listenAddresses": ["/ip4/${listen_host}/udp/${quic_port}/quic-v1"],
     "bootstrapPeers": [${bootstrap_peers_json}],
-    "bootstrapNodeNames": [${bootstrap_nodes_json}],
     "privateKeyPath": "${node_key_path}",
     "enableMdns": ${NLEAN_ENABLE_MDNS:-false},
     "enablePubsub": true,
@@ -251,7 +232,7 @@ cat > "$node_config" <<EOF_CONFIG
     "validatorIndex": ${validator_index},
     "publicKeyPath": "${validator_public_key_path}",
     "secretKeyPath": "${validator_secret_key_path}",
-    "publishAggregates": false
+    "publishAggregates": ${NLEAN_PUBLISH_AGGREGATES:-false}
   }
 }
 EOF_CONFIG
@@ -261,4 +242,5 @@ exec "$binary_path" \
   --validator-config "$validator_config" \
   --node "$node_name" \
   --data-dir "$data_dir" \
-  --metrics "$enable_metrics"
+  --metrics "$enable_metrics" \
+  ${log_level:+--log "$log_level"}

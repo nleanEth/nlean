@@ -63,7 +63,11 @@ public sealed class NewBlockCache
         {
             siblings.Remove(root);
             if (siblings.Count == 0)
+            {
                 _childrenByParent.Remove(block.ParentRoot);
+                // No remaining children reference this parent — clean up orphan marker
+                _orphanParents.Remove(block.ParentRoot);
+            }
         }
     }
 
@@ -117,7 +121,11 @@ public sealed class NewBlockCache
             {
                 siblings.Remove(root);
                 if (siblings.Count == 0)
+                {
                     _childrenByParent.Remove(block.ParentRoot);
+                    // No remaining children reference this parent — clean up orphan marker
+                    _orphanParents.Remove(block.ParentRoot);
+                }
             }
         }
     }

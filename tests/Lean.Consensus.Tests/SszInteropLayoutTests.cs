@@ -7,7 +7,7 @@ namespace Lean.Consensus.Tests;
 public sealed class SszInteropLayoutTests
 {
     [Test]
-    public void SignedAttestation_ZeroEncodingMatchesVariableSizeLayout()
+    public void SignedAttestation_ZeroEncodingMatchesFixedSignatureLayout()
     {
         var signedAttestation = new SignedAttestation(
             0,
@@ -20,18 +20,15 @@ public sealed class SszInteropLayoutTests
 
         var encoded = SszEncoding.Encode(signedAttestation);
 
-        // Fixed part: ValidatorId(8) + AttestationData(128) + offset(4) = 140
-        // Signature (empty): fixed(36) + path(4) + hashes(0) = 40
-        // Total = 180
+        // XmssSignature is fixed-size (no offset field in parent).
+        // Layout: ValidatorId(8) + AttestationData(128) + XmssSignature(inline)
         var signatureBytes = SszEncoding.Encode(XmssSignature.Empty());
-        var fixedSize = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + SszEncoding.UInt32Length;
+        var fixedSize = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
         var expectedLength = fixedSize + signatureBytes.Length;
         Assert.That(encoded.Length, Is.EqualTo(expectedLength));
 
-        // The offset at position (8+128)=136 should point to the start of the signature data
-        var signatureOffset = BinaryPrimitives.ReadUInt32LittleEndian(
-            encoded.AsSpan(SszEncoding.UInt64Length + SszEncoding.AttestationDataLength, 4));
-        Assert.That(signatureOffset, Is.EqualTo(fixedSize));
+        // XmssSignature starts directly at position 136 (no offset)
+        Assert.That(encoded.AsSpan(fixedSize, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
 
     [Test]
@@ -74,4 +71,5 @@ public sealed class SszInteropLayoutTests
         Assert.That(encoded.AsSpan((int)messageOffset, messageBytes.Length).ToArray(), Is.EqualTo(messageBytes));
         Assert.That(encoded.AsSpan((int)signatureOffset, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
+
 }

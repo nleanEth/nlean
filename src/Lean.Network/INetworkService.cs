@@ -9,4 +9,10 @@ public interface INetworkService
     Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default);
     Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, string preferredPeerKey, CancellationToken cancellationToken = default);
     Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Connects to bootstrap peers. Must be called after StartAsync and after topics have
+    /// been subscribed, so the gossipsub hello includes all topic subscriptions.
+    /// </summary>
+    Task ConnectToPeersAsync(CancellationToken cancellationToken = default);
 }

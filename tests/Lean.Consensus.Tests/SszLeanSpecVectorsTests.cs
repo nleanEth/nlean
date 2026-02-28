@@ -45,7 +45,7 @@ public sealed class SszLeanSpecVectorsTests
     }
 
     [Test]
-    public void SignedAttestationEncodingUsesVariableXmssSignature()
+    public void SignedAttestationEncodingUsesFixedXmssSignature()
     {
         var emptySignature = XmssSignature.Empty();
 
@@ -60,8 +60,9 @@ public sealed class SszLeanSpecVectorsTests
 
         var encoded = SszEncoding.Encode(signedAttestation);
         var signatureBytes = SszEncoding.Encode(emptySignature);
-        // Fixed: ValidatorId(8) + AttestationData(104) + offset(4) = 116
-        var fixedSize = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + SszEncoding.UInt32Length;
+        // XmssSignature is fixed-size (no offset field).
+        // Fixed: ValidatorId(8) + AttestationData(128) = 136
+        var fixedSize = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
         var expectedLength = fixedSize + signatureBytes.Length;
 
         Assert.That(encoded.Length, Is.EqualTo(expectedLength));

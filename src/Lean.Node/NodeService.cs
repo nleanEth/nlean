@@ -62,6 +62,7 @@ public sealed class NodeService : BackgroundService
         }
         await _networkService.StartAsync(stoppingToken);
         await _consensusService.StartAsync(stoppingToken);
+        await _networkService.ConnectToPeersAsync(stoppingToken);
 
         if (_options.Validator.Enabled)
         {

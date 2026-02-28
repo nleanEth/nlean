@@ -96,23 +96,23 @@ public sealed class ProtoArray
     {
         var parent = _nodes[parentIdx];
         var child = _nodes[childIdx];
-        bool childViable = IsViable(child, justifiedSlot, finalizedSlot);
+        bool childLeadsToViable = LeadsToViableHead(child, justifiedSlot, finalizedSlot);
 
         if (parent.BestChild is { } currentBestIdx)
         {
             var currentBest = _nodes[currentBestIdx];
-            bool currentViable = IsViable(currentBest, justifiedSlot, finalizedSlot);
+            bool currentLeadsToViable = LeadsToViableHead(currentBest, justifiedSlot, finalizedSlot);
 
-            if (!childViable) return;
+            if (!childLeadsToViable) return;
 
-            if (!currentViable)
+            if (!currentLeadsToViable)
             {
                 parent.BestChild = childIdx;
                 parent.BestDescendant = child.BestDescendant ?? childIdx;
                 return;
             }
 
-            // Both viable — pick heavier, tie-break by higher hex root
+            // Both lead to viable heads — pick heavier, tie-break by higher hex root
             if (child.Weight > currentBest.Weight ||
                 (child.Weight == currentBest.Weight &&
                  string.Compare(RootKey(child.Root), RootKey(currentBest.Root),
@@ -124,12 +124,31 @@ public sealed class ProtoArray
         }
         else
         {
-            if (childViable)
+            if (childLeadsToViable)
             {
                 parent.BestChild = childIdx;
                 parent.BestDescendant = child.BestDescendant ?? childIdx;
             }
         }
+    }
+
+    /// <summary>
+    /// Returns true if the node itself is viable, or if it has a BestDescendant that is viable.
+    /// This allows head selection to traverse through non-viable intermediary nodes
+    /// to reach viable descendants (matching Lighthouse/Prysm behavior).
+    /// </summary>
+    private bool LeadsToViableHead(ProtoNode node, ulong justifiedSlot, ulong finalizedSlot)
+    {
+        if (IsViable(node, justifiedSlot, finalizedSlot))
+            return true;
+
+        if (node.BestDescendant is { } bestDescIdx)
+        {
+            var bestDesc = _nodes[bestDescIdx];
+            return IsViable(bestDesc, justifiedSlot, finalizedSlot);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -149,13 +168,19 @@ public sealed class ProtoArray
             if (IsViable(bestDesc, justifiedSlot, finalizedSlot))
                 return bestDesc.Root;
         }
-
         return justified.Root;
     }
 
     public ulong? GetSlot(Bytes32 root)
     {
         if (_indices.TryGetValue(RootKey(root), out var idx))
+            return _nodes[idx].Slot;
+        return null;
+    }
+
+    public ulong? GetSlotByKey(string rootKey)
+    {
+        if (_indices.TryGetValue(rootKey, out var idx))
             return _nodes[idx].Slot;
         return null;
     }
@@ -226,9 +251,24 @@ public sealed class ProtoArray
 
     private static bool IsViable(ProtoNode node, ulong justifiedSlot, ulong finalizedSlot)
     {
-        // A node is viable if its checkpoints are at least as recent as the store's.
-        // Both conditions must hold (AND), matching Lighthouse/Prysm behavior.
-        return node.JustifiedSlot >= justifiedSlot && node.FinalizedSlot >= finalizedSlot;
+        // Always viable: leanSpec's 3SF-mini does NOT use viability filtering.
+        // Unlike Ethereum PoS (Lighthouse/Prysm), where per-epoch checkpoints are
+        // aligned and viability is a valid optimization, 3SF-mini has per-slot
+        // justification where different forks can have different justified roots
+        // at the same slot. Filtering by viability causes head deadlocks when
+        // the justified root is on a minority fork.
+        _ = justifiedSlot;
+        _ = finalizedSlot;
+        return true;
+    }
+
+    /// <summary>
+    /// Returns all blocks as (root, slot, parentRoot) tuples for LMD GHOST computation.
+    /// </summary>
+    public IEnumerable<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot)> GetAllBlocks()
+    {
+        foreach (var node in _nodes)
+            yield return (node.Root, node.Slot, node.ParentRoot);
     }
 
     public static string RootKey(Bytes32 root) => Convert.ToHexString(root.AsSpan());

@@ -48,7 +48,11 @@ public sealed class ConsensusServiceV2Tests
         var (svc, _, store, _) = CreateService();
         var parentRoot = store.HeadRoot;
         var block = CreateBlock(slot: 1, parentRoot: parentRoot, proposerIndex: 0);
-        var signed = WrapBlock(block);
+
+        // Compute the correct state root so the block passes validation.
+        Assert.That(svc.TryComputeBlockStateRoot(block, out var stateRoot, out _), Is.True);
+        var validBlock = new Block(block.Slot, block.ProposerIndex, block.ParentRoot, stateRoot, block.Body);
+        var signed = WrapBlock(validBlock);
 
         var result = svc.TryApplyLocalBlock(signed, out var reason);
 
@@ -74,7 +78,7 @@ public sealed class ConsensusServiceV2Tests
     public void TryApplyLocalAttestation_DoesNotThrow()
     {
         var (svc, _, store, _) = CreateService();
-        var attestation = CreateAttestation(0, 1, store.HeadRoot);
+        var attestation = CreateAttestation(0, 0, store.HeadRoot);
 
         var result = svc.TryApplyLocalAttestation(attestation, out var reason);
 
@@ -129,8 +133,7 @@ public sealed class ConsensusServiceV2Tests
             SecondsPerSlot = 4,
             GenesisTimeUnix = (ulong)GenesisTime.ToUnixTimeSeconds()
         };
-        var stateTransition = new ForkChoiceStateTransition(config);
-        var store = new ProtoArrayForkChoiceStore(stateTransition, config);
+        var store = new ProtoArrayForkChoiceStore(config);
         var time = new FakeTimeSource(GenesisTime);
         var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
             ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
@@ -149,7 +152,7 @@ public sealed class ConsensusServiceV2Tests
         var attestation = new Attestation(0, new AttestationData(
             block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
         var blockWithAttestation = new BlockWithAttestation(block, attestation);
-        var emptyXmssSig = new XmssSignature(new byte[3112]);
+        var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), emptyXmssSig);
         return new SignedBlockWithAttestation(blockWithAttestation, signature);
     }
@@ -159,9 +162,9 @@ public sealed class ConsensusServiceV2Tests
         var data = new AttestationData(
             new Slot(slot),
             new Checkpoint(headRoot, new Slot(slot)),
-            Checkpoint.Default(),
-            Checkpoint.Default());
-        var sig = new XmssSignature(new byte[3112]);
+            new Checkpoint(headRoot, new Slot(slot)),
+            new Checkpoint(headRoot, new Slot(slot)));
+        var sig = XmssSignature.Empty();
         return new SignedAttestation(validatorId, data, sig);
     }
 
@@ -177,7 +180,9 @@ public sealed class ConsensusServiceV2Tests
         public SyncState State { get; }
         public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId) => Task.CompletedTask;
         public Task OnGossipAttestationAsync(SignedAttestation attestation) => Task.CompletedTask;
-        public Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot) => Task.CompletedTask;
+        public Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot, Bytes32? headRoot = null) => Task.CompletedTask;
+        public void CascadeAcceptedBlock(Bytes32 blockRoot) { }
+        public void TrySyncFromBestPeer() { }
         public void OnPeerConnected(string peerId) { }
         public void OnPeerDisconnected(string peerId) { }
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;

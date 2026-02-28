@@ -29,7 +29,7 @@ internal sealed class ChainStateTransition
             emptyBodyRoot);
 
         var genesisCheckpoint = Checkpoint.Default();
-        return new State(
+        var state = new State(
             new Config(_config.GenesisTimeUnix),
             new Slot(0),
             genesisHeader,
@@ -40,6 +40,11 @@ internal sealed class ChainStateTransition
             validators,
             Array.Empty<Bytes32>(),
             Array.Empty<bool>());
+
+        // Compute state root with zeroed header state_root, then fill it in.
+        // This matches ethlambda's init_store() and leanSpec's generate_genesis().
+        var stateRoot = new Bytes32(state.HashTreeRoot());
+        return state with { LatestBlockHeader = genesisHeader with { StateRoot = stateRoot } };
     }
 
     public bool TryComputeStateRoot(
@@ -94,7 +99,7 @@ internal sealed class ChainStateTransition
         var latestFinalized = parentState.LatestFinalized;
         var historicalBlockHashes = parentState.HistoricalBlockHashes.ToList();
         var justifiedSlots = parentState.JustifiedSlots.ToList();
-        var validators = parentState.Validators.ToList();
+        var validators = parentState.Validators;
         var justificationsRoots = parentState.JustificationsRoots.ToList();
         var justificationsValidators = parentState.JustificationsValidators.ToList();
         var transitionStopwatch = Stopwatch.StartNew();
@@ -163,7 +168,7 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
-            // Parent linkage is already enforced by ForkChoiceStore before this transition runs.
+            // Parent linkage is already enforced by forkchoice before this transition runs.
             // Re-deriving the parent root from latestBlockHeader can reject imported branches when
             // this simplified transition computes different intermediate state roots than peers.
 
@@ -197,15 +202,10 @@ internal sealed class ChainStateTransition
                 Bytes32.Zero(),
                 new Bytes32(block.Body.HashTreeRoot()));
 
-            if (block.Body.Attestations
-                .Select(attestation => Convert.ToHexString(attestation.Data.HashTreeRoot()))
-                .Distinct(StringComparer.Ordinal)
-                .Count() != block.Body.Attestations.Count)
-            {
-                postState = default!;
-                reason = "Block contains duplicate AttestationData.";
-                return false;
-            }
+            // NOTE: Multiple aggregated attestations with the same AttestationData are
+            // allowed. Different validator subsets may attest to the same checkpoint and
+            // arrive as separate aggregates. The vote accumulation uses bool[] per
+            // validator, so overlapping attestations are harmless (no double-counting).
 
             if (justificationsRoots.Any(root => root.Equals(Bytes32.Zero())))
             {
@@ -336,6 +336,9 @@ internal sealed class ChainStateTransition
 
                 justificationsMap.Remove(targetKey);
 
+                // leanSpec finalization rule: finalize source only when NO justifiable
+                // slots exist between source and target.  Any justifiable gap blocks
+                // finalization regardless of whether those slots are already justified.
                 var canFinalize = true;
                 for (var slot = sourceSlot + 1; slot < targetSlot; slot++)
                 {

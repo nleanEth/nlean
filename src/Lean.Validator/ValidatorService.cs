@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using Lean.Consensus;
+using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
 using Lean.Crypto;
 using Lean.Metrics;
@@ -38,11 +39,8 @@ public sealed class ValidatorService : IValidatorService
     private readonly ValidatorDutyConfig _validatorDutyConfig;
     private readonly ILeanSig _leanSig;
     private readonly ILeanMultiSig _leanMultiSig;
-    private readonly SignedAttestationGossipDecoder _signedAttestationDecoder = new();
     private readonly SignedBlockWithAttestationGossipDecoder _signedBlockDecoder = new();
-    private readonly Dictionary<ulong, List<ValidatorSignature>> _slotSignatures = new();
     private readonly Dictionary<ulong, byte[]> _validatorPublicKeys = new();
-    private readonly Dictionary<string, ObservedAttestationGroup> _observedAttestationGroups = new(StringComparer.Ordinal);
     private readonly object _lifecycleLock = new();
     private readonly object _dutyStateLock = new();
     private CancellationTokenSource? _dutyLoopCts;
@@ -52,7 +50,6 @@ public sealed class ValidatorService : IValidatorService
     private byte[] _validatorSecretKey = Array.Empty<byte>();
     private ulong _validatorId;
     private ulong _validatorCount;
-    private bool _aggregateEnabled;
     private int _observedBlockDumpCounter;
     private ulong _lastUnknownRootSuppressedSlot = ulong.MaxValue;
 
@@ -88,7 +85,6 @@ public sealed class ValidatorService : IValidatorService
         {
             InitializeValidatorKeyMaterial();
             await SubscribeBlockTopicsAsync(cancellationToken);
-            await SubscribeAttestationTopicsAsync(cancellationToken);
 
             lock (_lifecycleLock)
             {
@@ -158,6 +154,7 @@ public sealed class ValidatorService : IValidatorService
         ulong? lastAttestedSlot = null;
         ulong? lastProposerAttemptSlot = null;
         ulong? lastPublishedProposerSlot = null;
+        ulong? lastAggregatedSlot = null;
 
         try
         {
@@ -206,7 +203,6 @@ public sealed class ValidatorService : IValidatorService
                     {
                         if (ShouldSuppressDutyForUnknownRoots(slot))
                         {
-                            PruneOldSlots(slot);
                             continue;
                         }
 
@@ -217,25 +213,19 @@ public sealed class ValidatorService : IValidatorService
                             lastPublishedProposerSlot = slot;
                             lastAttestedSlot = slot;
                             DutyRunsTotal.Add(1);
-                            PruneOldSlots(slot);
                             continue;
                         }
-
-                        _logger.LogWarning(
-                            "Failed to publish proposer block for slot {Slot}; falling back to standalone attestation.",
-                            slot);
                     }
                 }
 
                 if (intervalInSlot >= 1 && lastAttestedSlot != slot)
                 {
                     var proposerAttestedInBlock = lastPublishedProposerSlot == slot;
-                    if (!proposerAttestedInBlock)
+                    if (!proposerAttestedInBlock && !IsProposerSlot(slot))
                     {
                         if (ShouldSuppressDutyForUnknownRoots(slot))
                         {
                             lastAttestedSlot = slot;
-                            PruneOldSlots(slot);
                             continue;
                         }
 
@@ -257,12 +247,34 @@ public sealed class ValidatorService : IValidatorService
                     lastAttestedSlot = slot;
                 }
 
-                PruneOldSlots(slot);
+                if (_validatorDutyConfig.PublishAggregates &&
+                    intervalInSlot >= 2 &&
+                    lastAggregatedSlot != slot)
+                {
+                    lastAggregatedSlot = slot;
+                    try
+                    {
+                        await ExecuteAggregationDutyAsync(slot, cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Validator aggregation duty execution failed.");
+                    }
+                }
             }
         }
         catch (OperationCanceledException)
         {
             // Shutdown path.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Validator duty loop terminated unexpectedly.");
+            throw;
         }
     }
 
@@ -277,7 +289,7 @@ public sealed class ValidatorService : IValidatorService
 
         var secondsPerSlot = Math.Max(1, _consensusConfig.SecondsPerSlot);
         var slotDurationMs = checked(secondsPerSlot * 1000L);
-        var intervalDurationMs = Math.Max(1L, slotDurationMs / ForkChoiceStore.IntervalsPerSlot);
+        var intervalDurationMs = Math.Max(1L, slotDurationMs / ProtoArrayForkChoiceStore.IntervalsPerSlot);
 
         var nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var elapsedMs = nowUnixMs - checked(genesisUnix * 1000L);
@@ -289,7 +301,7 @@ public sealed class ValidatorService : IValidatorService
 
         var elapsedInSlotMs = elapsedMs % slotDurationMs;
         var interval = (int)(elapsedInSlotMs / intervalDurationMs);
-        intervalInSlot = Math.Clamp(interval, 0, ForkChoiceStore.IntervalsPerSlot - 1);
+        intervalInSlot = Math.Clamp(interval, 0, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
         return true;
     }
 
@@ -356,16 +368,9 @@ public sealed class ValidatorService : IValidatorService
             return;
         }
 
-        RecordObservedAttestation(signedAttestation);
         var attestationPayload = SszEncoding.Encode(signedAttestation);
         var subnetId = new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
         await PublishToTopicAsync(_gossipTopics.AttestationSubnetTopic(subnetId), attestationPayload, cancellationToken);
-        TrackSignature(slot, messageRoot, epoch, signatureBytes);
-
-        if (_aggregateEnabled)
-        {
-            await PublishAggregateAsync(slot, messageRoot, epoch, cancellationToken);
-        }
 
         if (!selfVerificationOk)
         {
@@ -401,28 +406,20 @@ public sealed class ValidatorService : IValidatorService
     private async Task ExecuteSlotDutyAsync(ulong slot, CancellationToken cancellationToken)
     {
         if (ShouldSuppressDutyForUnknownRoots(slot))
-        {
-            PruneOldSlots(slot);
             return;
-        }
 
         if (slot > 0 && IsProposerSlot(slot))
         {
             var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
             if (publishedBlock)
             {
-                PruneOldSlots(slot);
                 DutyRunsTotal.Add(1);
                 return;
             }
-
-            _logger.LogWarning(
-                "Failed to publish proposer block for slot {Slot}; falling back to standalone attestation.",
-                slot);
+            return;
         }
 
         await PublishStandaloneAttestationAsync(slot, cancellationToken);
-        PruneOldSlots(slot);
         DutyRunsTotal.Add(1);
     }
 
@@ -430,6 +427,84 @@ public sealed class ValidatorService : IValidatorService
     {
         var validatorCount = Math.Max(1UL, _validatorCount);
         return slot % validatorCount == _validatorId;
+    }
+
+    private async Task ExecuteAggregationDutyAsync(ulong slot, CancellationToken cancellationToken)
+    {
+        if (!_validatorDutyConfig.PublishAggregates)
+            return;
+
+        var groups = _consensusService.CollectAttestationsForAggregation();
+        if (groups.Count == 0)
+        {
+            _logger.LogInformation("Aggregation duty skipped: no groups. Slot: {Slot}", slot);
+            return;
+        }
+
+        _logger.LogInformation("Aggregation duty started. Slot: {Slot}, Groups: {Groups}", slot, groups.Count);
+
+        Dictionary<ulong, byte[]> knownPublicKeys;
+        lock (_dutyStateLock)
+        {
+            knownPublicKeys = new Dictionary<ulong, byte[]>(_validatorPublicKeys);
+        }
+
+        foreach (var (data, validatorIds, signatures) in groups)
+        {
+            if (validatorIds.Count == 0)
+                continue;
+
+            var publicKeys = new List<ReadOnlyMemory<byte>>();
+            var signatureBytes = new List<ReadOnlyMemory<byte>>();
+            var participantIds = new List<ulong>();
+
+            for (var i = 0; i < validatorIds.Count; i++)
+            {
+                if (!knownPublicKeys.TryGetValue(validatorIds[i], out var pk))
+                    continue;
+
+                publicKeys.Add(pk);
+                signatureBytes.Add(signatures[i].EncodeBytes());
+                participantIds.Add(validatorIds[i]);
+            }
+
+            if (publicKeys.Count == 0)
+                continue;
+
+            byte[] proofData;
+            try
+            {
+                var messageRoot = data.HashTreeRoot();
+                var epoch = ToSignatureEpoch(data.Slot.Value);
+                var aggregationStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                proofData = _leanMultiSig.AggregateSignatures(publicKeys, signatureBytes, messageRoot, epoch);
+                aggregationStopwatch.Stop();
+                LeanMetrics.RecordPqAggregatedSignatureBuilt(publicKeys.Count, aggregationStopwatch.Elapsed);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "MultiSig aggregation failed for slot {Slot}.", data.Slot.Value);
+                continue;
+            }
+
+            var participants = AggregationBits.FromValidatorIndices(participantIds);
+            var proof = new AggregatedSignatureProof(participants, proofData);
+            var signed = new SignedAggregatedAttestation(data, proof);
+            var payload = SszEncoding.Encode(signed);
+
+            // Store locally first so the proposer can include this aggregation
+            // in the next block even if gossipsub does not deliver self-published
+            // messages back to this node.
+            _consensusService.TryApplyLocalAggregatedAttestation(signed, out _);
+
+            await PublishToTopicAsync(_gossipTopics.AggregateTopic, payload, cancellationToken);
+
+            _logger.LogInformation(
+                "Published aggregated attestation. Slot: {Slot}, Participants: [{Participants}], ProofBytes: {ProofBytes}",
+                data.Slot.Value,
+                string.Join(",", participantIds),
+                proofData.Length);
+        }
     }
 
     private bool ShouldSuppressDutyForUnknownRoots(ulong slot)
@@ -528,7 +603,6 @@ public sealed class ValidatorService : IValidatorService
             return false;
         }
 
-        RecordObservedAttestation(signedProposerAttestation);
         var payload = SszEncoding.Encode(signedBlock);
         TryDumpProposerBlock(slot, payload, parentRoot, blockRoot, signedBlock);
         await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
@@ -548,139 +622,78 @@ public sealed class ValidatorService : IValidatorService
         ulong slot,
         Checkpoint requiredSource)
     {
-        List<ObservedAttestationGroup> candidates;
-        lock (_dutyStateLock)
-        {
-            candidates = _observedAttestationGroups.Values
-                .Where(group =>
-                    group.Data.Slot.Value < slot &&
-                    CheckpointEquals(group.Data.Source, requiredSource) &&
-                    group.SignaturesByValidator.Count > 0)
-                .OrderByDescending(group => group.Data.Slot.Value)
-                .ThenByDescending(group => group.SignaturesByValidator.Count)
-                .Take(128)
-                .Select(group => group.Clone())
-                .ToList();
-        }
-
-        if (candidates.Count == 0)
+        var (knownAttestations, knownProofs) = _consensusService.GetKnownAggregatedPayloadsForBlock(slot, requiredSource);
+        if (knownAttestations.Count == 0 || knownProofs.Count == 0)
         {
             return (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
         }
 
-        var attestationProofs = new Dictionary<string, (AttestationData Data, AggregatedSignatureProof Proof, string Source)>(StringComparer.Ordinal);
-        foreach (var group in candidates)
-        {
-            var messageRoot = group.Data.HashTreeRoot();
-            var epoch = ToSignatureEpoch(group.Data.Slot.Value);
-            var participants = new List<ulong>();
-            var publicKeys = new List<ReadOnlyMemory<byte>>();
-            var signatures = new List<ReadOnlyMemory<byte>>();
+        var selectedAttestations = new List<AggregatedAttestation>();
+        var selectedProofs = new List<AggregatedSignatureProof>();
+        SelectBestProofs(knownAttestations, knownProofs, selectedAttestations, selectedProofs, "consensus");
 
-            // Keep validator ordering canonical (ascending index) so multisig
-            // proofs verify across clients that reconstruct pubkeys from bitlists.
-            foreach (var (validatorId, signatureBytes) in group.SignaturesByValidator.OrderBy(entry => entry.Key))
+        foreach (var (att, proof) in selectedAttestations.Zip(selectedProofs))
+        {
+            if (proof.Participants.TryToValidatorIndices(out var pids))
             {
-                if (!_validatorPublicKeys.TryGetValue(validatorId, out var publicKey))
+                _logger.LogInformation(
+                    "Block aggregated attestation. Slot: {Slot}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], TargetRoot: {TargetRoot}",
+                    att.Data.Slot.Value,
+                    att.Data.Source.Slot.Value,
+                    att.Data.Target.Slot.Value,
+                    string.Join(",", pids),
+                    Convert.ToHexString(att.Data.Target.Root.AsSpan()));
+            }
+        }
+
+        return (selectedAttestations, selectedProofs);
+    }
+
+    private void SelectBestProofs(
+        IReadOnlyList<AggregatedAttestation> inputAttestations,
+        IReadOnlyList<AggregatedSignatureProof> inputProofs,
+        List<AggregatedAttestation> outputAttestations,
+        List<AggregatedSignatureProof> outputProofs,
+        string source)
+    {
+        var candidateProofs = new List<(string DataRootKey, string TargetRootKey, AttestationData Data, AggregatedSignatureProof Proof, List<ulong> Participants)>();
+        var limit = Math.Min(inputAttestations.Count, inputProofs.Count);
+        var bestPerDataRoot = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < limit; i++)
+        {
+            var attestation = inputAttestations[i];
+            var proof = inputProofs[i];
+            if (!proof.Participants.TryToValidatorIndices(out var participantIds) || participantIds.Count == 0)
+            {
+                continue;
+            }
+
+            var dataRootKey = Convert.ToHexString(attestation.Data.HashTreeRoot());
+            var targetRootKey = Convert.ToHexString(attestation.Data.Target.Root.AsSpan());
+
+            if (bestPerDataRoot.TryGetValue(dataRootKey, out var existingIndex))
+            {
+                var existingCount = candidateProofs[existingIndex].Participants.Count;
+                if (participantIds.Count <= existingCount)
                 {
                     continue;
                 }
 
-                var verificationStopwatch = Stopwatch.StartNew();
-                var signatureValid = _leanSig.Verify(publicKey, epoch, messageRoot, signatureBytes);
-                verificationStopwatch.Stop();
-                LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
-                if (!signatureValid)
-                {
-                    continue;
-                }
-
-                participants.Add(validatorId);
-                publicKeys.Add(publicKey);
-                signatures.Add(signatureBytes);
+                candidateProofs[existingIndex] = (dataRootKey, targetRootKey, attestation.Data, proof, participantIds.ToList());
             }
-
-            if (participants.Count == 0)
+            else
             {
-                continue;
+                bestPerDataRoot[dataRootKey] = candidateProofs.Count;
+                candidateProofs.Add((dataRootKey, targetRootKey, attestation.Data, proof, participantIds.ToList()));
             }
-
-            byte[] aggregateSignature;
-            var aggregateBuildStopwatch = Stopwatch.StartNew();
-            try
-            {
-                aggregateSignature = _leanMultiSig.AggregateSignatures(publicKeys, signatures, messageRoot, epoch);
-            }
-            catch (Exception ex)
-            {
-                aggregateBuildStopwatch.Stop();
-                _logger.LogDebug(
-                    ex,
-                    "Failed aggregating attestation signatures. Slot: {Slot}, Participants: {Participants}",
-                    group.Data.Slot.Value,
-                    participants.Count);
-                continue;
-            }
-            aggregateBuildStopwatch.Stop();
-            LeanMetrics.RecordPqAggregatedSignatureBuilt(participants.Count, aggregateBuildStopwatch.Elapsed);
-
-            var aggregateVerificationStopwatch = Stopwatch.StartNew();
-            var aggregateValid = _leanMultiSig.VerifyAggregate(publicKeys, messageRoot, aggregateSignature, epoch);
-            aggregateVerificationStopwatch.Stop();
-            LeanMetrics.RecordPqAggregatedSignatureVerification(aggregateValid, aggregateVerificationStopwatch.Elapsed);
-            if (!aggregateValid)
-            {
-                continue;
-            }
-
-            var bits = AggregationBits.FromValidatorIndices(participants);
-            var generatedProof = new AggregatedSignatureProof(bits, aggregateSignature);
-            var candidateKey = BuildAttestationProofKey(group.Data, generatedProof);
-            attestationProofs[candidateKey] = (group.Data, generatedProof, "generated");
-        }
-
-        if (attestationProofs.Count == 0)
-        {
-            return (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
-        }
-
-        // Lean peers reject blocks with duplicate attestation messages.
-        // Keep only one proof per attestation-data root (best participant coverage first).
-        var bestPerDataRoot = new Dictionary<string, (AttestationData Data, AggregatedSignatureProof Proof, string Source)>(StringComparer.Ordinal);
-        foreach (var candidate in attestationProofs.Values)
-        {
-            var dataRootKey = Convert.ToHexString(candidate.Data.HashTreeRoot());
-            if (!bestPerDataRoot.TryGetValue(dataRootKey, out var existing) ||
-                IsPreferredAggregateCandidate(candidate, existing))
-            {
-                bestPerDataRoot[dataRootKey] = candidate;
-            }
-        }
-
-        var candidateProofs = new List<(string DataRootKey, string TargetRootKey, AttestationData Data, AggregatedSignatureProof Proof, string Source, List<ulong> Participants)>();
-        foreach (var (dataRootKey, candidate) in bestPerDataRoot)
-        {
-            if (!candidate.Proof.Participants.TryToValidatorIndices(out var participantIds) || participantIds.Count == 0)
-            {
-                continue;
-            }
-
-            candidateProofs.Add((
-                dataRootKey,
-                Convert.ToHexString(candidate.Data.Target.Root.AsSpan()),
-                candidate.Data,
-                candidate.Proof,
-                candidate.Source,
-                participantIds.ToList()));
         }
 
         if (candidateProofs.Count == 0)
         {
-            return (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
+            return;
         }
 
         var quorumThreshold = ComputeTwoThirdsThreshold(Math.Max(1UL, _validatorCount));
-        var orderedProofs = new List<(AttestationData Data, AggregatedSignatureProof Proof, string Source)>(MaxAggregatedProofsPerBlock);
         var selectedDataRoots = new HashSet<string>(StringComparer.Ordinal);
         var globallyCoveredParticipants = new HashSet<ulong>();
 
@@ -692,7 +705,6 @@ public sealed class ValidatorService : IValidatorService
                 var sortedCandidates = group
                     .OrderByDescending(candidate => candidate.Participants.Count)
                     .ThenByDescending(candidate => candidate.Data.Slot.Value)
-                    .ThenByDescending(candidate => SourceRank(candidate.Source))
                     .ThenBy(candidate => candidate.DataRootKey, StringComparer.Ordinal)
                     .ToList();
 
@@ -711,7 +723,7 @@ public sealed class ValidatorService : IValidatorService
 
         foreach (var group in targetGroups)
         {
-            if (orderedProofs.Count >= MaxAggregatedProofsPerBlock)
+            if (outputAttestations.Count >= MaxAggregatedProofsPerBlock)
             {
                 break;
             }
@@ -721,15 +733,13 @@ public sealed class ValidatorService : IValidatorService
                 .Where(candidate => !selectedDataRoots.Contains(candidate.DataRootKey))
                 .ToList();
 
-            while (orderedProofs.Count < MaxAggregatedProofsPerBlock && remainingGroupCandidates.Count > 0)
+            while (outputAttestations.Count < MaxAggregatedProofsPerBlock && remainingGroupCandidates.Count > 0)
             {
                 var bestIndex = -1;
                 var bestGroupCoverageGain = -1;
                 var bestGlobalCoverageGain = -1;
                 var bestParticipantCount = -1;
                 ulong bestSlot = 0;
-                var bestSourceRank = -1;
-                var bestDataRootKey = string.Empty;
 
                 for (var index = 0; index < remainingGroupCandidates.Count; index++)
                 {
@@ -738,22 +748,17 @@ public sealed class ValidatorService : IValidatorService
                     var globalCoverageGain = candidate.Participants.Count(id => !globallyCoveredParticipants.Contains(id));
                     var participantCount = candidate.Participants.Count;
                     var slotValue = candidate.Data.Slot.Value;
-                    var sourceRank = SourceRank(candidate.Source);
 
                     if (groupCoverageGain > bestGroupCoverageGain ||
                         (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain > bestGlobalCoverageGain) ||
                         (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount > bestParticipantCount) ||
-                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount == bestParticipantCount && slotValue > bestSlot) ||
-                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount == bestParticipantCount && slotValue == bestSlot && sourceRank > bestSourceRank) ||
-                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount == bestParticipantCount && slotValue == bestSlot && sourceRank == bestSourceRank && string.CompareOrdinal(candidate.DataRootKey, bestDataRootKey) < 0))
+                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount == bestParticipantCount && slotValue > bestSlot))
                     {
                         bestIndex = index;
                         bestGroupCoverageGain = groupCoverageGain;
                         bestGlobalCoverageGain = globalCoverageGain;
                         bestParticipantCount = participantCount;
                         bestSlot = slotValue;
-                        bestSourceRank = sourceRank;
-                        bestDataRootKey = candidate.DataRootKey;
                     }
                 }
 
@@ -763,13 +768,28 @@ public sealed class ValidatorService : IValidatorService
                 }
 
                 var selected = remainingGroupCandidates[bestIndex];
-                orderedProofs.Add((selected.Data, selected.Proof, selected.Source));
+                var participants = CloneAggregationBits(selected.Proof.Participants);
+                outputAttestations.Add(new AggregatedAttestation(participants, selected.Data));
+                outputProofs.Add(CloneAggregatedProof(selected.Proof));
                 selectedDataRoots.Add(selected.DataRootKey);
                 foreach (var participant in selected.Participants)
                 {
                     groupCoveredParticipants.Add(participant);
                     globallyCoveredParticipants.Add(participant);
                 }
+
+                var participantIds = participants.TryToValidatorIndices(out var ids)
+                    ? string.Join(",", ids)
+                    : "none";
+                _logger.LogDebug(
+                    "Prepared block aggregate proof. Source: {Source}, Slot: {Slot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], DataRoot: {DataRoot}, TargetRoot: {TargetRoot}, ProofBytes: {ProofBytes}",
+                    source,
+                    selected.Data.Slot.Value,
+                    selected.Data.Target.Slot.Value,
+                    participantIds,
+                    Convert.ToHexString(selected.Data.HashTreeRoot()),
+                    Convert.ToHexString(selected.Data.Target.Root.AsSpan()),
+                    selected.Proof.ProofData.Length);
 
                 remainingGroupCandidates.RemoveAt(bestIndex);
                 if (group.CanReachQuorum && groupCoveredParticipants.Count >= quorumThreshold)
@@ -778,82 +798,6 @@ public sealed class ValidatorService : IValidatorService
                 }
             }
         }
-
-        var remainingCandidates = candidateProofs
-            .Where(candidate => !selectedDataRoots.Contains(candidate.DataRootKey))
-            .ToList();
-
-        while (orderedProofs.Count < MaxAggregatedProofsPerBlock && remainingCandidates.Count > 0)
-        {
-            var bestIndex = 0;
-            var bestNewCoverage = -1;
-            var bestParticipantCount = -1;
-            ulong bestSlot = 0;
-            var bestSourceRank = -1;
-            var bestDataRootKey = string.Empty;
-
-            for (var index = 0; index < remainingCandidates.Count; index++)
-            {
-                var candidate = remainingCandidates[index];
-                var newCoverage = candidate.Participants.Count(id => !globallyCoveredParticipants.Contains(id));
-                var participantCount = candidate.Participants.Count;
-                var slotValue = candidate.Data.Slot.Value;
-                var sourceRank = SourceRank(candidate.Source);
-
-                if (newCoverage > bestNewCoverage ||
-                    (newCoverage == bestNewCoverage && participantCount > bestParticipantCount) ||
-                    (newCoverage == bestNewCoverage && participantCount == bestParticipantCount && slotValue > bestSlot) ||
-                    (newCoverage == bestNewCoverage && participantCount == bestParticipantCount && slotValue == bestSlot && sourceRank > bestSourceRank) ||
-                    (newCoverage == bestNewCoverage && participantCount == bestParticipantCount && slotValue == bestSlot && sourceRank == bestSourceRank && string.CompareOrdinal(candidate.DataRootKey, bestDataRootKey) < 0))
-                {
-                    bestIndex = index;
-                    bestNewCoverage = newCoverage;
-                    bestParticipantCount = participantCount;
-                    bestSlot = slotValue;
-                    bestSourceRank = sourceRank;
-                    bestDataRootKey = candidate.DataRootKey;
-                }
-            }
-
-            if (bestNewCoverage <= 0)
-            {
-                break;
-            }
-
-            var selected = remainingCandidates[bestIndex];
-            orderedProofs.Add((selected.Data, selected.Proof, selected.Source));
-            foreach (var participant in selected.Participants)
-            {
-                globallyCoveredParticipants.Add(participant);
-            }
-
-            remainingCandidates.RemoveAt(bestIndex);
-        }
-
-        var attestations = new List<AggregatedAttestation>(orderedProofs.Count);
-        var proofs = new List<AggregatedSignatureProof>(orderedProofs.Count);
-        foreach (var (data, proof, source) in orderedProofs)
-        {
-            var participants = CloneAggregationBits(proof.Participants);
-            attestations.Add(new AggregatedAttestation(participants, data));
-            proofs.Add(CloneAggregatedProof(proof));
-
-            var participantIds = participants.TryToValidatorIndices(out var ids)
-                ? string.Join(",", ids)
-                : "none";
-            _logger.LogInformation(
-                "Prepared block aggregate proof. Source: {Source}, Slot: {Slot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], DataRoot: {DataRoot}, TargetRoot: {TargetRoot}, ProofBytes: {ProofBytes}, ProofHash: {ProofHash}",
-                source,
-                data.Slot.Value,
-                data.Target.Slot.Value,
-                participantIds,
-                Convert.ToHexString(data.HashTreeRoot()),
-                Convert.ToHexString(data.Target.Root.AsSpan()),
-                proof.ProofData.Length,
-                Convert.ToHexString(SHA256.HashData(proof.ProofData)).Substring(0, 16));
-        }
-
-        return (attestations, proofs);
     }
 
     private void InitializeValidatorKeyMaterial()
@@ -884,13 +828,11 @@ public sealed class ValidatorService : IValidatorService
         {
             _validatorPublicKey = derivedPublic;
             _validatorSecretKey = configuredSecret;
-            _aggregateEnabled = _validatorDutyConfig.PublishAggregates;
         }
         else if (configuredSecret is not null)
         {
             _validatorPublicKey = Array.Empty<byte>();
             _validatorSecretKey = configuredSecret;
-            _aggregateEnabled = false;
             _logger.LogWarning(
                 "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
                 _validatorDutyConfig.ValidatorIndex);
@@ -902,7 +844,6 @@ public sealed class ValidatorService : IValidatorService
                 _validatorDutyConfig.NumActiveEpochs);
             _validatorPublicKey = keyPair.PublicKey;
             _validatorSecretKey = keyPair.SecretKey;
-            _aggregateEnabled = _validatorDutyConfig.PublishAggregates;
         }
 
         lock (_dutyStateLock)
@@ -917,19 +858,6 @@ public sealed class ValidatorService : IValidatorService
         LogKnownValidatorKeyPrefixes();
     }
 
-    private async Task SubscribeAttestationTopicsAsync(CancellationToken cancellationToken)
-    {
-        var subnetId = new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
-        var subnetTopic = _gossipTopics.AttestationSubnetTopic(subnetId);
-        if (!string.IsNullOrWhiteSpace(subnetTopic))
-        {
-            await _networkService.SubscribeAsync(
-                subnetTopic,
-                ObserveAttestationPayload,
-                cancellationToken);
-        }
-    }
-
     private async Task SubscribeBlockTopicsAsync(CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(_gossipTopics.BlockTopic))
@@ -939,40 +867,27 @@ public sealed class ValidatorService : IValidatorService
                 ObserveBlockPayload,
                 cancellationToken);
         }
-    }
 
-    private void ObserveAttestationPayload(byte[] payload)
-    {
-        var decodeResult = _signedAttestationDecoder.DecodeAndValidate(payload);
-        if (!decodeResult.IsSuccess || decodeResult.Attestation is null)
+        var subnetCount = Math.Max(1, _consensusConfig.AttestationCommitteeCount);
+        for (var subnetId = 0; subnetId < subnetCount; subnetId++)
         {
-            return;
+            var subnetTopic = _gossipTopics.AttestationSubnetTopic(subnetId);
+            if (!string.IsNullOrWhiteSpace(subnetTopic))
+            {
+                await _networkService.SubscribeAsync(subnetTopic, _ => { }, cancellationToken);
+            }
         }
 
-        RecordObservedAttestation(decodeResult.Attestation);
+        if (!string.IsNullOrWhiteSpace(_gossipTopics.AggregateTopic))
+        {
+            await _networkService.SubscribeAsync(_gossipTopics.AggregateTopic, _ => { }, cancellationToken);
+        }
     }
 
     private void ObserveBlockPayload(byte[] payload)
     {
         var decodeResult = _signedBlockDecoder.DecodeAndValidate(payload);
         TryDumpObservedBlockPayload(payload, decodeResult);
-    }
-
-    private void RecordObservedAttestation(SignedAttestation attestation)
-    {
-        var dataRootKey = Convert.ToHexString(attestation.Message.HashTreeRoot());
-        var signatureBytes = attestation.Signature.Bytes.ToArray();
-
-        lock (_dutyStateLock)
-        {
-            if (!_observedAttestationGroups.TryGetValue(dataRootKey, out var group))
-            {
-                group = new ObservedAttestationGroup(attestation.Message);
-                _observedAttestationGroups[dataRootKey] = group;
-            }
-
-            group.SignaturesByValidator[attestation.ValidatorId] = signatureBytes;
-        }
     }
 
     private void LoadKnownValidatorPublicKeysFromDirectory()
@@ -1069,117 +984,6 @@ public sealed class ValidatorService : IValidatorService
         return bytes;
     }
 
-    private async Task PublishAggregateAsync(
-        ulong slot,
-        byte[] messageRoot,
-        uint epoch,
-        CancellationToken cancellationToken)
-    {
-        List<ValidatorSignature> signatures;
-        lock (_dutyStateLock)
-        {
-            if (!_slotSignatures.TryGetValue(slot, out var currentSignatures))
-            {
-                return;
-            }
-
-            signatures = currentSignatures.ToList();
-        }
-
-        var publicKeys = signatures
-            .Select(sig => new ReadOnlyMemory<byte>(sig.PublicKey))
-            .ToList();
-        var signatureBytes = signatures
-            .Select(sig => new ReadOnlyMemory<byte>(sig.Signature))
-            .ToList();
-
-        var aggregateBuildStopwatch = Stopwatch.StartNew();
-        var aggregate = _leanMultiSig.AggregateSignatures(publicKeys, signatureBytes, messageRoot, epoch);
-        aggregateBuildStopwatch.Stop();
-        LeanMetrics.RecordPqAggregatedSignatureBuilt(signatures.Count, aggregateBuildStopwatch.Elapsed);
-
-        var aggregateVerificationStopwatch = Stopwatch.StartNew();
-        var isValid = _leanMultiSig.VerifyAggregate(publicKeys, messageRoot, aggregate, epoch);
-        aggregateVerificationStopwatch.Stop();
-        LeanMetrics.RecordPqAggregatedSignatureVerification(isValid, aggregateVerificationStopwatch.Elapsed);
-        if (!isValid)
-        {
-            _logger.LogWarning("Skipping aggregate publish due to local verification failure. Slot: {Slot}", slot);
-            return;
-        }
-
-        await PublishToTopicAsync(_gossipTopics.AggregateTopic, aggregate, cancellationToken);
-    }
-
-    private void TrackSignature(ulong slot, byte[] messageRoot, uint epoch, byte[] signature)
-    {
-        if (_validatorPublicKey.Length == 0)
-        {
-            return;
-        }
-
-        lock (_dutyStateLock)
-        {
-            if (!_slotSignatures.TryGetValue(slot, out var signatures))
-            {
-                signatures = new List<ValidatorSignature>();
-                _slotSignatures[slot] = signatures;
-            }
-
-            signatures.Add(new ValidatorSignature(
-                _validatorPublicKey.ToArray(),
-                signature.ToArray(),
-                messageRoot.ToArray(),
-                epoch));
-        }
-    }
-
-    private void PruneOldSlots(ulong currentSlot)
-    {
-        var retainFrom = currentSlot > 8 ? currentSlot - 8 : 0;
-        lock (_dutyStateLock)
-        {
-            var staleSlots = _slotSignatures.Keys.Where(slot => slot < retainFrom).ToList();
-            foreach (var slot in staleSlots)
-            {
-                _slotSignatures.Remove(slot);
-            }
-
-            var staleAttestationRoots = _observedAttestationGroups
-                .Where(pair => pair.Value.Data.Slot.Value < retainFrom)
-                .Select(pair => pair.Key)
-                .ToList();
-            foreach (var key in staleAttestationRoots)
-            {
-                _observedAttestationGroups.Remove(key);
-            }
-        }
-    }
-
-    private static bool CheckpointEquals(Checkpoint left, Checkpoint right)
-    {
-        return left.Slot.Value == right.Slot.Value &&
-               left.Root.Equals(right.Root);
-    }
-
-    private static AggregationBits CloneAggregationBits(AggregationBits bits)
-    {
-        return new AggregationBits(bits.Bits.ToArray());
-    }
-
-    private static AggregatedSignatureProof CloneAggregatedProof(AggregatedSignatureProof proof)
-    {
-        return new AggregatedSignatureProof(
-            CloneAggregationBits(proof.Participants),
-            proof.ProofData.ToArray());
-    }
-
-    private static string BuildAttestationProofKey(AttestationData data, AggregatedSignatureProof proof)
-    {
-        var dataRoot = Convert.ToHexString(data.HashTreeRoot());
-        var proofBytes = SszEncoding.Encode(proof);
-        return $"{dataRoot}:{Convert.ToHexString(proofBytes)}";
-    }
 
     private void LogKnownValidatorKeyPrefixes()
     {
@@ -1413,71 +1217,20 @@ public sealed class ValidatorService : IValidatorService
         }
     }
 
-    private static bool IsPreferredAggregateCandidate(
-        (AttestationData Data, AggregatedSignatureProof Proof, string Source) candidate,
-        (AttestationData Data, AggregatedSignatureProof Proof, string Source) existing)
-    {
-        var candidateParticipants = CountParticipants(candidate.Proof.Participants);
-        var existingParticipants = CountParticipants(existing.Proof.Participants);
-        if (candidateParticipants != existingParticipants)
-        {
-            return candidateParticipants > existingParticipants;
-        }
-
-        var candidateSourceRank = SourceRank(candidate.Source);
-        var existingSourceRank = SourceRank(existing.Source);
-        if (candidateSourceRank != existingSourceRank)
-        {
-            return candidateSourceRank > existingSourceRank;
-        }
-
-        // Deterministic fallback for equal quality candidates.
-        return string.CompareOrdinal(
-            Convert.ToHexString(candidate.Proof.ProofData),
-            Convert.ToHexString(existing.Proof.ProofData)) < 0;
-    }
-
-    private static int CountParticipants(AggregationBits bits)
-    {
-        return bits.TryToValidatorIndices(out var ids) ? ids.Count : 0;
-    }
-
-    private static int SourceRank(string source)
-    {
-        return string.Equals(source, "generated", StringComparison.Ordinal) ? 1 : 0;
-    }
-
     private static int ComputeTwoThirdsThreshold(ulong validatorCount)
     {
         return checked((int)((validatorCount * 2 + 2) / 3));
     }
 
-    private sealed class ObservedAttestationGroup
+    private static AggregationBits CloneAggregationBits(AggregationBits bits)
     {
-        public ObservedAttestationGroup(AttestationData data)
-        {
-            Data = data;
-        }
-
-        public AttestationData Data { get; }
-
-        public Dictionary<ulong, byte[]> SignaturesByValidator { get; } = new();
-
-        public ObservedAttestationGroup Clone()
-        {
-            var cloned = new ObservedAttestationGroup(Data);
-            foreach (var (validatorId, signature) in SignaturesByValidator)
-            {
-                cloned.SignaturesByValidator[validatorId] = signature.ToArray();
-            }
-
-            return cloned;
-        }
+        return new AggregationBits(bits.Bits.ToArray());
     }
 
-    private sealed record ValidatorSignature(
-        byte[] PublicKey,
-        byte[] Signature,
-        byte[] MessageRoot,
-        uint Epoch);
+    private static AggregatedSignatureProof CloneAggregatedProof(AggregatedSignatureProof proof)
+    {
+        return new AggregatedSignatureProof(
+            CloneAggregationBits(proof.Participants),
+            proof.ProofData.ToArray());
+    }
 }

@@ -82,7 +82,6 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
                 return false;
             }
         }
-
         if (latestFinalized.Slot.Value > latestJustified.Slot.Value)
         {
             postState = default!;
@@ -138,6 +137,8 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
             return true;
         }
 
+        // Source must already be justified.
+        // Matches leanSpec state.py:528 — is_slot_justified(finalized_slot, source.slot).
         if (!IsSlotJustified(data.Source.Slot.Value, latestFinalized.Slot.Value, latestJustified.Slot.Value, justifiedSlots))
         {
             reason = string.Empty;
@@ -175,18 +176,19 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
 
         if (HasTwoThirdsMajority(vote.ValidatorIds.Count, validatorCount))
         {
-            latestJustified = data.Target;
-            if (latestJustified.Slot.Value > latestFinalized.Slot.Value)
-            {
-                justifiedSlots.Add(latestJustified.Slot.Value);
-            }
-
+            // Record that this target slot is now justified.
+            justifiedSlots.Add(data.Target.Slot.Value);
             justificationVotes.Remove(targetKey);
+
+            // Set latest justified to the most recently justified target,
+            // matching leanSpec's unconditional assignment.
+            latestJustified = data.Target;
 
             var canFinalize = true;
             for (var slot = data.Source.Slot.Value + 1; slot < data.Target.Slot.Value; slot++)
             {
-                if (IsJustifiableSlot(originalFinalizedSlot, slot))
+                if (IsJustifiableSlot(originalFinalizedSlot, slot) &&
+                    !IsSlotJustified(slot, latestFinalized.Slot.Value, latestJustified.Slot.Value, justifiedSlots))
                 {
                     canFinalize = false;
                     break;

@@ -84,7 +84,7 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
-    public async Task DutyLoop_PublishesAttestationAndAggregate()
+    public async Task DutyLoop_PublishesAttestation()
     {
         var consensus = new FakeConsensusService();
         var network = new FakeNetworkService();
@@ -104,9 +104,7 @@ public sealed class ValidatorServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(published, Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet("devnet0", 0)), Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregate("devnet0")), Is.True);
     }
 
     [Test]
@@ -134,6 +132,40 @@ public sealed class ValidatorServiceTests
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.Attestation, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task DutyLoop_PublishesOffsetSignedAttestationLayout()
+    {
+        var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig
+            {
+                SecondsPerSlot = 1,
+                EnableGossipProcessing = false,
+                InitialValidatorCount = 2
+            },
+            new ValidatorDutyConfig(),
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        var published = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)),
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(published, Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
+        var fixedSectionLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
+        Assert.That(payload.Length, Is.GreaterThanOrEqualTo(fixedSectionLength + SszEncoding.UInt32Length));
+
+        var signatureOffset = BitConverter.ToUInt32(payload, fixedSectionLength);
+        Assert.That(signatureOffset, Is.EqualTo((uint)(fixedSectionLength + SszEncoding.UInt32Length)));
     }
 
     [Test]
@@ -262,6 +294,53 @@ public sealed class ValidatorServiceTests
         var decodeResult = new SignedBlockWithAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.SignedBlock, Is.Not.Null);
+
+        var signatureOffset = BitConverter.ToUInt32(payload, SszEncoding.UInt32Length);
+        var signatureSection = payload.AsSpan((int)signatureOffset).ToArray();
+        var attestationSignaturesOffset = BitConverter.ToUInt32(signatureSection, 0);
+        Assert.That(attestationSignaturesOffset, Is.GreaterThanOrEqualTo((uint)(SszEncoding.UInt32Length * 2)));
+    }
+
+    [Test]
+    public async Task DutyLoop_ProposerSlot_UsesDualOffsetSignatureLayout()
+    {
+        var consensus = new FakeConsensusService { CurrentSlotValue = 1 };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig
+            {
+                SecondsPerSlot = 1,
+                EnableGossipProcessing = false,
+                InitialValidatorCount = 3
+            },
+            new ValidatorDutyConfig
+            {
+                ValidatorIndex = 1,
+                GenesisValidatorPublicKeys = new[]
+                {
+                    HexRepeat(0x11, 52),
+                    HexRepeat(0x22, 52),
+                    HexRepeat(0x33, 52)
+                }
+            },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        var publishedBlock = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
+            TimeSpan.FromSeconds(3));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(publishedBlock, Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Blocks).Payload;
+        var signatureOffset = BitConverter.ToUInt32(payload, SszEncoding.UInt32Length);
+        var signatureSection = payload.AsSpan((int)signatureOffset).ToArray();
+        var attestationSignaturesOffset = BitConverter.ToUInt32(signatureSection, 0);
+        Assert.That(attestationSignaturesOffset, Is.EqualTo((uint)(SszEncoding.UInt32Length * 2)));
     }
 
     [Test]
@@ -453,7 +532,7 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
-    public async Task DutyLoop_ProposerSlot_AggregatesSignaturesInCanonicalValidatorOrder()
+    public async Task DutyLoop_ProposerSlot_UsesConsensusAggregatesWithoutSelfAggregation()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
         consensus.EnqueueCurrentSlots(2, 3);
@@ -477,15 +556,21 @@ public sealed class ValidatorServiceTests
             new FakeLeanSig(),
             multiSig);
 
-        await service.StartAsync(CancellationToken.None);
-
         var slotTwoData = consensus.CreateAttestationData(2);
-        network.Emit(
-            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
-            SszEncoding.Encode(new SignedAttestation(2, slotTwoData, XmssSignature.Empty())));
-        network.Emit(
-            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
-            SszEncoding.Encode(new SignedAttestation(1, slotTwoData, XmssSignature.Empty())));
+        var expectedProof = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false }),
+            new byte[] { 0xCA, 0xFE, 0xBA, 0xBE });
+        consensus.KnownAggregatedPayloads = (
+            new[]
+            {
+                new AggregatedAttestation(expectedProof.Participants, slotTwoData)
+            },
+            new[]
+            {
+                expectedProof
+            });
+
+        await service.StartAsync(CancellationToken.None);
 
         var publishedBlock = await WaitUntilAsync(
             () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
@@ -493,15 +578,23 @@ public sealed class ValidatorServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(publishedBlock, Is.True);
-        var sawCanonicalOrder = multiSig.AggregatePublicKeyHistory.Any(call =>
-            call.Count >= 3 &&
-            call[0].Length > 0 &&
-            call[1].Length > 0 &&
-            call[2].Length > 0 &&
-            call[0][0] == 0x11 &&
-            call[1][0] == 0x22 &&
-            call[2][0] == 0x33);
-        Assert.That(sawCanonicalOrder, Is.True);
+        Assert.That(consensus.GetKnownAggregatedPayloadsCalls, Is.GreaterThan(0));
+        Assert.That(multiSig.AggregateCalls, Is.EqualTo(0));
+
+        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var proposedPayload = network.PublishedMessages
+            .Where(message => message.Topic == GossipTopics.Blocks)
+            .Select(message => message.Payload)
+            .First(payload =>
+            {
+                var decode = decoder.DecodeAndValidate(payload);
+                return decode.IsSuccess && decode.SignedBlock?.Message.Block.Slot.Value == 3;
+            });
+        var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
+        Assert.That(
+            proposed.Signature.AttestationSignatures.Any(proof =>
+                proof.ProofData.AsSpan().SequenceEqual(expectedProof.ProofData)),
+            Is.True);
     }
 
     [Test]
@@ -528,21 +621,35 @@ public sealed class ValidatorServiceTests
             new FakeLeanSig(),
             new FakeLeanMultiSig());
 
-        await service.StartAsync(CancellationToken.None);
-
         var slotTwoData = consensus.CreateAttestationData(2);
-        var fallbackProof = new AggregatedSignatureProof(
-            new AggregationBits(new[] { false, true, false }),
+        var largerProofForSameData = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false }),
             new byte[] { 0xFA, 0x11, 0xBA, 0xCC });
-        var fallbackSignedBlock = BuildSignedBlockWithAggregateProof(slotTwoData, fallbackProof);
-        network.Emit(GossipTopics.Blocks, SszEncoding.Encode(fallbackSignedBlock));
+        var smallerProofForSameData = new AggregatedSignatureProof(
+            new AggregationBits(new[] { false, true, false }),
+            new byte[] { 0xDD, 0xEE });
+        var otherData = slotTwoData with
+        {
+            Slot = new Slot(1)
+        };
+        var otherProof = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, false, false }),
+            new byte[] { 0x11, 0x22, 0x33 });
+        consensus.KnownAggregatedPayloads = (
+            new[]
+            {
+                new AggregatedAttestation(largerProofForSameData.Participants, slotTwoData),
+                new AggregatedAttestation(smallerProofForSameData.Participants, slotTwoData),
+                new AggregatedAttestation(otherProof.Participants, otherData)
+            },
+            new[]
+            {
+                largerProofForSameData,
+                smallerProofForSameData,
+                otherProof
+            });
 
-        network.Emit(
-            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
-            SszEncoding.Encode(new SignedAttestation(2, slotTwoData, XmssSignature.Empty())));
-        network.Emit(
-            GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0),
-            SszEncoding.Encode(new SignedAttestation(1, slotTwoData, XmssSignature.Empty())));
+        await service.StartAsync(CancellationToken.None);
 
         var publishedBlock = await WaitUntilAsync(
             () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
@@ -741,10 +848,14 @@ public sealed class ValidatorServiceTests
         public int TryApplyLocalBlockCalls { get; private set; }
         public int TryApplyLocalAttestationCalls { get; private set; }
         public int TryComputeBlockStateRootCalls { get; private set; }
+        public int GetKnownAggregatedPayloadsCalls { get; private set; }
         public ulong CurrentSlotValue { get; set; } = 1;
         public bool HasUnknownBlockRootsInFlightValue { get; set; }
         public bool LocalBlockApplyResult { get; set; } = true;
         public bool LocalAttestationApplyResult { get; set; } = true;
+        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs)
+            KnownAggregatedPayloads { get; set; } =
+                (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
 
         public ulong CurrentSlot
         {
@@ -818,6 +929,23 @@ public sealed class ValidatorServiceTests
             TryApplyLocalAttestationCalls++;
             reason = LocalAttestationApplyResult ? string.Empty : "rejected";
             return LocalAttestationApplyResult;
+        }
+
+        public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
+        {
+            GetKnownAggregatedPayloadsCalls++;
+            return KnownAggregatedPayloads;
+        }
+
+        public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
+        {
+            return new List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>();
         }
 
         public Task StartAsync(CancellationToken cancellationToken)
@@ -927,6 +1055,11 @@ public sealed class ValidatorServiceTests
         }
 
         public Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task ConnectToPeersAsync(CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
         }

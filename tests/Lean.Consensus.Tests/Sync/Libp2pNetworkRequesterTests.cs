@@ -106,5 +106,6 @@ public sealed class Libp2pNetworkRequesterTests
         public Task SubscribeAsync(string topic, Action<byte[]> handler, CancellationToken ct = default) =>
             Task.CompletedTask;
         public Task ProbePeerStatusesAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task ConnectToPeersAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 }

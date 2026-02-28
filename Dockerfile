@@ -41,4 +41,4 @@ RUN apt-get update \
 ENV MALLOC_ARENA_MAX=2
 WORKDIR /app
 COPY --from=build /app/publish .
-ENTRYPOINT ["./Lean.Client"]
+ENTRYPOINT ["/app/Lean.Client"]

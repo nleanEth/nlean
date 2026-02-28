@@ -348,34 +348,32 @@ public sealed class ProtoArrayTests
     // ========== Viability filtering ==========
 
     [Test]
-    public void FindHead_NonViableNode_Skipped()
+    public void FindHead_AllNodesViable_FollowsWeight()
     {
-        // genesis (justified=0,finalized=0) -> a (justified=5,finalized=0) -> b (justified=0,finalized=0)
-        // Store says justified=5, finalized=0.
-        // b has justified=0 which is < 5, so b is non-viable. Head should be a.
+        // Viability is disabled for leanSpec 3SF-mini compatibility.
+        // genesis -> a (justified=5) -> b (justified=0)
+        // b has 10 votes — FindHead follows BestDescendant to the heaviest leaf.
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
         var array = new ProtoArray(genesis, 0, 0);
-        array.RegisterBlock(a, genesis, 1, 5, 0);   // justified=5
-        array.RegisterBlock(b, a, 2, 0, 0);          // justified=0, not viable when store justified=5
+        array.RegisterBlock(a, genesis, 1, 5, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
 
         array.ApplyScoreChanges(
             new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 10 }, 5, 0);
 
-        // b has weight but is non-viable for justified=5
-        // a should be head (it has justified=5 >= store justified=5)
+        // b is always viable (viability disabled), so head follows to the leaf
         var head = array.FindHead(genesis, 5, 0);
-        Assert.That(head, Is.EqualTo(a));
+        Assert.That(head, Is.EqualTo(b));
     }
 
     [Test]
-    public void FindHead_HigherJustifiedSlot_OverridesWeight()
+    public void FindHead_HeavierFork_WinsRegardlessOfCheckpoints()
     {
-        // Two forks from genesis:
-        //   fork1: a (justified=5) with 1 vote
-        //   fork2: b (justified=0) with 10 votes
-        // Store justified=5 -> b non-viable, a wins despite less weight
+        // Viability is disabled: per-block checkpoints do NOT affect head selection.
+        // Two forks: a (justified=5, 1 vote) vs b (justified=0, 10 votes).
+        // b wins by weight because viability filtering is disabled.
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -389,7 +387,7 @@ public sealed class ProtoArrayTests
             [ProtoArray.RootKey(b)] = 10
         }, 5, 0);
 
-        Assert.That(array.FindHead(genesis, 5, 0), Is.EqualTo(a));
+        Assert.That(array.FindHead(genesis, 5, 0), Is.EqualTo(b));
     }
 
     // ========== Prune: advanced scenarios ==========

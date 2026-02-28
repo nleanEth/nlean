@@ -16,7 +16,7 @@ public static class GossipTopics
 
     public static string Attestation(string network) => Format(network, "attestation");
 
-    public static string Aggregate(string network) => Format(network, "aggregate");
+    public static string Aggregate(string network) => Format(network, "aggregation");
 
     public static string AttestationSubnet(string network, int subnetId) => Format(network, $"attestation_{subnetId}");
 

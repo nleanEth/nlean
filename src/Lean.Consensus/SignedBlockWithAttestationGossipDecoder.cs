@@ -168,10 +168,17 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         out BlockSignatures value,
         out string reason)
     {
-        return TryDecodeBlockSignaturesContainer(bytes, out value, out reason);
+        if (TryDecodeBlockSignaturesDualOffsetLayout(bytes, out value, out var dualOffsetReason))
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        reason = $"BlockSignatures payload did not match expected dual-offset layout: {dualOffsetReason}";
+        return false;
     }
 
-    private static bool TryDecodeBlockSignaturesContainer(
+    private static bool TryDecodeBlockSignaturesDualOffsetLayout(
         ReadOnlySpan<byte> bytes,
         out BlockSignatures value,
         out string reason)
@@ -179,45 +186,34 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         value = null!;
         reason = string.Empty;
 
-        // BlockSignatures is now: [offset_attestation_sigs(4) | offset_proposer_sig(4) | attestation_sigs_data | proposer_sig_data]
-        const int fixedSize = SszEncoding.UInt32Length * 2;
-        if (bytes.Length < fixedSize)
+        // BlockSignatures: [offset_attestation_sigs(4) | proposer_sig(fixed inline) | attestation_sigs_data]
+        // ProposerSignature (XmssSignature) is fixed-size, AttestationSignatures is variable (offset).
+        const int proposerSigStart = SszEncoding.UInt32Length;
+        if (bytes.Length < proposerSigStart)
         {
             reason = $"BlockSignatures payload is too short: {bytes.Length} bytes.";
             return false;
         }
 
         var attestationSignaturesOffset = ReadOffset(bytes, 0);
-        var proposerSignatureOffset = ReadOffset(bytes, SszEncoding.UInt32Length);
-
-        if (attestationSignaturesOffset != fixedSize)
+        if (attestationSignaturesOffset < proposerSigStart || attestationSignaturesOffset > bytes.Length)
         {
-            reason = $"BlockSignatures attestation-signatures offset must be {fixedSize}, got {attestationSignaturesOffset}.";
+            reason = $"BlockSignatures attestation-signatures offset {attestationSignaturesOffset} is outside payload bounds.";
             return false;
         }
 
-        if (proposerSignatureOffset < attestationSignaturesOffset || proposerSignatureOffset > bytes.Length)
+        // ProposerSignature is inline between the offset field and the attestation_sigs data.
+        var proposerSignatureBytes = bytes.Slice(proposerSigStart, attestationSignaturesOffset - proposerSigStart);
+        if (!TryDecodeXmssSignature(proposerSignatureBytes, out var proposerSignature, out reason))
         {
-            reason = $"BlockSignatures proposer-signature offset {proposerSignatureOffset} is outside payload bounds.";
+            reason = $"Invalid proposer XMSS signature bytes: {reason}";
             return false;
         }
 
-        var attestationSignaturesBytes = bytes.Slice(attestationSignaturesOffset, proposerSignatureOffset - attestationSignaturesOffset);
+        var attestationSignaturesBytes = bytes[attestationSignaturesOffset..];
         if (!TryDecodeAggregatedSignatureProofList(attestationSignaturesBytes, out var attestationSignatures, out reason))
         {
             reason = $"Invalid attestation signatures list: {reason}";
-            return false;
-        }
-
-        var proposerSignatureBytes = bytes[proposerSignatureOffset..];
-        XmssSignature proposerSignature;
-        try
-        {
-            proposerSignature = SszDecoding.DecodeXmssSignature(proposerSignatureBytes);
-        }
-        catch (Exception ex)
-        {
-            reason = $"Invalid proposer XMSS signature bytes: {ex.Message}";
             return false;
         }
 
@@ -618,6 +614,23 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         }
 
         return true;
+    }
+
+    private static bool TryDecodeXmssSignature(ReadOnlySpan<byte> signatureBytes, out XmssSignature signature, out string reason)
+    {
+        signature = null!;
+        reason = string.Empty;
+
+        try
+        {
+            signature = SszDecoding.DecodeXmssSignature(signatureBytes);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            reason = $"container decode failed ({ex.Message}).";
+            return false;
+        }
     }
 
     private static bool TryDecodeBitlist(ReadOnlySpan<byte> bytes, out bool[] bits, out string reason)

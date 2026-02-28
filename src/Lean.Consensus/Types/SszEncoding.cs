@@ -81,15 +81,14 @@ public static class SszEncoding
     public static byte[] Encode(SignedAttestation value)
     {
         var signatureBytes = Encode(value.Signature);
-        // Fixed part: ValidatorId(8) + AttestationData(104) + offset(4) = 116
-        var fixedSize = UInt64Length + AttestationDataLength + UInt32Length;
+        // XmssSignature is treated as fixed-size (3112 bytes) — no offset field.
+        // Layout: ValidatorId(8) + AttestationData(128) + XmssSignature(inline)
+        var fixedSize = UInt64Length + AttestationDataLength;
         var buffer = new byte[fixedSize + signatureBytes.Length];
         var offset = 0;
         Ssz.Encode(buffer.AsSpan(offset, UInt64Length), value.ValidatorId);
         offset += UInt64Length;
         EncodeInto(buffer, offset, value.Message);
-        offset += AttestationDataLength;
-        WriteOffset(buffer, offset, fixedSize);
         signatureBytes.CopyTo(buffer.AsSpan(fixedSize));
         return buffer;
     }
@@ -139,13 +138,13 @@ public static class SszEncoding
     {
         var attestationSignaturesBytes = Encode(value.AttestationSignatures);
         var proposerSignatureBytes = Encode(value.ProposerSignature);
-        // Both fields are variable-size: 2 offsets
-        var fixedSize = UInt32Length + UInt32Length;
-        var buffer = new byte[fixedSize + attestationSignaturesBytes.Length + proposerSignatureBytes.Length];
+        // ProposerSignature (XmssSignature) is fixed-size (inline), AttestationSignatures is variable (offset).
+        // Layout: offset_attestation_sigs(4) + proposer_sig(inline) | attestation_sigs_data
+        var fixedSize = UInt32Length + proposerSignatureBytes.Length;
+        var buffer = new byte[fixedSize + attestationSignaturesBytes.Length];
         WriteOffset(buffer, 0, fixedSize);
-        WriteOffset(buffer, UInt32Length, fixedSize + attestationSignaturesBytes.Length);
+        proposerSignatureBytes.CopyTo(buffer.AsSpan(UInt32Length));
         attestationSignaturesBytes.CopyTo(buffer.AsSpan(fixedSize));
-        proposerSignatureBytes.CopyTo(buffer.AsSpan(fixedSize + attestationSignaturesBytes.Length));
         return buffer;
     }
 

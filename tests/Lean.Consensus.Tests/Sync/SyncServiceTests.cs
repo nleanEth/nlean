@@ -147,7 +147,7 @@ public sealed class SyncServiceTests
         var attestation = new Attestation(0, new AttestationData(
             block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
         var blockWithAttestation = new BlockWithAttestation(block, attestation);
-        var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), new XmssSignature(new byte[3112]));
+        var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
         return new SignedBlockWithAttestation(blockWithAttestation, sig);
     }
 
@@ -158,7 +158,7 @@ public sealed class SyncServiceTests
             new Checkpoint(headRoot, new Slot(slot)),
             Checkpoint.Default(),
             Checkpoint.Default());
-        return new SignedAttestation(validatorId, data, new XmssSignature(new byte[3112]));
+        return new SignedAttestation(validatorId, data, XmssSignature.Empty());
     }
 
     private sealed class FakeSyncBlockProcessor : IBlockProcessor

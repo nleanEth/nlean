@@ -4,6 +4,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Lean.Node\Lean.Node.csproj" />
     <ProjectReference Include="..\..\src\Lean.Network\Lean.Network.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="NUnit" />
