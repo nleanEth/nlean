@@ -39,6 +39,7 @@ RUN apt-get update \
 # Limit glibc malloc arenas to reduce native memory fragmentation
 # Default is 8*cores; with many threads this causes GB of arena overhead
 ENV MALLOC_ARENA_MAX=2
+ENV DOTNET_GCHeapHardLimit=0x40000000
 WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["/app/Lean.Client"]
