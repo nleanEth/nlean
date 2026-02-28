@@ -89,11 +89,15 @@ public sealed class ValidatorService : IValidatorService
             lock (_lifecycleLock)
             {
                 _dutyLoopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                // Capture CTS in local variable before lambda — StopAsync nulls the field,
+                // but the LongRunning thread may not have started the lambda yet.
+                // Same pattern as gossipsub ContinueWith TokenSource capture fix.
+                var cts = _dutyLoopCts;
                 // Use LongRunning so crypto FFI calls (XMSS sign ~10ms,
                 // aggregate ~700ms) don't block ThreadPool workers.
                 _dutyLoopTask = Task.Factory.StartNew(
-                    () => RunDutyLoopAsync(_dutyLoopCts.Token),
-                    _dutyLoopCts.Token,
+                    () => RunDutyLoopAsync(cts.Token),
+                    cts.Token,
                     TaskCreationOptions.LongRunning,
                     TaskScheduler.Default).Unwrap();
             }
@@ -130,7 +134,6 @@ public sealed class ValidatorService : IValidatorService
         if (dutyLoopCts is not null)
         {
             dutyLoopCts.Cancel();
-            dutyLoopCts.Dispose();
         }
 
         if (dutyLoopTask is not null)
@@ -144,6 +147,11 @@ public sealed class ValidatorService : IValidatorService
                 // Shutdown path.
             }
         }
+
+        // Dispose CTS after the task completes — the LongRunning thread may not
+        // have started the lambda yet, and accessing cts.Token on a disposed CTS
+        // throws ObjectDisposedException.
+        dutyLoopCts?.Dispose();
 
         _logger.LogInformation("Validator service stopped.");
     }
