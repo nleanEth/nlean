@@ -111,6 +111,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
+        foreach (var vid in participantIds)
+        {
+            _pendingAttestations[vid] = signed.Data;
+        }
+
         reason = string.Empty;
         return true;
     }

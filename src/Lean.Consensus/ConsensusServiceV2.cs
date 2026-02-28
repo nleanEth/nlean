@@ -384,13 +384,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             if (_networkService is not null && _config.EnableGossipProcessing)
             {
                 await SubscribeTopicAsync(_gossipTopics.BlockTopic, _cts.Token);
-
-                foreach (var subnetTopic in _attestationSubnetTopics)
-                {
-                    await SubscribeTopicAsync(subnetTopic, _cts.Token);
-                }
-
                 await SubscribeTopicAsync(_gossipTopics.AggregateTopic, _cts.Token);
+
+                if (_config.IsAggregator)
+                {
+                    foreach (var subnetTopic in _attestationSubnetTopics)
+                    {
+                        await SubscribeTopicAsync(subnetTopic, _cts.Token);
+                    }
+                }
             }
 
             // Use LongRunning so the gossip consumer gets its own thread
