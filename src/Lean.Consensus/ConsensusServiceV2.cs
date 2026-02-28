@@ -39,6 +39,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             SingleWriter = false,
         });
 
+    private volatile ConsensusSnapshot _snapshot = null!;
+
     private CancellationTokenSource? _cts;
     private Task? _runTask;
     private Task? _inboxTask;
@@ -91,81 +93,52 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
         var genesisState = _chainStateTransition.CreateGenesisState(Math.Max(1UL, _config.InitialValidatorCount));
         _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), genesisState);
+        RefreshSnapshot();
     }
 
     public ulong CurrentSlot => _clock.CurrentSlot;
-    public ulong HeadSlot
-    {
-        get
-        {
-            lock (_store)
-            {
-                return _store.HeadSlot;
-            }
-        }
-    }
-
-    public ulong JustifiedSlot
-    {
-        get
-        {
-            lock (_store)
-            {
-                return _store.JustifiedSlot;
-            }
-        }
-    }
-
-    public ulong FinalizedSlot
-    {
-        get
-        {
-            lock (_store)
-            {
-                return _store.FinalizedSlot;
-            }
-        }
-    }
+    public ulong HeadSlot => _snapshot.HeadSlot;
+    public ulong JustifiedSlot => _snapshot.JustifiedSlot;
+    public ulong FinalizedSlot => _snapshot.FinalizedSlot;
 
     // Unknown roots should suppress duties only while actively syncing.
     public bool HasUnknownBlockRootsInFlight => _syncService is not null && _syncService.State == SyncState.Syncing;
 
-    public byte[] HeadRoot
-    {
-        get
-        {
-            lock (_store)
-            {
-                return _store.HeadRoot.AsSpan().ToArray();
-            }
-        }
-    }
+    public byte[] HeadRoot => _snapshot.HeadRoot.AsSpan().ToArray();
 
     public byte[] GetProposalHeadRoot() => HeadRoot;
 
     public AttestationData CreateAttestationData(ulong slot)
     {
-        lock (_store)
+        AttestationData result = default!;
+        ScheduleOnConsumer(() =>
         {
             var target = _store.ComputeTargetCheckpoint();
-            return new AttestationData(
+            result = new AttestationData(
                 new Slot(slot),
                 new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
                 target,
                 new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)));
-        }
+        });
+        return result;
     }
 
     // IBlockProcessor
     public bool IsBlockKnown(Bytes32 root)
     {
-        lock (_store)
-        {
-            return _store.ContainsBlock(root);
-        }
+        bool known = false;
+        ScheduleOnConsumer(() => known = _store.ContainsBlock(root));
+        return known;
     }
 
     public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+    {
+        ForkChoiceApplyResult result = default!;
+        ScheduleOnConsumer(() => result = ProcessBlockInternal(signedBlock));
+        return result;
+    }
+
+    private ForkChoiceApplyResult ProcessBlockInternal(SignedBlockWithAttestation signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
 
@@ -173,71 +146,65 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var blockRoot = new Bytes32(block.HashTreeRoot());
         var parentRoot = block.ParentRoot;
 
-        ForkChoiceApplyResult result;
-        lock (_store)
+        if (!_store.ContainsBlock(parentRoot))
         {
-            if (!_store.ContainsBlock(parentRoot))
-            {
-                return ForkChoiceApplyResult.Rejected(
-                    ForkChoiceRejectReason.UnknownParent,
-                    $"Unknown parent root {parentRoot}.",
-                    _store.HeadSlot,
-                    _store.HeadRoot);
-            }
-
-            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out var parentState))
-            {
-                return ForkChoiceApplyResult.Rejected(
-                    ForkChoiceRejectReason.StateTransitionFailed,
-                    $"Missing chain state snapshot for parent root {parentRoot}.",
-                    _store.HeadSlot,
-                    _store.HeadRoot);
-            }
-
-            if (!_chainStateTransition.TryComputeStateRoot(
-                    parentState,
-                    block,
-                    out var computedStateRoot,
-                    out var postState,
-                    out var reason))
-            {
-                return ForkChoiceApplyResult.Rejected(
-                    ForkChoiceRejectReason.StateTransitionFailed,
-                    reason,
-                    _store.HeadSlot,
-                    _store.HeadRoot);
-            }
-
-            if (!computedStateRoot.Equals(block.StateRoot))
-            {
-                _logger.LogWarning(
-                    "State root mismatch. Slot={Slot}, BlockStateRoot={BlockStateRoot}, ComputedStateRoot={ComputedStateRoot}",
-                    block.Slot.Value,
-                    Convert.ToHexString(block.StateRoot.AsSpan()),
-                    Convert.ToHexString(computedStateRoot.AsSpan()));
-                return ForkChoiceApplyResult.Rejected(
-                    ForkChoiceRejectReason.StateTransitionFailed,
-                    $"State root mismatch at slot {block.Slot.Value}.",
-                    _store.HeadSlot,
-                    _store.HeadRoot);
-            }
-
-            _logger.LogDebug(
-                "ProcessBlock: Slot={Slot}, BlockAttestationCount={AttCount}, PostJustifiedSlot={PostJSlot}, PostFinalizedSlot={PostFSlot}, ValidatorCount={VCount}",
-                block.Slot.Value,
-                block.Body.Attestations.Count,
-                postState.LatestJustified.Slot.Value,
-                postState.LatestFinalized.Slot.Value,
-                postState.Validators.Count);
-
-            result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
-            if (result.Accepted)
-            {
-                _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
-            }
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.UnknownParent,
+                $"Unknown parent root {parentRoot}.",
+                _store.HeadSlot,
+                _store.HeadRoot);
         }
+
+        if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out var parentState))
+        {
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.StateTransitionFailed,
+                $"Missing chain state snapshot for parent root {parentRoot}.",
+                _store.HeadSlot,
+                _store.HeadRoot);
+        }
+
+        if (!_chainStateTransition.TryComputeStateRoot(
+                parentState,
+                block,
+                out var computedStateRoot,
+                out var postState,
+                out var reason))
+        {
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.StateTransitionFailed,
+                reason,
+                _store.HeadSlot,
+                _store.HeadRoot);
+        }
+
+        if (!computedStateRoot.Equals(block.StateRoot))
+        {
+            _logger.LogWarning(
+                "State root mismatch. Slot={Slot}, BlockStateRoot={BlockStateRoot}, ComputedStateRoot={ComputedStateRoot}",
+                block.Slot.Value,
+                Convert.ToHexString(block.StateRoot.AsSpan()),
+                Convert.ToHexString(computedStateRoot.AsSpan()));
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.StateTransitionFailed,
+                $"State root mismatch at slot {block.Slot.Value}.",
+                _store.HeadSlot,
+                _store.HeadRoot);
+        }
+
+        _logger.LogDebug(
+            "ProcessBlock: Slot={Slot}, BlockAttestationCount={AttCount}, PostJustifiedSlot={PostJSlot}, PostFinalizedSlot={PostFSlot}, ValidatorCount={VCount}",
+            block.Slot.Value,
+            block.Body.Attestations.Count,
+            postState.LatestJustified.Slot.Value,
+            postState.LatestFinalized.Slot.Value,
+            postState.Validators.Count);
+
+        var result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
         if (result.Accepted)
         {
+            _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
+            RefreshSnapshot();
             _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
             _logger.LogInformation(
                 "V2 ProcessBlock accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, ParentRoot: {ParentRoot}, ResultHeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
@@ -260,28 +227,34 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         ArgumentNullException.ThrowIfNull(candidateBlock);
 
-        lock (_store)
+        Bytes32 sr = Bytes32.Zero();
+        Checkpoint pj = new(Bytes32.Zero(), new Slot(0));
+        string r = string.Empty;
+        bool success = false;
+
+        ScheduleOnConsumer(() =>
         {
             if (!_chainStateCache.TryGet(ChainStateCache.RootKey(candidateBlock.ParentRoot), out var parentState))
             {
-                stateRoot = Bytes32.Zero();
-                postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
-                reason = $"Missing chain state snapshot for parent root {candidateBlock.ParentRoot}.";
-                return false;
+                r = $"Missing chain state snapshot for parent root {candidateBlock.ParentRoot}.";
+                return;
             }
 
-            var success = _chainStateTransition.TryComputeStateRoot(
+            success = _chainStateTransition.TryComputeStateRoot(
                 parentState,
                 candidateBlock,
-                out stateRoot,
+                out sr,
                 out var postState,
-                out reason);
+                out r);
 
-            postJustified = success
-                ? postState.LatestJustified
-                : new Checkpoint(Bytes32.Zero(), new Slot(0));
-            return success;
-        }
+            if (success)
+                pj = postState.LatestJustified;
+        });
+
+        stateRoot = sr;
+        postJustified = pj;
+        reason = r;
+        return success;
     }
 
     public bool TryApplyLocalBlock(SignedBlockWithAttestation signedBlock, out string reason)
@@ -293,49 +266,50 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public bool TryApplyLocalAttestation(SignedAttestation signedAttestation, out string reason)
     {
-        lock (_store)
-        {
-            if (!_store.TryOnAttestation(signedAttestation, _config.IsAggregator, out reason))
-            {
-                return false;
-            }
-        }
-        return true;
+        bool success = false;
+        string r = string.Empty;
+        ScheduleOnConsumer(() => success = _store.TryOnAttestation(signedAttestation, _config.IsAggregator, out r));
+        reason = r;
+        return success;
     }
 
     public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
     {
-        lock (_store)
-        {
-            return _store.TryOnGossipAggregatedAttestation(signed, out reason);
-        }
+        bool success = false;
+        string r = string.Empty;
+        ScheduleOnConsumer(() => success = _store.TryOnGossipAggregatedAttestation(signed, out r));
+        reason = r;
+        return success;
     }
 
     public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, List<AggregatedSignatureProof>> PayloadPool)
         GetAllAvailableAttestationsForBlock(ulong slot)
     {
-        lock (_store)
+        IReadOnlyList<Attestation> attestations = default!;
+        IReadOnlyDictionary<string, List<AggregatedSignatureProof>> pool = default!;
+        ScheduleOnConsumer(() =>
         {
-            var attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
-            var pool = _store.GetKnownPayloadPool();
-            return (attestations, pool);
-        }
+            attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
+            pool = _store.GetKnownPayloadPool();
+        });
+        return (attestations, pool);
     }
 
     public IReadOnlySet<Bytes32> GetKnownBlockRoots()
     {
-        lock (_store)
-        {
-            return _store.GetAllBlockRoots();
-        }
+        IReadOnlySet<Bytes32> roots = default!;
+        ScheduleOnConsumer(() => roots = _store.GetAllBlockRoots());
+        return roots;
     }
 
     public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
     {
-        lock (_store)
+        List<AggregatedAttestation> attestations = default!;
+        List<AggregatedSignatureProof> proofs = default!;
+        ScheduleOnConsumer(() =>
         {
-            var attestations = new List<AggregatedAttestation>();
-            var proofs = new List<AggregatedSignatureProof>();
+            attestations = new List<AggregatedAttestation>();
+            proofs = new List<AggregatedSignatureProof>();
             var pool = _store.GetKnownPayloadPool();
 
             foreach (var (dataRootKey, payloadList) in pool)
@@ -344,10 +318,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     continue;
                 if (data.Slot.Value >= slot)
                     continue;
-                // Don't filter by requiredSource: 3SF allows attestations with any
-                // justified source in the same block. The state transition validates
-                // source justification; filtering here drops valid attestations that
-                // target intermediate justifiable slots needed for finalization.
 
                 foreach (var proof in payloadList)
                 {
@@ -355,67 +325,20 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     proofs.Add(proof);
                 }
             }
-
-            return (attestations, proofs);
-        }
+        });
+        return (attestations, proofs);
     }
 
     public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
     {
-        lock (_store)
-        {
-            return _store.CollectAttestationsForAggregation();
-        }
+        List<(AttestationData, List<ulong>, List<XmssSignature>)> result = default!;
+        ScheduleOnConsumer(() => result = _store.CollectAttestationsForAggregation());
+        return result;
     }
 
     public void OnTick(ulong slot, int intervalInSlot)
     {
-        ulong headSlot;
-        ulong justifiedSlot;
-        ulong finalizedSlot;
-
-        lock (_store)
-        {
-            _store.TickInterval(slot, intervalInSlot);
-            headSlot = _store.HeadSlot;
-            justifiedSlot = _store.JustifiedSlot;
-            finalizedSlot = _store.FinalizedSlot;
-        }
-
-        LeanMetrics.SetCurrentSlot(slot);
-        LeanMetrics.SetHeadSlot(headSlot);
-        LeanMetrics.SetJustifiedSlot(justifiedSlot);
-        LeanMetrics.SetFinalizedSlot(finalizedSlot);
-
-        // Prune state cache when finalization advances to prevent unbounded memory growth.
-        if (finalizedSlot > _lastPrunedFinalizedSlot)
-        {
-            _lastPrunedFinalizedSlot = finalizedSlot;
-            lock (_store)
-            {
-                _chainStateCache.PruneExcept(_store.ProtoArray);
-            }
-        }
-
-        if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
-        {
-            _logger.LogInformation(
-                "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
-                slot, headSlot, justifiedSlot, finalizedSlot);
-        }
-
-        if (intervalInSlot == 0 && _networkService is not null)
-        {
-            TriggerPeerStatusProbe();
-        }
-
-        // Periodic sync: when syncing, re-trigger backfill from best known peer head.
-        // This handles cases where gossip mesh hasn't formed yet or peer status probes
-        // returned stale data after the initial backfill.
-        if (intervalInSlot == 0 && _syncService is not null)
-        {
-            _syncService.TrySyncFromBestPeer();
-        }
+        _inbox.Writer.TryWrite(new TickMessage(slot, intervalInSlot));
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -526,6 +449,31 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         Interlocked.Exchange(ref _statusProbeInFlight, 0);
     }
 
+    private void RefreshSnapshot()
+    {
+        _snapshot = new ConsensusSnapshot(
+            _store.HeadRoot,
+            _store.HeadSlot,
+            _store.JustifiedRoot,
+            _store.JustifiedSlot,
+            _store.FinalizedRoot,
+            _store.FinalizedSlot);
+    }
+
+    private void ScheduleOnConsumer(Action work)
+    {
+        if (_inboxTask is null)
+        {
+            // Consumer not started yet — execute directly (single-threaded test/init context).
+            work();
+            return;
+        }
+
+        var msg = new SyncExecMessage(work);
+        _inbox.Writer.TryWrite(msg);
+        msg.Completion.GetAwaiter().GetResult();
+    }
+
     private async Task ConsumeInboxAsync(CancellationToken ct)
     {
         try
@@ -536,6 +484,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 {
                     switch (msg)
                     {
+                        case TickMessage tick:
+                            ProcessTickFromInbox(tick);
+                            break;
                         case GossipBlockMessage block:
                             ProcessGossipBlockFromInbox(block);
                             break;
@@ -544,6 +495,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                             break;
                         case GossipAggregatedAttestationMessage agg:
                             ProcessGossipAggregatedAttestationFromInbox(agg);
+                            break;
+                        case SyncExecMessage exec:
+                            exec.Run();
                             break;
                     }
                 }
@@ -564,7 +518,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var signedBlock = msg.Block;
         var blockRoot = msg.BlockRoot;
 
-        var result = ProcessBlock(signedBlock);
+        var result = ProcessBlockInternal(signedBlock);
 
         _logger.LogInformation(
             "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted={Accepted}, reason={Reason}",
@@ -591,22 +545,54 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return;
         }
 
-        lock (_store)
-        {
-            _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _);
-        }
+        _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _);
     }
 
     private void ProcessGossipAggregatedAttestationFromInbox(GossipAggregatedAttestationMessage msg)
     {
-        lock (_store)
+        if (!_store.TryOnGossipAggregatedAttestation(msg.Attestation, out var reason))
         {
-            if (!_store.TryOnGossipAggregatedAttestation(msg.Attestation, out var reason))
-            {
-                _logger.LogDebug(
-                    "Dropped gossip aggregated attestation in V2 path. Reason: {Reason}",
-                    reason);
-            }
+            _logger.LogDebug(
+                "Dropped gossip aggregated attestation in V2 path. Reason: {Reason}",
+                reason);
+        }
+    }
+
+    private void ProcessTickFromInbox(TickMessage tick)
+    {
+        var slot = tick.Slot;
+        var intervalInSlot = tick.IntervalInSlot;
+
+        _store.TickInterval(slot, intervalInSlot);
+        RefreshSnapshot();
+
+        var snap = _snapshot;
+        LeanMetrics.SetCurrentSlot(slot);
+        LeanMetrics.SetHeadSlot(snap.HeadSlot);
+        LeanMetrics.SetJustifiedSlot(snap.JustifiedSlot);
+        LeanMetrics.SetFinalizedSlot(snap.FinalizedSlot);
+
+        if (snap.FinalizedSlot > _lastPrunedFinalizedSlot)
+        {
+            _lastPrunedFinalizedSlot = snap.FinalizedSlot;
+            _chainStateCache.PruneExcept(_store.ProtoArray);
+        }
+
+        if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
+        {
+            _logger.LogInformation(
+                "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
+                slot, snap.HeadSlot, snap.JustifiedSlot, snap.FinalizedSlot);
+        }
+
+        if (intervalInSlot == 0 && _networkService is not null)
+        {
+            TriggerPeerStatusProbe();
+        }
+
+        if (intervalInSlot == 0 && _syncService is not null)
+        {
+            _syncService.TrySyncFromBestPeer();
         }
     }
 
@@ -744,15 +730,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        LeanStatusMessage status;
-        lock (_store)
-        {
-            status = new LeanStatusMessage(
-                _store.FinalizedRoot.AsSpan(),
-                _store.FinalizedSlot,
-                _store.HeadRoot.AsSpan(),
-                _store.HeadSlot);
-        }
+        var snap = _snapshot;
+        var status = new LeanStatusMessage(
+            snap.FinalizedRoot.AsSpan(),
+            snap.FinalizedSlot,
+            snap.HeadRoot.AsSpan(),
+            snap.HeadSlot);
 
         return ValueTask.FromResult(status);
     }
@@ -789,6 +772,38 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private sealed record GossipBlockMessage(SignedBlockWithAttestation Block, Bytes32 BlockRoot) : ConsensusInboxMessage;
     private sealed record GossipAttestationMessage(SignedAttestation Attestation) : ConsensusInboxMessage;
     private sealed record GossipAggregatedAttestationMessage(SignedAggregatedAttestation Attestation) : ConsensusInboxMessage;
+    private sealed record TickMessage(ulong Slot, int IntervalInSlot) : ConsensusInboxMessage;
+
+    private sealed record SyncExecMessage : ConsensusInboxMessage
+    {
+        private readonly Action _work;
+        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public SyncExecMessage(Action work) => _work = work;
+
+        public Task Completion => _completion.Task;
+
+        public void Run()
+        {
+            try
+            {
+                _work();
+                _completion.SetResult();
+            }
+            catch (Exception ex)
+            {
+                _completion.SetException(ex);
+            }
+        }
+    }
+
+    private sealed record ConsensusSnapshot(
+        Bytes32 HeadRoot,
+        ulong HeadSlot,
+        Bytes32 JustifiedRoot,
+        ulong JustifiedSlot,
+        Bytes32 FinalizedRoot,
+        ulong FinalizedSlot);
 
     private sealed class NoOpBlockByRootStore : IBlockByRootStore
     {
