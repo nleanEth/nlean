@@ -99,22 +99,36 @@ public sealed class SyncPeerManagerTests
     }
 
     [Test]
-    public void Score_ClampedToRange_0_200()
+    public void Score_ClampedToRange_10_200()
     {
         var mgr = new SyncPeerManager();
         mgr.AddPeer("peer-1");
 
-        // Drive score to min
+        // Drive score to min (floor is 10, not 0)
         for (int i = 0; i < 20; i++)
             mgr.OnRequestFailure("peer-1");
 
-        Assert.That(mgr.GetPeerScore("peer-1"), Is.EqualTo(0));
+        Assert.That(mgr.GetPeerScore("peer-1"), Is.EqualTo(10));
 
         // Drive score to max
         for (int i = 0; i < 30; i++)
             mgr.OnRequestSuccess("peer-1");
 
         Assert.That(mgr.GetPeerScore("peer-1"), Is.EqualTo(200));
+    }
+
+    [Test]
+    public void SelectPeerForRequest_StillSelectsPeerAtMinScore()
+    {
+        var mgr = new SyncPeerManager();
+        mgr.AddPeer("peer-1");
+
+        // Drive score to floor
+        for (int i = 0; i < 20; i++)
+            mgr.OnRequestFailure("peer-1");
+
+        // Peer should still be selectable at MinScore=10
+        Assert.That(mgr.SelectPeerForRequest(), Is.EqualTo("peer-1"));
     }
 
     [Test]
