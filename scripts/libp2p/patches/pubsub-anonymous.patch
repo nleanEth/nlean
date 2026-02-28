@@ -338,3 +338,16 @@ index c2a5a90..4a9f21e 100644
          rpc.Publish.Add(msg);
          return rpc;
      }
+diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/TtlCache.cs b/src/libp2p/Libp2p.Protocols.Pubsub/TtlCache.cs
+index 1c777b7..9c04438 100644
+--- a/src/libp2p/Libp2p.Protocols.Pubsub/TtlCache.cs
++++ b/src/libp2p/Libp2p.Protocols.Pubsub/TtlCache.cs
+@@ -27,7 +27,7 @@ internal class TtlCache<TKey, TItem> : IDisposable where TKey : notnull
+                 DateTimeOffset now = DateTimeOffset.UtcNow;
+                 lock (items)
+                 {
+-                    TKey[] keys = items.TakeWhile(i => i.Value.ValidTill < now).Select(i => i.Key).ToArray();
++                    TKey[] keys = items.Where(i => i.Value.ValidTill < now).Select(i => i.Key).ToArray();
+                     foreach (TKey keyToRemove in keys)
+                     {
+                         items.Remove(keyToRemove);
