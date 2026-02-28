@@ -78,7 +78,7 @@ index 4663ba6..fddeb64 100644
          context.Activity?.AddEvent(new ActivityEvent($"Finished dial({context.Id}) {context.State.RemoteAddress}"));
      }
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs
-index 38c42d6..436439e 100644
+index 38c42d6..80e00ce 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs
 +++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Rpc.cs
 @@ -85,6 +85,8 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
@@ -90,7 +90,7 @@ index 38c42d6..436439e 100644
                  continue;
              }
  
-@@ -93,43 +95,54 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -93,20 +95,26 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
                  case MessageValidity.Rejected:
                  case MessageValidity.Ignored:
                      _limboMessageCache.Add(messageId, new(messageId, message));
@@ -116,50 +116,8 @@ index 38c42d6..436439e 100644
 +                message.Topic, message.Data.Length, peerId);
              OnMessage?.Invoke(message.Topic, message.Data.ToByteArray());
  
-+            // Collect all forwarding targets (fPeers + mesh + peerState fallback)
-+            // to ensure full propagation in small networks where gPeers may be
-+            // under-populated due to subscription race conditions.
-+            HashSet<PeerId> forwardTargets = new();
-+
              if (fPeers.TryGetValue(message.Topic, out HashSet<PeerId>? topicPeers))
-             {
-                 foreach (PeerId peer in topicPeers)
--                {
--                    if (peer == author || peer == peerId)
--                    {
--                        continue;
--                    }
--                    peerMessages.GetOrAdd(peer, _ => new Rpc()).Publish.Add(message);
--                }
-+                    forwardTargets.Add(peer);
-             }
-             if (mesh.TryGetValue(message.Topic, out topicPeers))
-             {
-                 foreach (PeerId peer in topicPeers)
--                {
--                    if (peer == author || peer == peerId)
--                    {
--                        continue;
--                    }
--                    peerMessages.GetOrAdd(peer, _ => new Rpc()).Publish.Add(message);
--                }
-+                    forwardTargets.Add(peer);
-+            }
-+            // peerState fallback: forward to ALL connected peers
-+            foreach (PeerId peer in peerState.Keys)
-+                forwardTargets.Add(peer);
-+
-+            foreach (PeerId peer in forwardTargets)
-+            {
-+                if (peer == author || peer == peerId)
-+                    continue;
-+                if (peer == localPeer?.Identity.PeerId)
-+                    continue;
-+                peerMessages.GetOrAdd(peer, _ => new Rpc()).Publish.Add(message);
-             }
-         }
-     }
-@@ -141,8 +154,12 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -141,8 +149,12 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
              PubsubPeer? state = peerState.GetValueOrDefault(peerId);
              if (state is null)
              {
@@ -173,7 +131,7 @@ index 38c42d6..436439e 100644
              {
                  if (state.IsGossipSub)
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
-index 53840a6..0902879 100644
+index 53840a6..d200a8c 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
 +++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
 @@ -128,18 +128,35 @@ public partial class PubsubRouter
@@ -218,32 +176,18 @@ index 53840a6..0902879 100644
              }
          }
          else
-@@ -164,6 +181,23 @@ public partial class PubsubRouter
+@@ -164,6 +181,9 @@ public partial class PubsubRouter
                  peerState.GetValueOrDefault(peerId)?.Send(rpc);
              }
          }
 +
-+        // Floodpublish fallback: also send to ALL connected peers that we haven't
-+        // already sent to.  This compensates for gPeers under-tracking in small
-+        // networks (subscription messages can be lost during connection setup).
-+        int psSent = 0;
-+        HashSet<PeerId> alreadySent = new();
-+        if (hasFPeers && fSet is not null) foreach (var p in fSet) alreadySent.Add(p);
-+        if (hasMesh) foreach (var p in mesh[topicId]) alreadySent.Add(p);
-+        foreach (KeyValuePair<PeerId, PubsubPeer> kvp in peerState)
-+        {
-+            if (kvp.Key == localPeer!.Identity.PeerId) continue;
-+            if (alreadySent.Contains(kvp.Key)) continue;
-+            if (kvp.Value.SendRpc is not null) { kvp.Value.Send(rpc); psSent++; }
-+        }
-+
-+        logger?.LogDebug("Publish topic={Topic} msgLen={Len} fPeers={FSent}/{FNull} mesh={MSent}/{MNull} peerState={PSSent} hasFPeers={HasF} hasMesh={HasM}",
-+            topicId, message.Length, fSent, fNull, mSent, mNull, psSent, hasFPeers, hasMesh);
++        logger?.LogDebug("Publish topic={Topic} msgLen={Len} fPeers={FSent}/{FNull} mesh={MSent}/{MNull} hasFPeers={HasF} hasMesh={HasM}",
++            topicId, message.Length, fSent, fNull, mSent, mNull, hasFPeers, hasMesh);
      }
  
  }
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
-index 4e732c4..a8b31ca 100644
+index 4e732c4..a395111 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
 +++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
 @@ -95,7 +95,7 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
@@ -255,7 +199,22 @@ index 4e732c4..a8b31ca 100644
          public PeerId PeerId { get; set; }
  
          public PubsubProtocol Protocol { get; set; }
-@@ -286,8 +286,11 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -241,6 +241,14 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+                 {
+                     await session.DialAsync<FloodsubProtocol>(token);
+                 }
++                else if (protocols.Length == 0)
++                {
++                    // Optimistic dial: peer store may not have protocol info yet
++                    // (e.g. Identify hasn't completed). Try GossipsubV12 as default.
++                    logger?.LogDebug("No known protocols for {peer}, trying optimistic GossipsubV12 dial",
++                        session.RemoteAddress.GetPeerId());
++                    await session.DialAsync<GossipsubProtocolV12>(token);
++                }
+                 else
+                 {
+                     _ = session.DisconnectAsync();
+@@ -286,8 +294,11 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
      public Task Heartbeat()
      {
          ConcurrentDictionary<PeerId, Rpc> peerMessages = new();
@@ -267,7 +226,7 @@ index 4e732c4..a8b31ca 100644
              foreach (KeyValuePair<string, HashSet<PeerId>> mesh in mesh)
              {
                  if (mesh.Value.Count < _settings.LowestDegree)
-@@ -355,7 +358,11 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -355,7 +366,11 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
                      ControlIHave ihave = new() { TopicID = topic };
                      ihave.MessageIDs.AddRange(msgsInTopic.Select(m => ByteString.CopyFrom(m.Id.Bytes)));
  
@@ -280,7 +239,7 @@ index 4e732c4..a8b31ca 100644
                      {
                          peerMessages.GetOrAdd(peer, _ => new Rpc())
                              .Ensure(r => r.Control.Ihave).Add(ihave);
-@@ -368,6 +375,11 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -368,6 +383,11 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
          {
              peerState.GetValueOrDefault(peerMessage.Key)?.Send(peerMessage.Value);
          }
@@ -292,7 +251,7 @@ index 4e732c4..a8b31ca 100644
  
          return Task.CompletedTask;
      }
-@@ -393,8 +405,13 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -393,8 +413,13 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
                  }
                  else
                  {
@@ -308,7 +267,7 @@ index 4e732c4..a8b31ca 100644
                  }
              }
  
-@@ -403,7 +420,9 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+@@ -403,7 +428,9 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
  
              dialTask.ContinueWith(t =>
              {
@@ -319,6 +278,17 @@ index 4e732c4..a8b31ca 100644
                  peerState.TryRemove(peerId, out _);
                  foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
                  {
+@@ -458,7 +485,9 @@ public partial class PubsubRouter : IRoutingStateContainer, IDisposable
+                 logger?.LogDebug("Inbound, let's dial {peerId} via remotely initiated connection", peerId);
+                 listTask.ContinueWith(t =>
+                 {
+-                    peerState.GetValueOrDefault(peerId)?.TokenSource.Cancel();
++                    var currentPeer = peerState.GetValueOrDefault(peerId);
++                    if (currentPeer?.TokenSource != newPeer!.TokenSource) return;
++                    currentPeer.TokenSource.Cancel();
+                     peerState.TryRemove(peerId, out _);
+                     foreach (KeyValuePair<string, HashSet<PeerId>> topicPeers in fPeers)
+                     {
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs b/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
 index c2a5a90..4a9f21e 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/RpcExtensions.cs
