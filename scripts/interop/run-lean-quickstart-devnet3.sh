@@ -260,6 +260,7 @@ prepare_validator_config() {
 }
 
 "$root_dir/scripts/libp2p/build-patched-pubsub-package.sh"
+"$root_dir/scripts/libp2p/build-patched-quic-package.sh"
 
 prepare_validator_config \
   "$root_dir/config/validator-config.quickstart.yaml" \

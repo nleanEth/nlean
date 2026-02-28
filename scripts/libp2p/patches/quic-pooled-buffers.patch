@@ -1,0 +1,43 @@
+diff --git a/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs b/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
+index 025fca6..b09f8ab 100644
+--- a/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
++++ b/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
+@@ -218,7 +218,15 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+             {
+                 await foreach (ReadOnlySequence<byte> data in upChannel.ReadAllAsync())
+                 {
+-                    await stream.WriteAsync(data.ToArray());
++                    // Avoid ToArray() copy for single-segment sequences (common case)
++                    if (data.IsSingleSegment)
++                    {
++                        await stream.WriteAsync(data.First);
++                    }
++                    else
++                    {
++                        await stream.WriteAsync(data.ToArray());
++                    }
+                 }
+                 stream.CompleteWrites();
+             }
+@@ -233,13 +241,18 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+         {
+             try
+             {
++                // Hoist I/O buffer outside loop; 4 KiB reduces syscall frequency vs 1 KiB.
++                // Channel consumer holds a reference to passed data, so we must copy to
++                // an exact-sized array before writing to the channel.
++                byte[] ioBuf = new byte[4096];
+                 while (stream.CanRead)
+                 {
+-                    byte[] buf = new byte[1024];
+-                    int len = await stream.ReadAtLeastAsync(buf, 1, false);
++                    int len = await stream.ReadAtLeastAsync(ioBuf, 1, false);
+                     if (len != 0)
+                     {
+-                        await upChannel.WriteAsync(new ReadOnlySequence<byte>(buf.AsMemory()[..len]));
++                        byte[] data = GC.AllocateUninitializedArray<byte>(len);
++                        ioBuf.AsSpan(0, len).CopyTo(data);
++                        await upChannel.WriteAsync(new ReadOnlySequence<byte>(data));
+                     }
+                 }
+                 await upChannel.WriteEofAsync();
