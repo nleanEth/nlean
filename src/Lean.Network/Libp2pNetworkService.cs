@@ -704,7 +704,11 @@ public sealed class Libp2pNetworkService : INetworkService
 
         _bootstrapReconnectLoopCts = new CancellationTokenSource();
         var token = _bootstrapReconnectLoopCts.Token;
-        _ = Task.Run(async () => await BootstrapReconnectLoopAsync(token), token);
+        _ = Task.Factory.StartNew(
+            () => BootstrapReconnectLoopAsync(token),
+            token,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
     }
 
     private void StopBootstrapReconnectLoop()

@@ -39,7 +39,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install .NET diagnostic tools
-RUN dotnet tool install --global dotnet-counters \
+RUN dotnet tool install --global dotnet-trace \
+    && dotnet tool install --global dotnet-counters \
     && dotnet tool install --global dotnet-gcdump \
     && dotnet tool install --global dotnet-dump
 ENV PATH="${PATH}:/root/.dotnet/tools"

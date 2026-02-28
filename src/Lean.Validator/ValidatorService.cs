@@ -89,7 +89,13 @@ public sealed class ValidatorService : IValidatorService
             lock (_lifecycleLock)
             {
                 _dutyLoopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                _dutyLoopTask = RunDutyLoopAsync(_dutyLoopCts.Token);
+                // Use LongRunning so crypto FFI calls (XMSS sign ~10ms,
+                // aggregate ~700ms) don't block ThreadPool workers.
+                _dutyLoopTask = Task.Factory.StartNew(
+                    () => RunDutyLoopAsync(_dutyLoopCts.Token),
+                    _dutyLoopCts.Token,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default).Unwrap();
             }
         }
         catch

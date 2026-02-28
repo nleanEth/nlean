@@ -50,7 +50,13 @@ public sealed class BackfillSync : IBackfillTrigger
     public void SetShutdownToken(CancellationToken ct)
     {
         // Start the single consumer when the sync service starts.
-        _consumerTask = Task.Run(() => ConsumeAsync(ct), ct);
+        // Use LongRunning to keep this off the ThreadPool — the consumer
+        // loop runs for the entire node lifetime.
+        _consumerTask = Task.Factory.StartNew(
+            () => ConsumeAsync(ct),
+            ct,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
     }
 
     public void RequestBackfill(Bytes32 parentRoot)

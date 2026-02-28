@@ -30,6 +30,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly IGossipTopicProvider _gossipTopics;
     private readonly ILogger<ConsensusServiceV2> _logger;
     private readonly string[] _attestationSubnetTopics;
+    private readonly object _storeLock = new object();
 
     private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateBounded<ConsensusInboxMessage>(
         new BoundedChannelOptions(256)
@@ -110,35 +111,24 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public AttestationData CreateAttestationData(ulong slot)
     {
-        AttestationData result = default!;
-        ScheduleOnConsumer(() =>
+        lock (_storeLock)
         {
             var target = _store.ComputeTargetCheckpoint();
-            result = new AttestationData(
+            return new AttestationData(
                 new Slot(slot),
                 new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
                 target,
                 new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)));
-        });
-        return result;
+        }
     }
 
     // IBlockProcessor
     public bool IsBlockKnown(Bytes32 root)
     {
-        bool known = false;
-        ScheduleOnConsumer(() => known = _store.ContainsBlock(root));
-        return known;
+        lock (_storeLock) { return _store.ContainsBlock(root); }
     }
 
     public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
-    {
-        ForkChoiceApplyResult result = default!;
-        ScheduleOnConsumer(() => result = ProcessBlockInternal(signedBlock));
-        return result;
-    }
-
-    private ForkChoiceApplyResult ProcessBlockInternal(SignedBlockWithAttestation signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
 
@@ -146,24 +136,30 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var blockRoot = new Bytes32(block.HashTreeRoot());
         var parentRoot = block.ParentRoot;
 
-        if (!_store.ContainsBlock(parentRoot))
+        // Phase 1: Read parent state under lock (fast).
+        State? parentState;
+        lock (_storeLock)
         {
-            return ForkChoiceApplyResult.Rejected(
-                ForkChoiceRejectReason.UnknownParent,
-                $"Unknown parent root {parentRoot}.",
-                _store.HeadSlot,
-                _store.HeadRoot);
+            if (!_store.ContainsBlock(parentRoot))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.UnknownParent,
+                    $"Unknown parent root {parentRoot}.",
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
+
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out parentState))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.StateTransitionFailed,
+                    $"Missing chain state snapshot for parent root {parentRoot}.",
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
         }
 
-        if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out var parentState))
-        {
-            return ForkChoiceApplyResult.Rejected(
-                ForkChoiceRejectReason.StateTransitionFailed,
-                $"Missing chain state snapshot for parent root {parentRoot}.",
-                _store.HeadSlot,
-                _store.HeadRoot);
-        }
-
+        // Phase 2: State transition WITHOUT lock (expensive, ~50-100ms).
         if (!_chainStateTransition.TryComputeStateRoot(
                 parentState,
                 block,
@@ -200,19 +196,33 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             postState.LatestFinalized.Slot.Value,
             postState.Validators.Count);
 
-        var result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
-        if (result.Accepted)
+        // Phase 3: Apply to store under lock (fast).
+        ForkChoiceApplyResult result;
+        lock (_storeLock)
         {
-            _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
-            RefreshSnapshot();
-            _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
-            _logger.LogInformation(
-                "V2 ProcessBlock accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, ParentRoot: {ParentRoot}, ResultHeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
-                block.Slot.Value,
-                blockRoot,
-                parentRoot,
-                result.HeadSlot,
-                result.HeadChanged);
+            if (!_store.ContainsBlock(parentRoot))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.UnknownParent,
+                    $"Parent pruned during state transition for {parentRoot}.",
+                    _store.HeadSlot,
+                    _store.HeadRoot);
+            }
+
+            result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
+            if (result.Accepted)
+            {
+                _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
+                RefreshSnapshot();
+                _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                _logger.LogInformation(
+                    "V2 ProcessBlock accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, ParentRoot: {ParentRoot}, ResultHeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
+                    block.Slot.Value,
+                    blockRoot,
+                    parentRoot,
+                    result.HeadSlot,
+                    result.HeadChanged);
+            }
         }
 
         return result;
@@ -227,33 +237,28 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         ArgumentNullException.ThrowIfNull(candidateBlock);
 
-        Bytes32 sr = Bytes32.Zero();
-        Checkpoint pj = new(Bytes32.Zero(), new Slot(0));
-        string r = string.Empty;
-        bool success = false;
-
-        ScheduleOnConsumer(() =>
+        // Read parent state under lock (fast).
+        State? parentState;
+        lock (_storeLock)
         {
-            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(candidateBlock.ParentRoot), out var parentState))
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(candidateBlock.ParentRoot), out parentState))
             {
-                r = $"Missing chain state snapshot for parent root {candidateBlock.ParentRoot}.";
-                return;
+                stateRoot = Bytes32.Zero();
+                postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
+                reason = $"Missing chain state snapshot for parent root {candidateBlock.ParentRoot}.";
+                return false;
             }
+        }
 
-            success = _chainStateTransition.TryComputeStateRoot(
-                parentState,
-                candidateBlock,
-                out sr,
-                out var postState,
-                out r);
+        // State transition WITHOUT lock (expensive).
+        var success = _chainStateTransition.TryComputeStateRoot(
+            parentState,
+            candidateBlock,
+            out stateRoot,
+            out var postState,
+            out reason);
 
-            if (success)
-                pj = postState.LatestJustified;
-        });
-
-        stateRoot = sr;
-        postJustified = pj;
-        reason = r;
+        postJustified = success ? postState.LatestJustified : new Checkpoint(Bytes32.Zero(), new Slot(0));
         return success;
     }
 
@@ -266,50 +271,36 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public bool TryApplyLocalAttestation(SignedAttestation signedAttestation, out string reason)
     {
-        bool success = false;
-        string r = string.Empty;
-        ScheduleOnConsumer(() => success = _store.TryOnAttestation(signedAttestation, _config.IsAggregator, out r));
-        reason = r;
-        return success;
+        lock (_storeLock) { return _store.TryOnAttestation(signedAttestation, _config.IsAggregator, out reason); }
     }
 
     public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
     {
-        bool success = false;
-        string r = string.Empty;
-        ScheduleOnConsumer(() => success = _store.TryOnGossipAggregatedAttestation(signed, out r));
-        reason = r;
-        return success;
+        lock (_storeLock) { return _store.TryOnGossipAggregatedAttestation(signed, out reason); }
     }
 
     public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, List<AggregatedSignatureProof>> PayloadPool)
         GetAllAvailableAttestationsForBlock(ulong slot)
     {
-        IReadOnlyList<Attestation> attestations = default!;
-        IReadOnlyDictionary<string, List<AggregatedSignatureProof>> pool = default!;
-        ScheduleOnConsumer(() =>
+        lock (_storeLock)
         {
-            attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
-            pool = _store.GetKnownPayloadPool();
-        });
-        return (attestations, pool);
+            var attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
+            var pool = _store.GetKnownPayloadPool();
+            return (attestations, pool);
+        }
     }
 
     public IReadOnlySet<Bytes32> GetKnownBlockRoots()
     {
-        IReadOnlySet<Bytes32> roots = default!;
-        ScheduleOnConsumer(() => roots = _store.GetAllBlockRoots());
-        return roots;
+        lock (_storeLock) { return _store.GetAllBlockRoots(); }
     }
 
     public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
     {
-        List<AggregatedAttestation> attestations = default!;
-        List<AggregatedSignatureProof> proofs = default!;
-        ScheduleOnConsumer(() =>
+        lock (_storeLock)
         {
-            attestations = new List<AggregatedAttestation>();
-            proofs = new List<AggregatedSignatureProof>();
+            var attestations = new List<AggregatedAttestation>();
+            var proofs = new List<AggregatedSignatureProof>();
             var pool = _store.GetKnownPayloadPool();
 
             foreach (var (dataRootKey, payloadList) in pool)
@@ -325,20 +316,52 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     proofs.Add(proof);
                 }
             }
-        });
-        return (attestations, proofs);
+
+            return (attestations, proofs);
+        }
     }
 
     public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
     {
-        List<(AttestationData, List<ulong>, List<XmssSignature>)> result = default!;
-        ScheduleOnConsumer(() => result = _store.CollectAttestationsForAggregation());
-        return result;
+        lock (_storeLock) { return _store.CollectAttestationsForAggregation(); }
     }
 
     public void OnTick(ulong slot, int intervalInSlot)
     {
-        _inbox.Writer.TryWrite(new TickMessage(slot, intervalInSlot));
+        lock (_storeLock)
+        {
+            _store.TickInterval(slot, intervalInSlot);
+            RefreshSnapshot();
+        }
+
+        var snap = _snapshot;
+        LeanMetrics.SetCurrentSlot(slot);
+        LeanMetrics.SetHeadSlot(snap.HeadSlot);
+        LeanMetrics.SetJustifiedSlot(snap.JustifiedSlot);
+        LeanMetrics.SetFinalizedSlot(snap.FinalizedSlot);
+
+        if (snap.FinalizedSlot > _lastPrunedFinalizedSlot)
+        {
+            _lastPrunedFinalizedSlot = snap.FinalizedSlot;
+            _chainStateCache.PruneExcept(_store.ProtoArray);
+        }
+
+        if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
+        {
+            _logger.LogInformation(
+                "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
+                slot, snap.HeadSlot, snap.JustifiedSlot, snap.FinalizedSlot);
+        }
+
+        if (intervalInSlot == 0 && _networkService is not null)
+        {
+            TriggerPeerStatusProbe();
+        }
+
+        if (intervalInSlot == 0 && _syncService is not null)
+        {
+            _syncService.TrySyncFromBestPeer();
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -370,7 +393,13 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 await SubscribeTopicAsync(_gossipTopics.AggregateTopic, _cts.Token);
             }
 
-            _inboxTask = ConsumeInboxAsync(_cts.Token);
+            // Use LongRunning so the gossip consumer gets its own thread
+            // instead of occupying a ThreadPool worker for the node's lifetime.
+            _inboxTask = Task.Factory.StartNew(
+                () => ConsumeInboxAsync(_cts.Token),
+                _cts.Token,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
             _runTask = _chainService.RunAsync(_cts.Token);
             if (_syncService is not null)
                 await _syncService.StartAsync(_cts.Token);
@@ -460,20 +489,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _store.FinalizedSlot);
     }
 
-    private void ScheduleOnConsumer(Action work)
-    {
-        if (_inboxTask is null)
-        {
-            // Consumer not started yet — execute directly (single-threaded test/init context).
-            work();
-            return;
-        }
-
-        var msg = new SyncExecMessage(work);
-        _inbox.Writer.TryWrite(msg);
-        msg.Completion.GetAwaiter().GetResult();
-    }
-
     private async Task ConsumeInboxAsync(CancellationToken ct)
     {
         try
@@ -484,9 +499,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 {
                     switch (msg)
                     {
-                        case TickMessage tick:
-                            ProcessTickFromInbox(tick);
-                            break;
                         case GossipBlockMessage block:
                             ProcessGossipBlockFromInbox(block);
                             break;
@@ -495,9 +507,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                             break;
                         case GossipAggregatedAttestationMessage agg:
                             ProcessGossipAggregatedAttestationFromInbox(agg);
-                            break;
-                        case SyncExecMessage exec:
-                            exec.Run();
                             break;
                     }
                 }
@@ -516,13 +525,80 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private void ProcessGossipBlockFromInbox(GossipBlockMessage msg)
     {
         var signedBlock = msg.Block;
-        var blockRoot = msg.BlockRoot;
+        var block = signedBlock.Message.Block;
+        // Compute blockRoot from the block itself — must match the key used by
+        // the proto-array and chain state cache (not the gossip decoder's MessageRoot).
+        var blockRoot = new Bytes32(block.HashTreeRoot());
+        var parentRoot = block.ParentRoot;
 
-        var result = ProcessBlockInternal(signedBlock);
+        // Phase 1: Read parent state under lock (fast).
+        State? parentState;
+        lock (_storeLock)
+        {
+            if (!_store.ContainsBlock(parentRoot))
+            {
+                _logger.LogDebug(
+                    "HandleGossipBlock: slot={Slot}, blockRoot={Root}, unknown parent {Parent}",
+                    block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
+                    Convert.ToHexString(parentRoot.AsSpan())[..8]);
+                if (_syncService is not null)
+                    _ = _syncService.OnGossipBlockAsync(signedBlock, blockRoot, peerId: null);
+                return;
+            }
+
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out parentState))
+            {
+                _logger.LogDebug(
+                    "HandleGossipBlock: slot={Slot}, blockRoot={Root}, missing parent state for {Parent}",
+                    block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
+                    Convert.ToHexString(parentRoot.AsSpan())[..8]);
+                return;
+            }
+        }
+
+        // Phase 2: State transition WITHOUT lock (expensive, ~50-100ms).
+        // Tick and validator threads can proceed while this runs.
+        if (!_chainStateTransition.TryComputeStateRoot(
+                parentState,
+                block,
+                out var computedStateRoot,
+                out var postState,
+                out var reason))
+        {
+            _logger.LogInformation(
+                "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted=False, reason={Reason}",
+                block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8], reason);
+            return;
+        }
+
+        if (!computedStateRoot.Equals(block.StateRoot))
+        {
+            _logger.LogWarning(
+                "HandleGossipBlock state root mismatch. Slot={Slot}, BlockRoot={BlockRoot}",
+                block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8]);
+            return;
+        }
+
+        // Phase 3: Apply to store under lock (fast).
+        ForkChoiceApplyResult result;
+        lock (_storeLock)
+        {
+            // Re-validate parent is still known (could have been pruned during phase 2).
+            if (!_store.ContainsBlock(parentRoot))
+                return;
+
+            result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
+            if (result.Accepted)
+            {
+                _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
+                RefreshSnapshot();
+                _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+            }
+        }
 
         _logger.LogInformation(
             "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted={Accepted}, reason={Reason}",
-            signedBlock.Message.Block.Slot.Value,
+            block.Slot.Value,
             Convert.ToHexString(blockRoot.AsSpan())[..8],
             result.Accepted,
             result.Reason);
@@ -530,10 +606,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (result.Accepted && _syncService is not null)
         {
             _syncService.CascadeAcceptedBlock(blockRoot);
-        }
-        else if (result.RejectReason == ForkChoiceRejectReason.UnknownParent && _syncService is not null)
-        {
-            _ = _syncService.OnGossipBlockAsync(signedBlock, blockRoot, peerId: null);
         }
     }
 
@@ -545,54 +617,20 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return;
         }
 
-        _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _);
+        lock (_storeLock) { _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _); }
     }
 
     private void ProcessGossipAggregatedAttestationFromInbox(GossipAggregatedAttestationMessage msg)
     {
-        if (!_store.TryOnGossipAggregatedAttestation(msg.Attestation, out var reason))
+        bool accepted;
+        string reason;
+        lock (_storeLock) { accepted = _store.TryOnGossipAggregatedAttestation(msg.Attestation, out reason); }
+
+        if (!accepted)
         {
             _logger.LogDebug(
                 "Dropped gossip aggregated attestation in V2 path. Reason: {Reason}",
                 reason);
-        }
-    }
-
-    private void ProcessTickFromInbox(TickMessage tick)
-    {
-        var slot = tick.Slot;
-        var intervalInSlot = tick.IntervalInSlot;
-
-        _store.TickInterval(slot, intervalInSlot);
-        RefreshSnapshot();
-
-        var snap = _snapshot;
-        LeanMetrics.SetCurrentSlot(slot);
-        LeanMetrics.SetHeadSlot(snap.HeadSlot);
-        LeanMetrics.SetJustifiedSlot(snap.JustifiedSlot);
-        LeanMetrics.SetFinalizedSlot(snap.FinalizedSlot);
-
-        if (snap.FinalizedSlot > _lastPrunedFinalizedSlot)
-        {
-            _lastPrunedFinalizedSlot = snap.FinalizedSlot;
-            _chainStateCache.PruneExcept(_store.ProtoArray);
-        }
-
-        if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
-        {
-            _logger.LogInformation(
-                "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
-                slot, snap.HeadSlot, snap.JustifiedSlot, snap.FinalizedSlot);
-        }
-
-        if (intervalInSlot == 0 && _networkService is not null)
-        {
-            TriggerPeerStatusProbe();
-        }
-
-        if (intervalInSlot == 0 && _syncService is not null)
-        {
-            _syncService.TrySyncFromBestPeer();
         }
     }
 
@@ -772,30 +810,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private sealed record GossipBlockMessage(SignedBlockWithAttestation Block, Bytes32 BlockRoot) : ConsensusInboxMessage;
     private sealed record GossipAttestationMessage(SignedAttestation Attestation) : ConsensusInboxMessage;
     private sealed record GossipAggregatedAttestationMessage(SignedAggregatedAttestation Attestation) : ConsensusInboxMessage;
-    private sealed record TickMessage(ulong Slot, int IntervalInSlot) : ConsensusInboxMessage;
-
-    private sealed record SyncExecMessage : ConsensusInboxMessage
-    {
-        private readonly Action _work;
-        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public SyncExecMessage(Action work) => _work = work;
-
-        public Task Completion => _completion.Task;
-
-        public void Run()
-        {
-            try
-            {
-                _work();
-                _completion.SetResult();
-            }
-            catch (Exception ex)
-            {
-                _completion.SetException(ex);
-            }
-        }
-    }
 
     private sealed record ConsensusSnapshot(
         Bytes32 HeadRoot,
