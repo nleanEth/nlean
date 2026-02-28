@@ -956,7 +956,7 @@ public sealed class Libp2pNetworkService : INetworkService
             var session = TryFindBootstrapSession(peerKey);
             if (session is not null)
             {
-                await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: false, forceProbe: true);
+                await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: false);
                 return;
             }
 
@@ -964,7 +964,7 @@ public sealed class Libp2pNetworkService : INetworkService
             dialTimeoutCts.CancelAfter(StatusProbeTimeout);
             session = await _peer.DialAsync(address, dialTimeoutCts.Token);
             RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
-            await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: false, forceProbe: true);
+            await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: true);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
