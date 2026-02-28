@@ -165,7 +165,6 @@ public static class SszEncoding
     {
         // SSZ Container: path (variable), rho (fixed), hashes (variable)
         // Fixed part: offset_path(4) + rho(28) + offset_hashes(4) = 36
-        var rhoBytes = Encode(value.Rho);
         var pathBytes = Encode(value.Path);
         var hashesBytes = Encode(value.Hashes);
 
@@ -176,7 +175,7 @@ public static class SszEncoding
         // offset_path
         WriteOffset(buffer, 0, dynamicOffset);
         // rho (fixed, inline)
-        rhoBytes.CopyTo(buffer.AsSpan(UInt32Length, RandomnessLength));
+        EncodeInto(buffer.AsSpan(), UInt32Length, value.Rho);
         // offset_hashes
         dynamicOffset += pathBytes.Length;
         WriteOffset(buffer, UInt32Length + RandomnessLength, dynamicOffset);
@@ -209,7 +208,7 @@ public static class SszEncoding
         var offset = 0;
         foreach (var element in value.Elements)
         {
-            Encode(element).CopyTo(buffer.AsSpan(offset, HashDigestVectorLength));
+            EncodeInto(buffer.AsSpan(), offset, element);
             offset += HashDigestVectorLength;
         }
 
@@ -219,26 +218,14 @@ public static class SszEncoding
     public static byte[] Encode(HashDigestVector value)
     {
         var buffer = new byte[HashDigestVectorLength];
-        var offset = 0;
-        foreach (var element in value.Elements)
-        {
-            Encode(element).CopyTo(buffer.AsSpan(offset, FpLength));
-            offset += FpLength;
-        }
-
+        EncodeInto(buffer.AsSpan(), 0, value);
         return buffer;
     }
 
     public static byte[] Encode(Randomness value)
     {
         var buffer = new byte[RandomnessLength];
-        var offset = 0;
-        foreach (var element in value.Elements)
-        {
-            Encode(element).CopyTo(buffer.AsSpan(offset, FpLength));
-            offset += FpLength;
-        }
-
+        EncodeInto(buffer.AsSpan(), 0, value);
         return buffer;
     }
 
@@ -269,7 +256,9 @@ public static class SszEncoding
             return Array.Empty<byte>();
         }
 
-        var elements = signatures.Select(Encode).ToList();
+        var elements = new List<byte[]>(signatures.Count);
+        foreach (var sig in signatures)
+            elements.Add(Encode(sig));
         return EncodeVariableSizeList(elements);
     }
 
@@ -280,7 +269,9 @@ public static class SszEncoding
             return Array.Empty<byte>();
         }
 
-        var elements = attestations.Select(Encode).ToList();
+        var elements = new List<byte[]>(attestations.Count);
+        foreach (var att in attestations)
+            elements.Add(Encode(att));
         return EncodeVariableSizeList(elements);
     }
 
@@ -333,15 +324,15 @@ public static class SszEncoding
         var buffer = new byte[fixedSize + historicalBytes.Length + justifiedBytes.Length + validatorsBytes.Length + justificationRootsBytes.Length + justificationValidatorsBytes.Length];
 
         var offset = 0;
-        Encode(value.Config).CopyTo(buffer.AsSpan(offset, UInt64Length));
+        Ssz.Encode(buffer.AsSpan(offset, UInt64Length), value.Config.GenesisTime);
         offset += UInt64Length;
         Ssz.Encode(buffer.AsSpan(offset, UInt64Length), value.Slot.Value);
         offset += UInt64Length;
-        Encode(value.LatestBlockHeader).CopyTo(buffer.AsSpan(offset, BlockHeaderLength));
+        EncodeInto(buffer.AsSpan(), offset, value.LatestBlockHeader);
         offset += BlockHeaderLength;
-        Encode(value.LatestJustified).CopyTo(buffer.AsSpan(offset, CheckpointLength));
+        EncodeInto(buffer.AsSpan(), offset, value.LatestJustified);
         offset += CheckpointLength;
-        Encode(value.LatestFinalized).CopyTo(buffer.AsSpan(offset, CheckpointLength));
+        EncodeInto(buffer.AsSpan(), offset, value.LatestFinalized);
         offset += CheckpointLength;
 
         var dynamicOffset = fixedSize;
@@ -384,7 +375,7 @@ public static class SszEncoding
         var offset = 0;
         foreach (var value in values)
         {
-            Encode(value).CopyTo(buffer.AsSpan(offset, Bytes32Length));
+            EncodeInto(buffer.AsSpan(), offset, value);
             offset += Bytes32Length;
         }
 
@@ -402,7 +393,7 @@ public static class SszEncoding
         var offset = 0;
         foreach (var value in values)
         {
-            Encode(value).CopyTo(buffer.AsSpan(offset, ValidatorLength));
+            EncodeInto(buffer.AsSpan(), offset, value);
             offset += ValidatorLength;
         }
 
@@ -440,7 +431,7 @@ public static class SszEncoding
 
     public static byte[] EncodeByteList(byte[] value)
     {
-        return value.Length == 0 ? Array.Empty<byte>() : value.ToArray();
+        return value.Length == 0 ? Array.Empty<byte>() : value;
     }
 
     private static int WriteBytes32(byte[] buffer, int offset, Bytes32 value)
@@ -467,6 +458,61 @@ public static class SszEncoding
         WriteCheckpoint(span, cursor, value.Source);
     }
 
+    private static void EncodeInto(Span<byte> buffer, int offset, Bytes32 value)
+    {
+        Ssz.Encode(buffer.Slice(offset, Bytes32Length), value.AsSpan());
+    }
+
+    private static void EncodeInto(Span<byte> buffer, int offset, Checkpoint value)
+    {
+        WriteCheckpoint(buffer, offset, value);
+    }
+
+    private static void EncodeInto(Span<byte> buffer, int offset, BlockHeader value)
+    {
+        var cursor = offset;
+        Ssz.Encode(buffer.Slice(cursor, UInt64Length), value.Slot.Value);
+        cursor += UInt64Length;
+        Ssz.Encode(buffer.Slice(cursor, UInt64Length), value.ProposerIndex);
+        cursor += UInt64Length;
+        Ssz.Encode(buffer.Slice(cursor, Bytes32Length), value.ParentRoot.AsSpan());
+        cursor += Bytes32Length;
+        Ssz.Encode(buffer.Slice(cursor, Bytes32Length), value.StateRoot.AsSpan());
+        cursor += Bytes32Length;
+        Ssz.Encode(buffer.Slice(cursor, Bytes32Length), value.BodyRoot.AsSpan());
+    }
+
+    private static void EncodeInto(Span<byte> buffer, int offset, Fp value)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(offset, FpLength), value.Value);
+    }
+
+    private static void EncodeInto(Span<byte> buffer, int offset, Randomness value)
+    {
+        var cursor = offset;
+        foreach (var element in value.Elements)
+        {
+            EncodeInto(buffer, cursor, element);
+            cursor += FpLength;
+        }
+    }
+
+    private static void EncodeInto(Span<byte> buffer, int offset, HashDigestVector value)
+    {
+        var cursor = offset;
+        foreach (var element in value.Elements)
+        {
+            EncodeInto(buffer, cursor, element);
+            cursor += FpLength;
+        }
+    }
+
+    private static void EncodeInto(Span<byte> buffer, int offset, Validator value)
+    {
+        value.Pubkey.AsSpan().CopyTo(buffer.Slice(offset, Bytes52Length));
+        Ssz.Encode(buffer.Slice(offset + Bytes52Length, UInt64Length), value.Index);
+    }
+
     private static int WriteCheckpoint(Span<byte> buffer, int offset, Checkpoint value)
     {
         Ssz.Encode(buffer.Slice(offset, Bytes32Length), value.Root.AsSpan());
@@ -488,7 +534,10 @@ public static class SszEncoding
         }
 
         var fixedSize = UInt32Length * elements.Count;
-        var total = fixedSize + elements.Sum(b => b.Length);
+        var totalVarSize = 0;
+        foreach (var element in elements)
+            totalVarSize += element.Length;
+        var total = fixedSize + totalVarSize;
         var buffer = new byte[total];
 
         var offset = fixedSize;
