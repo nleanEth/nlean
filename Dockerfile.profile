@@ -45,10 +45,48 @@ RUN dotnet tool install --global dotnet-trace \
     && dotnet tool install --global dotnet-dump
 ENV PATH="${PATH}:/root/.dotnet/tools"
 ENV DOTNET_EnableDiagnostics=1
-# Limit glibc malloc arenas to reduce native memory fragmentation
-# Default is 8*cores; with 81 threads this causes ~5GB of arena overhead
+
+# Build jemalloc from source with profiling support (Ubuntu package lacks --enable-prof)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential autoconf \
+    && curl -sSL https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2 | tar xj -C /tmp \
+    && cd /tmp/jemalloc-5.3.0 \
+    && ./configure --enable-prof --prefix=/usr/local \
+    && make -j$(nproc) && make install \
+    && rm -rf /tmp/jemalloc-5.3.0 \
+    && apt-get purge -y build-essential autoconf && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# === Native heap profiling (jemalloc) ===
+# prof:true          — enable heap profiling
+# lg_prof_interval:30 — dump profile every 1 GB allocated (2^30 bytes)
+# lg_prof_sample:17  — sample every 128 KB (2^17 bytes) for low overhead
+# prof_prefix:/tmp/jeprof — profile dump file prefix
+# prof_gdump:true    — auto-dump when heap size doubles
+#
+# Collect heap profile on demand:
+#   docker exec <container> kill -USR2 1
+# Copy out and analyze:
+#   docker cp <container>:/tmp/ ./jeprof-dumps/
+#   jeprof --svg /app/Lean.Client jeprof.*.heap > heap-profile.svg
+#
+# === CPU profiling ===
+# Option 1: dotnet-trace (managed + native, low overhead):
+#   docker exec <container> dotnet-trace collect -p 1 --duration 00:00:30 -o /tmp/trace.nettrace
+#   docker cp <container>:/tmp/trace.nettrace .
+#   # Open in PerfView (Windows) or `dotnet-trace convert trace.nettrace --format speedscope`
+#
+# Option 2: perf (full native stacks including Rust FFI, needs --privileged):
+#   docker exec <container> perf record -g -p 1 --call-graph dwarf -o /tmp/perf.data -- sleep 30
+#   docker cp <container>:/tmp/perf.data .
+#   perf script -i perf.data | inferno-flamegraph > cpu-flamegraph.svg
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
+ENV MALLOC_CONF=prof:true,lg_prof_interval:30,lg_prof_sample:17,prof_prefix:/tmp/jeprof,prof_gdump:true
+
+# Limit glibc malloc arenas (fallback if jemalloc not loaded)
 ENV MALLOC_ARENA_MAX=2
-ENV DOTNET_GCHeapHardLimit=0x40000000
+# Aggressively return committed GC pages to OS after collection (scale 0-9)
+ENV DOTNET_GCConserveMemory=7
 
 WORKDIR /app
 COPY --from=build /app/publish .
