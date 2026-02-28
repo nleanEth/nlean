@@ -336,16 +336,19 @@ public sealed class ValidatorService : IValidatorService
         var finalizedSlot = _consensusService.FinalizedSlot;
         var epoch = ToSignatureEpoch(slot);
 
-        _logger.LogInformation(
-            "Attestation checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
-            slot,
-            _validatorId,
-            attestationData.Source.Slot.Value,
-            attestationData.Target.Slot.Value,
-            justifiedSlot,
-            finalizedSlot,
-            Convert.ToHexString(attestationData.Source.Root.AsSpan()),
-            Convert.ToHexString(attestationData.Target.Root.AsSpan()));
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Attestation checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
+                slot,
+                _validatorId,
+                attestationData.Source.Slot.Value,
+                attestationData.Target.Slot.Value,
+                justifiedSlot,
+                finalizedSlot,
+                Convert.ToHexString(attestationData.Source.Root.AsSpan()),
+                Convert.ToHexString(attestationData.Target.Root.AsSpan()));
+        }
 
         var messageRoot = attestationData.HashTreeRoot();
         var signingStopwatch = Stopwatch.StartNew();
@@ -443,11 +446,11 @@ public sealed class ValidatorService : IValidatorService
         var groups = _consensusService.CollectAttestationsForAggregation();
         if (groups.Count == 0)
         {
-            _logger.LogInformation("Aggregation duty skipped: no groups. Slot: {Slot}", slot);
+            _logger.LogDebug("Aggregation duty skipped: no groups. Slot: {Slot}", slot);
             return;
         }
 
-        _logger.LogInformation("Aggregation duty started. Slot: {Slot}, Groups: {Groups}", slot, groups.Count);
+        _logger.LogDebug("Aggregation duty started. Slot: {Slot}, Groups: {Groups}", slot, groups.Count);
 
         Dictionary<ulong, byte[]> knownPublicKeys;
         lock (_dutyStateLock)
@@ -505,7 +508,7 @@ public sealed class ValidatorService : IValidatorService
 
             await PublishToTopicAsync(_gossipTopics.AggregateTopic, payload, cancellationToken);
 
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Published aggregated attestation. Slot: {Slot}, Participants: [{Participants}], ProofBytes: {ProofBytes}",
                 data.Slot.Value,
                 string.Join(",", participantIds),
@@ -638,17 +641,20 @@ public sealed class ValidatorService : IValidatorService
         var selectedProofs = new List<AggregatedSignatureProof>();
         SelectBestProofs(knownAttestations, knownProofs, selectedAttestations, selectedProofs, "consensus");
 
-        foreach (var (att, proof) in selectedAttestations.Zip(selectedProofs))
+        if (_logger.IsEnabled(LogLevel.Debug))
         {
-            if (proof.Participants.TryToValidatorIndices(out var pids))
+            foreach (var (att, proof) in selectedAttestations.Zip(selectedProofs))
             {
-                _logger.LogInformation(
-                    "Block aggregated attestation. Slot: {Slot}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], TargetRoot: {TargetRoot}",
-                    att.Data.Slot.Value,
-                    att.Data.Source.Slot.Value,
-                    att.Data.Target.Slot.Value,
-                    string.Join(",", pids),
-                    Convert.ToHexString(att.Data.Target.Root.AsSpan()));
+                if (proof.Participants.TryToValidatorIndices(out var pids))
+                {
+                    _logger.LogDebug(
+                        "Block aggregated attestation. Slot: {Slot}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], TargetRoot: {TargetRoot}",
+                        att.Data.Slot.Value,
+                        att.Data.Source.Slot.Value,
+                        att.Data.Target.Slot.Value,
+                        string.Join(",", pids),
+                        Convert.ToHexString(att.Data.Target.Root.AsSpan()));
+                }
             }
         }
 

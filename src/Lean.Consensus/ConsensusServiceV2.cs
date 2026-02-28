@@ -539,10 +539,13 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         {
             if (!_store.ContainsBlock(parentRoot))
             {
-                _logger.LogDebug(
-                    "HandleGossipBlock: slot={Slot}, blockRoot={Root}, unknown parent {Parent}",
-                    block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
-                    Convert.ToHexString(parentRoot.AsSpan())[..8]);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "HandleGossipBlock: slot={Slot}, blockRoot={Root}, unknown parent {Parent}",
+                        block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
+                        Convert.ToHexString(parentRoot.AsSpan())[..8]);
+                }
                 if (_syncService is not null)
                     _ = _syncService.OnGossipBlockAsync(signedBlock, blockRoot, peerId: null);
                 return;
@@ -550,10 +553,13 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out parentState))
             {
-                _logger.LogDebug(
-                    "HandleGossipBlock: slot={Slot}, blockRoot={Root}, missing parent state for {Parent}",
-                    block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
-                    Convert.ToHexString(parentRoot.AsSpan())[..8]);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "HandleGossipBlock: slot={Slot}, blockRoot={Root}, missing parent state for {Parent}",
+                        block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
+                        Convert.ToHexString(parentRoot.AsSpan())[..8]);
+                }
                 return;
             }
         }
@@ -567,17 +573,23 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 out var postState,
                 out var reason))
         {
-            _logger.LogInformation(
-                "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted=False, reason={Reason}",
-                block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8], reason);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted=False, reason={Reason}",
+                    block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8], reason);
+            }
             return;
         }
 
         if (!computedStateRoot.Equals(block.StateRoot))
         {
-            _logger.LogWarning(
-                "HandleGossipBlock state root mismatch. Slot={Slot}, BlockRoot={BlockRoot}",
-                block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8]);
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(
+                    "HandleGossipBlock state root mismatch. Slot={Slot}, BlockRoot={BlockRoot}",
+                    block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8]);
+            }
             return;
         }
 
@@ -598,12 +610,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             }
         }
 
-        _logger.LogInformation(
-            "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted={Accepted}, reason={Reason}",
-            block.Slot.Value,
-            Convert.ToHexString(blockRoot.AsSpan())[..8],
-            result.Accepted,
-            result.Reason);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted={Accepted}, reason={Reason}",
+                block.Slot.Value,
+                Convert.ToHexString(blockRoot.AsSpan())[..8],
+                result.Accepted,
+                result.Reason);
+        }
 
         if (result.Accepted && _syncService is not null)
         {
@@ -698,12 +713,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return;
         }
 
-        _logger.LogDebug(
-            "Received gossip attestation. Validator: {ValidatorId}, Slot: {Slot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}",
-            decode.Attestation.ValidatorId, decode.Attestation.Message.Slot.Value,
-            Convert.ToHexString(decode.Attestation.Message.Head.Root.AsSpan())[..8],
-            Convert.ToHexString(decode.Attestation.Message.Target.Root.AsSpan())[..8],
-            Convert.ToHexString(decode.Attestation.Message.Source.Root.AsSpan())[..8]);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Received gossip attestation. Validator: {ValidatorId}, Slot: {Slot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}",
+                decode.Attestation.ValidatorId, decode.Attestation.Message.Slot.Value,
+                Convert.ToHexString(decode.Attestation.Message.Head.Root.AsSpan())[..8],
+                Convert.ToHexString(decode.Attestation.Message.Target.Root.AsSpan())[..8],
+                Convert.ToHexString(decode.Attestation.Message.Source.Root.AsSpan())[..8]);
+        }
 
         _inbox.Writer.TryWrite(new GossipAttestationMessage(decode.Attestation));
     }
