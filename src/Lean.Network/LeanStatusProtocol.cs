@@ -19,22 +19,29 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
 
     public async Task<LeanStatusMessage> DialAsync(IChannel channel, ISessionContext context, LeanStatusMessage request)
     {
-        var requestPayload = LeanReqRespCodec.EncodeStatus(request);
-        await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
-
-        var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
-        if (response is null)
+        try
         {
-            throw new InvalidOperationException("status request ended before receiving a response.");
-        }
+            var requestPayload = LeanReqRespCodec.EncodeStatus(request);
+            await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
 
-        if (response.Value.Code != LeanRpcResponseCodes.Success)
+            var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
+            if (response is null)
+            {
+                throw new InvalidOperationException("status request ended before receiving a response.");
+            }
+
+            if (response.Value.Code != LeanRpcResponseCodes.Success)
+            {
+                throw new InvalidOperationException(
+                    $"status request failed with code {response.Value.Code}: {Encoding.UTF8.GetString(response.Value.Payload)}");
+            }
+
+            return LeanReqRespCodec.DecodeStatus(response.Value.Payload);
+        }
+        finally
         {
-            throw new InvalidOperationException(
-                $"status request failed with code {response.Value.Code}: {Encoding.UTF8.GetString(response.Value.Payload)}");
+            await channel.CloseAsync();
         }
-
-        return LeanReqRespCodec.DecodeStatus(response.Value.Payload);
     }
 
     public async Task ListenAsync(IChannel channel, ISessionContext context)

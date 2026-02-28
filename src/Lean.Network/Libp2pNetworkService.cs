@@ -13,7 +13,7 @@ public sealed class Libp2pNetworkService : INetworkService
     private const int BlockRootLength = 32;
     private static readonly TimeSpan StatusProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BlocksByRootPerPeerTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan StatusProbeMinInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan StatusProbeMinInterval = TimeSpan.FromSeconds(600);
     private static readonly TimeSpan PubsubDialTimeout = TimeSpan.FromSeconds(5);
     private const string ConnectionDirectionInbound = "inbound";
     private const string ConnectionDirectionOutbound = "outbound";

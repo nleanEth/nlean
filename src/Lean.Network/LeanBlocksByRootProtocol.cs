@@ -19,28 +19,35 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
 
     public async Task<byte[]?> DialAsync(IChannel channel, ISessionContext context, byte[] request)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        if (request.Length != LeanReqRespCodec.RootLength)
+        try
         {
-            throw new ArgumentException($"block root must be {LeanReqRespCodec.RootLength} bytes.", nameof(request));
+            ArgumentNullException.ThrowIfNull(request);
+            if (request.Length != LeanReqRespCodec.RootLength)
+            {
+                throw new ArgumentException($"block root must be {LeanReqRespCodec.RootLength} bytes.", nameof(request));
+            }
+
+            var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(new[] { request });
+            await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
+
+            var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
+            if (response is null)
+            {
+                return null;
+            }
+
+            if (response.Value.Code != LeanRpcResponseCodes.Success)
+            {
+                throw new InvalidOperationException(
+                    $"blocks_by_root request failed with code {response.Value.Code}: {Encoding.UTF8.GetString(response.Value.Payload)}");
+            }
+
+            return response.Value.Payload;
         }
-
-        var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(new[] { request });
-        await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
-
-        var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
-        if (response is null)
+        finally
         {
-            return null;
+            await channel.CloseAsync();
         }
-
-        if (response.Value.Code != LeanRpcResponseCodes.Success)
-        {
-            throw new InvalidOperationException(
-                $"blocks_by_root request failed with code {response.Value.Code}: {Encoding.UTF8.GetString(response.Value.Payload)}");
-        }
-
-        return response.Value.Payload;
     }
 
     public async Task ListenAsync(IChannel channel, ISessionContext context)
