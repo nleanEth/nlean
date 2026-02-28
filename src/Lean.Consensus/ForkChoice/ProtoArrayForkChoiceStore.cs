@@ -61,7 +61,16 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public Bytes32 SafeTarget => _safeTarget;
     public ProtoArray ProtoArray => _protoArray;
     public bool ContainsBlock(Bytes32 root) => _protoArray.ContainsBlock(root);
-    public int PendingAggregatedPayloadCount => _newAggregatedPayloads.Values.Sum(v => v.Count);
+    public int PendingAggregatedPayloadCount
+    {
+        get
+        {
+            int count = 0;
+            foreach (var list in _newAggregatedPayloads.Values)
+                count += list.Count;
+            return count;
+        }
+    }
 
     public IReadOnlySet<Bytes32> GetAllBlockRoots()
     {
@@ -153,9 +162,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             }
         }
 
-        return perValidator
-            .Select(kv => new Attestation(kv.Key, kv.Value))
-            .ToList();
+        var list = new List<Attestation>(perValidator.Count);
+        foreach (var kv in perValidator)
+            list.Add(new Attestation(kv.Key, kv.Value));
+        return list;
     }
 
     /// <summary>
@@ -291,12 +301,15 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     {
         if (!TryValidateAttestationData(attestation.Message, out reason))
         {
-            _logger.LogDebug(
-                "TryOnAttestation REJECTED: ValidatorId={ValidatorId}, Slot={Slot}, Reason={Reason}, HeadRoot={HeadRoot}, TargetRoot={TargetRoot}, SourceRoot={SourceRoot}",
-                attestation.ValidatorId, attestation.Message.Slot.Value, reason,
-                Convert.ToHexString(attestation.Message.Head.Root.AsSpan())[..8],
-                Convert.ToHexString(attestation.Message.Target.Root.AsSpan())[..8],
-                Convert.ToHexString(attestation.Message.Source.Root.AsSpan())[..8]);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "TryOnAttestation REJECTED: ValidatorId={ValidatorId}, Slot={Slot}, Reason={Reason}, HeadRoot={HeadRoot}, TargetRoot={TargetRoot}, SourceRoot={SourceRoot}",
+                    attestation.ValidatorId, attestation.Message.Slot.Value, reason,
+                    Convert.ToHexString(attestation.Message.Head.Root.AsSpan())[..8],
+                    Convert.ToHexString(attestation.Message.Target.Root.AsSpan())[..8],
+                    Convert.ToHexString(attestation.Message.Source.Root.AsSpan())[..8]);
+            }
             return false;
         }
 
@@ -363,11 +376,20 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var result = new List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>();
         foreach (var group in groups.Values)
         {
-            var sorted = group.ValidatorIds
-                .Select((id, i) => (id, sig: group.Signatures[i]))
-                .OrderBy(x => x.id)
-                .ToList();
-            result.Add((group.Data, sorted.Select(x => x.id).ToList(), sorted.Select(x => x.sig).ToList()));
+            var ids = group.ValidatorIds;
+            var sigs = group.Signatures;
+            var indices = new int[ids.Count];
+            for (var i = 0; i < indices.Length; i++)
+                indices[i] = i;
+            Array.Sort(indices, (a, b) => ids[a].CompareTo(ids[b]));
+            var sortedIds = new List<ulong>(ids.Count);
+            var sortedSigs = new List<XmssSignature>(ids.Count);
+            foreach (var idx in indices)
+            {
+                sortedIds.Add(ids[idx]);
+                sortedSigs.Add(sigs[idx]);
+            }
+            result.Add((group.Data, sortedIds, sortedSigs));
         }
 
         return result;
@@ -503,17 +525,22 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     /// </summary>
     private void PruneAttestationDataOlderThan(ulong cutoffSlot)
     {
-        var staleDataKeys = _attestationDataByRoot
-            .Where(kv => kv.Value.Slot.Value <= cutoffSlot)
-            .Select(kv => kv.Key)
-            .ToHashSet(StringComparer.Ordinal);
+        var staleDataKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var kv in _attestationDataByRoot)
+        {
+            if (kv.Value.Slot.Value <= cutoffSlot)
+                staleDataKeys.Add(kv.Key);
+        }
 
         if (staleDataKeys.Count == 0)
             return;
 
-        var staleSignatureKeys = _gossipSignatures.Keys
-            .Where(key => staleDataKeys.Contains(key.Item2))
-            .ToList();
+        var staleSignatureKeys = new List<(ulong, string)>();
+        foreach (var key in _gossipSignatures.Keys)
+        {
+            if (staleDataKeys.Contains(key.Item2))
+                staleSignatureKeys.Add(key);
+        }
         foreach (var key in staleSignatureKeys)
         {
             _gossipSignatures.Remove(key);
@@ -527,10 +554,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
 
         // Prune validator attestation records whose data is now stale.
-        var staleVids = _knownAttestations
-            .Where(kv => kv.Value.Slot.Value <= cutoffSlot)
-            .Select(kv => kv.Key)
-            .ToList();
+        var staleVids = new List<ulong>();
+        foreach (var kv in _knownAttestations)
+        {
+            if (kv.Value.Slot.Value <= cutoffSlot)
+                staleVids.Add(kv.Key);
+        }
         foreach (var vid in staleVids)
             _knownAttestations.Remove(vid);
 
@@ -577,10 +606,13 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         // Run LMD GHOST with min_score threshold
         _safeTarget = ComputeLmdGhostHead(_latestJustified.Root, allAttestations, minTargetScore);
-        var safeSlot = _protoArray.GetSlot(_safeTarget) ?? 0UL;
-        _logger.LogDebug(
-            "UpdateSafeTarget. ValidatorCount: {ValidatorCount}, MinTargetScore: {MinTargetScore}, AttestationVoters: {AttestationVoters}, SafeTargetSlot: {SafeTargetSlot}, SafeTargetRoot: {SafeTargetRoot}",
-            numValidators, minTargetScore, allAttestations.Count, safeSlot, Convert.ToHexString(_safeTarget.AsSpan())[..8]);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            var safeSlot = _protoArray.GetSlot(_safeTarget) ?? 0UL;
+            _logger.LogDebug(
+                "UpdateSafeTarget. ValidatorCount: {ValidatorCount}, MinTargetScore: {MinTargetScore}, AttestationVoters: {AttestationVoters}, SafeTargetSlot: {SafeTargetSlot}, SafeTargetRoot: {SafeTargetRoot}",
+                numValidators, minTargetScore, allAttestations.Count, safeSlot, Convert.ToHexString(_safeTarget.AsSpan())[..8]);
+        }
     }
 
     private void ExtractVotesFromPayloads(
