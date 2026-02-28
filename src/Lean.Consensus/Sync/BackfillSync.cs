@@ -1,4 +1,7 @@
+using System.Threading.Channels;
 using Lean.Consensus.Types;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Lean.Consensus.Sync;
 
@@ -6,50 +9,63 @@ public sealed class BackfillSync : IBackfillTrigger
 {
     public const int DefaultMaxBackfillDepth = 512;
     public const int MaxBlocksPerRequest = 10;
+    private const int MaxRetries = 3;
+    private const int BaseRetryDelayMs = 500;
+    private const int PerRequestTimeoutMs = 30_000;
+    private const int ChainTimeoutMs = 120_000;
+    private const int QueueCapacity = 32;
 
     private readonly INetworkRequester _network;
     private readonly IBlockProcessor _processor;
     private readonly SyncPeerManager _peerManager;
     private readonly int _maxDepth;
     private readonly Action<Bytes32>? _onBlockAccepted;
+    private readonly ILogger<BackfillSync> _logger;
+
+    private readonly Channel<Bytes32> _queue = Channel.CreateBounded<Bytes32>(
+        new BoundedChannelOptions(QueueCapacity)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false,
+        });
+
+    private readonly object _pendingLock = new();
     private readonly HashSet<Bytes32> _pendingBackfills = new();
-    private CancellationToken _shutdownToken;
+    private Task? _consumerTask;
 
     public BackfillSync(INetworkRequester network, IBlockProcessor processor,
         SyncPeerManager peerManager, int maxDepth = DefaultMaxBackfillDepth,
-        Action<Bytes32>? onBlockAccepted = null)
+        Action<Bytes32>? onBlockAccepted = null,
+        ILogger<BackfillSync>? logger = null)
     {
         _network = network;
         _processor = processor;
         _peerManager = peerManager;
         _maxDepth = maxDepth;
         _onBlockAccepted = onBlockAccepted;
+        _logger = logger ?? NullLogger<BackfillSync>.Instance;
     }
 
-    public void SetShutdownToken(CancellationToken ct) => _shutdownToken = ct;
+    public void SetShutdownToken(CancellationToken ct)
+    {
+        // Start the single consumer when the sync service starts.
+        _consumerTask = Task.Run(() => ConsumeAsync(ct), ct);
+    }
 
     public void RequestBackfill(Bytes32 parentRoot)
     {
-        // Deduplicate: skip if already in-flight
-        if (!_pendingBackfills.Add(parentRoot))
-            return;
-
-        _ = Task.Run(async () =>
+        lock (_pendingLock)
         {
-            try
-            {
-                await RequestParentsAsync(new List<Bytes32> { parentRoot }, _shutdownToken);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception)
-            {
-                // Swallow — in production, this would log the exception.
-            }
-            finally
-            {
-                _pendingBackfills.Remove(parentRoot);
-            }
-        }, _shutdownToken);
+            if (!_pendingBackfills.Add(parentRoot))
+                return;
+        }
+
+        _logger.LogInformation("Backfill queued for root {Root}. PeerCount: {PeerCount}",
+            parentRoot, _peerManager.PeerCount);
+
+        // Non-blocking write; oldest entry dropped if queue is full.
+        _queue.Writer.TryWrite(parentRoot);
     }
 
     public async Task RequestParentsAsync(List<Bytes32> roots, CancellationToken ct)
@@ -63,7 +79,6 @@ public sealed class BackfillSync : IBackfillTrigger
         {
             ct.ThrowIfCancellationRequested();
 
-            // Filter out already-known roots
             var batch = new List<Bytes32>();
             while (pending.Count > 0 && batch.Count < MaxBlocksPerRequest)
             {
@@ -75,48 +90,171 @@ public sealed class BackfillSync : IBackfillTrigger
             if (batch.Count == 0)
                 break;
 
-            var peerId = _peerManager.SelectPeerForRequest();
-            if (peerId is null)
+            var fetched = await FetchWithRetryAsync(batch, ct);
+            if (fetched is null || fetched.Count == 0)
                 break;
 
-            _peerManager.IncrementInflight(peerId);
-            try
+            foreach (var block in fetched)
             {
-                var fetched = await _network.RequestBlocksByRootAsync(peerId, batch, ct);
+                var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
+                collected.Add((block, blockRoot));
 
-                if (fetched.Count == 0)
-                {
-                    _peerManager.OnRequestFailure(peerId);
-                    break;
-                }
-
-                _peerManager.OnRequestSuccess(peerId);
-
-                foreach (var block in fetched)
-                {
-                    var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
-                    collected.Add((block, blockRoot));
-
-                    // Always continue backwards if parent is unknown
-                    var parentRoot = block.Message.Block.ParentRoot;
-                    if (!_processor.IsBlockKnown(parentRoot))
-                        pending.Enqueue(parentRoot);
-                }
-            }
-            finally
-            {
-                _peerManager.DecrementInflight(peerId);
+                var parentRoot = block.Message.Block.ParentRoot;
+                if (!_processor.IsBlockKnown(parentRoot))
+                    pending.Enqueue(parentRoot);
             }
 
             depth++;
         }
 
+        if (collected.Count > 0)
+        {
+            _logger.LogInformation(
+                "Backfill collected {Count} blocks over {Depth} iterations. Processing in forward order.",
+                collected.Count, depth);
+        }
+
         // Phase 2: Process collected blocks in forward slot order (oldest first)
+        var accepted = 0;
         foreach (var (block, blockRoot) in collected.OrderBy(x => x.Block.Message.Block.Slot.Value))
         {
             var result = _processor.ProcessBlock(block);
             if (result.Accepted)
+            {
+                accepted++;
                 _onBlockAccepted?.Invoke(blockRoot);
+            }
         }
+
+        if (collected.Count > 0)
+        {
+            _logger.LogInformation(
+                "Backfill processed {Accepted}/{Total} blocks successfully.",
+                accepted, collected.Count);
+        }
+    }
+
+    /// <summary>
+    /// Waits for the consumer task to complete. Call from StopAsync.
+    /// </summary>
+    public async Task StopAsync()
+    {
+        _queue.Writer.TryComplete();
+        if (_consumerTask is not null)
+        {
+            try { await _consumerTask; }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    private async Task ConsumeAsync(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var parentRoot in _queue.Reader.ReadAllAsync(ct))
+            {
+                try
+                {
+                    using var chainCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    chainCts.CancelAfter(ChainTimeoutMs);
+                    await RequestParentsAsync(new List<Bytes32> { parentRoot }, chainCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogInformation("Backfill chain timed out for root {Root} after {TimeoutMs}ms",
+                        parentRoot, ChainTimeoutMs);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Backfill failed for root {Root}", parentRoot);
+                }
+                finally
+                {
+                    lock (_pendingLock)
+                    {
+                        _pendingBackfills.Remove(parentRoot);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task<IReadOnlyList<SignedBlockWithAttestation>?> FetchWithRetryAsync(
+        List<Bytes32> batch, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < MaxRetries; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (attempt > 0)
+            {
+                _peerManager.RecoverScores();
+                await Task.Delay(BaseRetryDelayMs * (1 << attempt), ct);
+            }
+
+            var peerId = _peerManager.SelectPeerForRequest();
+            if (peerId is null)
+            {
+                _logger.LogInformation(
+                    "Backfill: no eligible peers (attempt {Attempt}/{MaxRetries}, peers: {PeerCount})",
+                    attempt + 1, MaxRetries, _peerManager.PeerCount);
+                continue;
+            }
+
+            _peerManager.IncrementInflight(peerId);
+            try
+            {
+                var fetchTask = _network.RequestBlocksByRootAsync(peerId, batch, ct);
+                var timeoutTask = Task.Delay(PerRequestTimeoutMs);
+                var completed = await Task.WhenAny(fetchTask, timeoutTask);
+
+                if (completed == timeoutTask || !fetchTask.IsCompletedSuccessfully)
+                {
+                    _peerManager.OnRequestFailure(peerId);
+                    _logger.LogInformation(
+                        "Backfill: request to {PeerId} timed out after {TimeoutMs}ms (attempt {Attempt}/{MaxRetries})",
+                        peerId, PerRequestTimeoutMs, attempt + 1, MaxRetries);
+                    continue;
+                }
+
+                var fetched = await fetchTask;
+                if (fetched.Count > 0)
+                {
+                    _peerManager.OnRequestSuccess(peerId);
+                    return fetched;
+                }
+
+                _peerManager.OnRequestFailure(peerId);
+                _logger.LogInformation(
+                    "Backfill: peer {PeerId} returned 0 blocks (attempt {Attempt}/{MaxRetries})",
+                    peerId, attempt + 1, MaxRetries);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _peerManager.OnRequestFailure(peerId);
+                _logger.LogInformation(
+                    "Backfill: request to {PeerId} timed out (attempt {Attempt}/{MaxRetries})",
+                    peerId, attempt + 1, MaxRetries);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _peerManager.OnRequestFailure(peerId);
+                _logger.LogInformation(ex,
+                    "Backfill: request to {PeerId} failed (attempt {Attempt}/{MaxRetries})",
+                    peerId, attempt + 1, MaxRetries);
+            }
+            finally
+            {
+                _peerManager.DecrementInflight(peerId);
+            }
+        }
+
+        return null;
     }
 }

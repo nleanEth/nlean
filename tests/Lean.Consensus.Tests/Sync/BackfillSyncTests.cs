@@ -127,6 +127,78 @@ public sealed class BackfillSyncTests
         Assert.That(network.RequestCount, Is.EqualTo(0));
     }
 
+    [Test]
+    public async Task RequestBackfill_ProcessedByConsumer()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync();
+        peerMgr.AddPeer("peer-1");
+
+        var grandparentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(grandparentRoot);
+
+        var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
+        var parentRoot = ComputeRoot(parentBlock);
+        network.BlocksByRoot[parentRoot] = parentBlock;
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        backfill.RequestBackfill(parentRoot);
+
+        // Wait for consumer to process the queued item.
+        for (var i = 0; i < 50 && processor.ProcessedBlocks.Count == 0; i++)
+            await Task.Delay(50);
+
+        Assert.That(processor.ProcessedBlocks, Has.Count.EqualTo(1));
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+    }
+
+    [Test]
+    public async Task RequestBackfill_DuplicateRoot_IsIgnored()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync();
+        peerMgr.AddPeer("peer-1");
+
+        var grandparentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(grandparentRoot);
+
+        var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
+        var parentRoot = ComputeRoot(parentBlock);
+        network.BlocksByRoot[parentRoot] = parentBlock;
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        // Queue same root twice — second should be deduped
+        backfill.RequestBackfill(parentRoot);
+        backfill.RequestBackfill(parentRoot);
+
+        for (var i = 0; i < 50 && processor.ProcessedBlocks.Count == 0; i++)
+            await Task.Delay(50);
+
+        // Only one block should be processed (dedup in RequestBackfill)
+        Assert.That(processor.ProcessedBlocks, Has.Count.EqualTo(1));
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+    }
+
+    [Test]
+    public async Task StopAsync_CompletesGracefully()
+    {
+        var (backfill, _, _, _) = CreateBackfillSync();
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+
+        // Should not throw or hang
+    }
+
     // --- Helpers ---
 
     private static (BackfillSync backfill, FakeNetworkRequester network,
@@ -152,7 +224,7 @@ public sealed class BackfillSyncTests
         var attestation = new Attestation(0, new AttestationData(
             block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
         var blockWithAttestation = new BlockWithAttestation(block, attestation);
-        var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), new XmssSignature(new byte[3112]));
+        var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
         return new SignedBlockWithAttestation(blockWithAttestation, sig);
     }
 
