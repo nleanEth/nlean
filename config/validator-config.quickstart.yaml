@@ -13,7 +13,7 @@ validators:
       quic: 9101
     metricsPort: 18081
     count: 1
-    isAggregator: true
+    isAggregator: false
 
   - name: "nlean_1"
     privkey: "bdf953adc161873ba026330c56450453f582e3c4ee6cb713644794bcfdd85fe5"
@@ -40,7 +40,7 @@ validators:
       quic: 9107
     metricsPort: 18087
     count: 1
-    isAggregator: false
+    isAggregator: true
 
   - name: "ethlambda_1"
     privkey: "c4f5a6b7d8e9012345abcdef6789012345abcdef6789012345abcdef67890123"
