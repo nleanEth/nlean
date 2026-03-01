@@ -389,6 +389,14 @@ public sealed class ValidatorService : IValidatorService
         var subnetId = new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
         await PublishToTopicAsync(_gossipTopics.AttestationSubnetTopic(subnetId), attestationPayload, cancellationToken);
 
+        _logger.LogInformation(
+            "Published attestation. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}",
+            slot,
+            _validatorId,
+            attestationData.Head.Slot.Value,
+            attestationData.Target.Slot.Value,
+            attestationData.Source.Slot.Value);
+
         if (!selfVerificationOk)
         {
             _logger.LogWarning(

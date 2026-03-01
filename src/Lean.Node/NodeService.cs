@@ -62,12 +62,17 @@ public sealed class NodeService : BackgroundService
         }
         await _networkService.StartAsync(stoppingToken);
         await _consensusService.StartAsync(stoppingToken);
-        await _networkService.ConnectToPeersAsync(stoppingToken);
 
         if (_options.Validator.Enabled)
         {
             await _validatorService.StartAsync(stoppingToken);
         }
+
+        // Connect to bootstrap peers AFTER starting the validator service.
+        // Bootstrap dials are sequential and can block for minutes when peers
+        // aren't up yet (e.g., first node in a devnet). The reconnect loop
+        // handles ongoing connectivity regardless of initial connection results.
+        await _networkService.ConnectToPeersAsync(stoppingToken);
 
         _logger.LogInformation("Lean node started. Network: {Network}", _options.Network);
 
