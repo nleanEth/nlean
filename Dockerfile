@@ -33,9 +33,10 @@ RUN apt-get update \
     && wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb \
     && dpkg -i /tmp/packages-microsoft-prod.deb \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libmsquic \
+    && apt-get install -y --no-install-recommends libmsquic libjemalloc2 \
     && rm -f /tmp/packages-microsoft-prod.deb \
     && rm -rf /var/lib/apt/lists/*
+ENV LD_PRELOAD=libjemalloc.so.2
 WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["/app/Lean.Client"]
