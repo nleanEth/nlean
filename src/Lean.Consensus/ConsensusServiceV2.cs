@@ -406,8 +406,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             if (_syncService is not null)
                 await _syncService.StartAsync(_cts.Token);
 
-            if (_networkService is not null)
-                TriggerPeerStatusProbe();
+            // Don't probe peer status immediately at startup — remote peers may
+            // not have registered their status handler yet. The periodic probe
+            // at OnTick(intervalInSlot == 0) will handle it within one slot.
         }
         catch
         {
