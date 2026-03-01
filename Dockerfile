@@ -36,9 +36,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libmsquic \
     && rm -f /tmp/packages-microsoft-prod.deb \
     && rm -rf /var/lib/apt/lists/*
-# Limit glibc malloc arenas to reduce native memory fragmentation
-# Default is 8*cores; with many threads this causes GB of arena overhead
-ENV MALLOC_ARENA_MAX=2
 WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["/app/Lean.Client"]

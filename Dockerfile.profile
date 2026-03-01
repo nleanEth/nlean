@@ -83,9 +83,6 @@ RUN apt-get update \
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
 ENV MALLOC_CONF=prof:true,lg_prof_interval:30,lg_prof_sample:17,prof_prefix:/tmp/jeprof,prof_gdump:true
 
-# Limit glibc malloc arenas (fallback if jemalloc not loaded)
-ENV MALLOC_ARENA_MAX=2
-
 WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["/app/Lean.Client"]
