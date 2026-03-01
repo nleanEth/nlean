@@ -85,8 +85,6 @@ ENV MALLOC_CONF=prof:true,lg_prof_interval:30,lg_prof_sample:17,prof_prefix:/tmp
 
 # Limit glibc malloc arenas (fallback if jemalloc not loaded)
 ENV MALLOC_ARENA_MAX=2
-# Aggressively return committed GC pages to OS after collection (scale 0-9)
-ENV DOTNET_GCConserveMemory=7
 
 WORKDIR /app
 COPY --from=build /app/publish .

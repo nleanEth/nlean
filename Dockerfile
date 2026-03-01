@@ -39,8 +39,6 @@ RUN apt-get update \
 # Limit glibc malloc arenas to reduce native memory fragmentation
 # Default is 8*cores; with many threads this causes GB of arena overhead
 ENV MALLOC_ARENA_MAX=2
-# Aggressively return committed GC pages to OS after collection (scale 0-9)
-ENV DOTNET_GCConserveMemory=7
 WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["/app/Lean.Client"]

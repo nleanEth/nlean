@@ -51,10 +51,12 @@ cat > "$WORK_DIR/global.json" <<EOF
 }
 EOF
 
-dotnet pack "$WORK_DIR/src/libp2p/Libp2p.Protocols.Quic/Libp2p.Protocols.Quic.csproj" \
+pushd "$WORK_DIR" > /dev/null
+dotnet pack "src/libp2p/Libp2p.Protocols.Quic/Libp2p.Protocols.Quic.csproj" \
   -c Release \
   -p:PackageVersion="$PACKAGE_VERSION" \
   -o "$LOCAL_FEED_DIR"
+popd > /dev/null
 
 # Force restore to consume the local patched package instead of a cached copy.
 rm -rf "$PACKAGE_CACHE_DIR"

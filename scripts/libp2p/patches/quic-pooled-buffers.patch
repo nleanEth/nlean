@@ -1,8 +1,52 @@
 diff --git a/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs b/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
-index 025fca6..b09f8ab 100644
+index 025fca6..cdd588a 100644
 --- a/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
 +++ b/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
-@@ -218,7 +218,15 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+@@ -100,8 +100,11 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+                 QuicConnection connection = await listener.AcceptConnectionAsync(token);
+                 INewConnectionContext clientContext = context.CreateConnection();
+ 
+-                _ = ProcessStreams(clientContext, connection, token).ContinueWith(t =>
+-                clientContext.Dispose());
++                _ = ProcessStreams(clientContext, connection, token).ContinueWith(async t =>
++                {
++                    clientContext.Dispose();
++                    await connection.DisposeAsync();
++                }, TaskScheduler.Default);
+             }
+             catch (Exception ex)
+             {
+@@ -150,8 +153,16 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+         _logger?.Connected(connection.LocalEndPoint, connection.RemoteEndPoint);
+         INewConnectionContext connectionContext = context.CreateConnection();
+ 
+-        token.Register(() => _ = connection.CloseAsync(0));
+-        await ProcessStreams(connectionContext, connection, token);
++        CancellationTokenRegistration reg = token.Register(() => _ = connection.CloseAsync(0));
++        try
++        {
++            await ProcessStreams(connectionContext, connection, token);
++        }
++        finally
++        {
++            await reg.DisposeAsync();
++            await connection.DisposeAsync();
++        }
+     }
+ 
+     private static void CheckProtocol()
+@@ -208,8 +219,8 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+     {
+         upChannel.GetAwaiter().OnCompleted(() =>
+         {
+-            stream.Close();
+-            _logger?.LogDebug("Stream {stream id}: Closed", stream.Id);
++            _ = stream.DisposeAsync();
++            _logger?.LogDebug("Stream {stream id}: Disposed", stream.Id);
+         });
+ 
+         _ = Task.Run(async () =>
+@@ -218,7 +229,15 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
              {
                  await foreach (ReadOnlySequence<byte> data in upChannel.ReadAllAsync())
                  {
@@ -19,7 +63,7 @@ index 025fca6..b09f8ab 100644
                  }
                  stream.CompleteWrites();
              }
-@@ -233,13 +241,18 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+@@ -233,13 +252,18 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
          {
              try
              {
