@@ -979,19 +979,11 @@ public sealed class Libp2pNetworkService : INetworkService
         _blocksByRootPeerSelector.MarkConnected(peerKey);
         RecordPeerConnected(peerKey, ConnectionDirectionInbound);
         TrackPeerSession(session);
-        _ = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: false);
-                }
-                catch
-                {
-                    // Best-effort proactive probe; ignore task-level failures.
-                }
-            },
-            CancellationToken.None);
+
+        // Don't probe status immediately — the QUIC connection is established but
+        // protocol negotiation (Identify / multistream-select) hasn't completed yet.
+        // The periodic TriggerPeerStatusProbe (fired every slot) will pick up this
+        // peer via TryFindBootstrapSession → _peerSessions once the session is ready.
         return Task.CompletedTask;
     }
 
