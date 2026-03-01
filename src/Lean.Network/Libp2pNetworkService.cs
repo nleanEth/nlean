@@ -44,6 +44,7 @@ public sealed class Libp2pNetworkService : INetworkService
     private readonly object _bootstrapSessionsLock = new();
     private readonly List<ISession> _bootstrapSessions = new();
     private readonly HashSet<string> _connectedBootstrapPeers = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _pubsubEstablishedPeers = new(StringComparer.Ordinal);
     private readonly object _peerSessionsLock = new();
     private readonly Dictionary<string, ISession> _peerSessions = new(StringComparer.Ordinal);
     private ILocalPeer? _peer;
@@ -74,6 +75,11 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             _connectedPeers.Clear();
             LeanMetrics.SetConnectedPeers(0);
+        }
+
+        lock (_bootstrapSessionsLock)
+        {
+            _pubsubEstablishedPeers.Clear();
         }
 
         var identity = Libp2pIdentityFactory.Create(_config);
@@ -148,6 +154,11 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             _bootstrapPeerAddresses.Clear();
             _connectedBootstrapPeers.Clear();
+        }
+
+        lock (_bootstrapSessionsLock)
+        {
+            _pubsubEstablishedPeers.Clear();
         }
 
         lock (_blocksByRootPeersLock)
@@ -588,6 +599,18 @@ public sealed class Libp2pNetworkService : INetworkService
 
         foreach (var session in sessions)
         {
+            var peerKey = session.RemoteAddress?.ToString();
+            if (peerKey is not null)
+            {
+                lock (_bootstrapSessionsLock)
+                {
+                    if (_pubsubEstablishedPeers.Contains(peerKey))
+                    {
+                        continue;
+                    }
+                }
+            }
+
             try
             {
                 await EnsurePubsubSessionAsync(session, CancellationToken.None);
@@ -644,8 +667,15 @@ public sealed class Libp2pNetworkService : INetworkService
         }
 
         var bootstrapPeers = SnapshotBootstrapPeers();
+        var localPeerId = _peer.Identity.PeerId.ToString();
         foreach (var (peerKey, address) in bootstrapPeers)
         {
+            if (peerKey.Contains($"/p2p/{localPeerId}", StringComparison.Ordinal))
+            {
+                _logger.LogDebug("Skipping self-connection to {Address}", peerKey);
+                continue;
+            }
+
             if (!TryReserveBootstrapPeerConnection(peerKey))
             {
                 continue;
@@ -655,19 +685,16 @@ public sealed class Libp2pNetworkService : INetworkService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var session = await _peer.DialAsync(address, cancellationToken);
-                _ = Task.Run(
-                    async () =>
-                    {
-                        try
-                        {
-                            await EnsurePubsubSessionAsync(session, CancellationToken.None);
-                        }
-                        catch
-                        {
-                            // Best-effort pubsub stream warmup on bootstrap sessions.
-                        }
-                    },
-                    CancellationToken.None);
+                try
+                {
+                    await EnsurePubsubSessionAsync(session, CancellationToken.None);
+                }
+                catch (Exception pubsubEx)
+                {
+                    _logger.LogWarning(pubsubEx,
+                        "Pubsub stream warmup failed for bootstrap peer {Address}; reconnect loop will retry.",
+                        peerKey);
+                }
                 RegisterBlocksByRootCandidate(session.RemoteAddress.ToString(), session.RemoteAddress);
                 _blocksByRootPeerSelector.MarkConnected(peerKey);
                 RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
@@ -744,6 +771,10 @@ public sealed class Libp2pNetworkService : INetworkService
             try
             {
                 await ReconnectDisconnectedBootstrapPeersAsync(cancellationToken);
+
+                // Re-establish pubsub streams on connected peers that may have lost their
+                // gossipsub session (e.g. stream failure, timeout during initial warmup).
+                await EnsureBootstrapPubsubSessionsAsync();
             }
             catch (OperationCanceledException)
             {
@@ -764,9 +795,15 @@ public sealed class Libp2pNetworkService : INetworkService
         }
 
         var bootstrapPeers = SnapshotBootstrapPeers();
+        var localPeerId = _peer.Identity.PeerId.ToString();
         foreach (var (peerKey, address) in bootstrapPeers)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (peerKey.Contains($"/p2p/{localPeerId}", StringComparison.Ordinal))
+            {
+                continue;
+            }
 
             bool alreadyConnected;
             lock (_bootstrapPeersLock)
@@ -855,6 +892,11 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             _connectedBootstrapPeers.Remove(peerKey);
         }
+
+        lock (_bootstrapSessionsLock)
+        {
+            _pubsubEstablishedPeers.Remove(peerKey);
+        }
     }
 
     private void ClearConnectedBootstrapPeers()
@@ -862,6 +904,11 @@ public sealed class Libp2pNetworkService : INetworkService
         lock (_bootstrapPeersLock)
         {
             _connectedBootstrapPeers.Clear();
+        }
+
+        lock (_bootstrapSessionsLock)
+        {
+            _pubsubEstablishedPeers.Clear();
         }
     }
 
@@ -877,6 +924,14 @@ public sealed class Libp2pNetworkService : INetworkService
             || await TryDialAsync<GossipsubProtocol>("gossipsub v1.0")
             || await TryDialAsync<FloodsubProtocol>("floodsub"))
         {
+            var peerKey = session.RemoteAddress?.ToString();
+            if (peerKey is not null)
+            {
+                lock (_bootstrapSessionsLock)
+                {
+                    _pubsubEstablishedPeers.Add(peerKey);
+                }
+            }
             return;
         }
 
