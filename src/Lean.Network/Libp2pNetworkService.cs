@@ -979,19 +979,9 @@ public sealed class Libp2pNetworkService : INetworkService
         _blocksByRootPeerSelector.MarkConnected(peerKey);
         RecordPeerConnected(peerKey, ConnectionDirectionInbound);
         TrackPeerSession(session);
-        _ = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await TryProbePeerStatusAsync(session, peerKey, disconnectAfterProbe: false);
-                }
-                catch
-                {
-                    // Best-effort proactive probe; ignore task-level failures.
-                }
-            },
-            CancellationToken.None);
+        // Don't probe status here — the periodic TriggerPeerStatusProbe
+        // (fired every slot via OnTick) will pick up this peer once both
+        // sides have their protocol handlers registered.
         return Task.CompletedTask;
     }
 
