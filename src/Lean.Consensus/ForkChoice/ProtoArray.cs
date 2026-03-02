@@ -272,5 +272,10 @@ public sealed class ProtoArray
             yield return (node.Root, node.Slot, node.ParentRoot);
     }
 
+    // TODO: Replace hex-string dictionary keys with Bytes32 directly.
+    // Bytes32 implements IEquatable<Bytes32> and GetHashCode (4× int32 from positions 0,8,16,24),
+    // so it can serve as a dictionary key without the per-call hex allocation.
+    // This touches 50+ call sites across ProtoArray, ProtoArrayForkChoiceStore, ChainStateCache,
+    // ConsensusServiceV2, and tests — best done as a dedicated refactoring PR.
     public static string RootKey(Bytes32 root) => Convert.ToHexString(root.AsSpan());
 }
