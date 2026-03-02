@@ -6,6 +6,7 @@ namespace Lean.Consensus.Types;
 public readonly struct Bytes32 : IEquatable<Bytes32>
 {
     private static readonly byte[] ZeroBytes = new byte[32];
+    private static readonly Bytes32 ZeroInstance = default;
     private readonly byte[] _bytes;
 
     public Bytes32(byte[] bytes)
@@ -15,10 +16,12 @@ public readonly struct Bytes32 : IEquatable<Bytes32>
             throw new ArgumentException("Bytes32 must be exactly 32 bytes.");
         }
 
+        // TODO: Add a Wrap(byte[]) factory for callers that already own the array
+        // (e.g. HashTreeRoot() return values) to avoid the defensive copy.
         _bytes = bytes.ToArray();
     }
 
-    public static Bytes32 Zero() => new(new byte[32]);
+    public static Bytes32 Zero() => ZeroInstance;
 
     public ReadOnlySpan<byte> AsSpan() => _bytes ?? ZeroBytes;
 
