@@ -876,17 +876,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, ulong localValidatorId)
     {
-        // Every node must subscribe to all attestation subnets so it can:
-        //  1. Receive attestations from all validators for fork-choice/finalization
-        //  2. Publish its own attestation (pubsub requires topic subscription before publish)
-        var subnetCount = Math.Max(1, attestationCommitteeCount);
-        var topics = new string[subnetCount];
-        for (var i = 0; i < subnetCount; i++)
-        {
-            topics[i] = gossipTopics.AttestationSubnetTopic(i);
-        }
-
-        return topics;
+        // ethlambda/leanSpec: each validator subscribes only to its own subnet
+        // (validator_id % committee_count). Non-validators subscribe to subnet 0.
+        var committeeCount = Math.Max(1, attestationCommitteeCount);
+        var subnetId = (int)(localValidatorId % (ulong)committeeCount);
+        return [gossipTopics.AttestationSubnetTopic(subnetId)];
     }
 
     private abstract record ConsensusInboxMessage;
