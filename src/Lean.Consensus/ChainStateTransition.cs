@@ -176,9 +176,14 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
-            // Parent linkage is already enforced by forkchoice before this transition runs.
-            // Re-deriving the parent root from latestBlockHeader can reject imported branches when
-            // this simplified transition computes different intermediate state roots than peers.
+            // Verify block.parent_root matches hash_tree_root(latest_block_header) (leanSpec/ethlambda).
+            var expectedParentRoot = new Bytes32(latestBlockHeader.HashTreeRoot());
+            if (!block.ParentRoot.Equals(expectedParentRoot))
+            {
+                postState = default!;
+                reason = $"Block parent root mismatch at slot {block.Slot.Value}: block has {block.ParentRoot}, expected {expectedParentRoot}.";
+                return false;
+            }
 
             if (latestBlockHeader.Slot.Value == 0)
             {
@@ -375,14 +380,9 @@ internal sealed class ChainStateTransition
                 var obsoleteTargets = new List<string>();
                 foreach (var (key, value) in justificationsMap)
                 {
-                    if (!rootToSlot.TryGetValue(key, out var slot))
-                    {
-                        postState = default!;
-                        reason = "Justification root missing from historical root-to-slot index.";
-                        return false;
-                    }
-
-                    if (slot <= latestFinalized.Slot.Value)
+                    // leanSpec: root_to_slots.get(root, []) — missing root yields [],
+                    // any(...) is False, so the entry is pruned. Match that behavior.
+                    if (!rootToSlot.TryGetValue(key, out var slot) || slot <= latestFinalized.Slot.Value)
                     {
                         obsoleteTargets.Add(key);
                     }
