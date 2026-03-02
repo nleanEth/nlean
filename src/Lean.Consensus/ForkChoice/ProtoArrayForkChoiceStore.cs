@@ -698,6 +698,13 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
     }
 
+    // TODO: Replace full-rebuild LMD GHOST with incremental proto-array deltas (separate PR).
+    // Current approach rebuilds blocks dict + walks all attestations back to startRoot every call: O(attestations × depth).
+    // zeam's approach (forkchoice.zig): add Weight/BestChild/BestDescendant to ProtoNode,
+    // track per-validator AttestationTracker (appliedIndex + latestKnown/latestNew),
+    // computeDeltas (old index -1, new index +1) → applyDeltas propagates up parent chain
+    // and recomputes bestChild/bestDescendant with cutoff_weight filter.
+    // Both head (cutoff=0) and safe_target (cutoff=2n/3) use the same mechanism: O(nodes).
     /// <summary>
     /// LMD GHOST implementation for safe_target computation.
     /// Walks from start_root, accumulating attestation weights, filtering by min_score.
