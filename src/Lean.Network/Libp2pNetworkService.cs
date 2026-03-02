@@ -1378,7 +1378,7 @@ public sealed class Libp2pNetworkService : INetworkService
     {
         // Lean gossip topics are /ssz_snappy, so application payloads must be
         // snappy-compressed before publishing on gossipsub.
-        return Snappy.CompressToArray(payload.ToArray());
+        return Snappy.CompressToArray(payload.Span);
     }
 
     private static byte[] DecodeGossipPayload(byte[] payload)
