@@ -29,6 +29,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Checkpoint _latestFinalized;
     private Bytes32 _safeTarget;
     private ulong _validatorCount;
+    private readonly int _localValidatorSubnetId;
+    private readonly int _attestationCommitteeCount;
 
     public ProtoArrayForkChoiceStore(
         ConsensusConfig config,
@@ -38,6 +40,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         ArgumentNullException.ThrowIfNull(config);
 
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
+        _attestationCommitteeCount = Math.Max(1, config.AttestationCommitteeCount);
+        _localValidatorSubnetId = new Types.ValidatorIndex(config.LocalValidatorId).ComputeSubnetId(_attestationCommitteeCount);
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
 
         ConsensusHeadState? loaded = null;
@@ -299,12 +303,19 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             }
         }
 
-        // Proposer attestation signature enters gossip pool for future aggregation.
+        // Proposer attestation: always track the vote for head election.
         var proposerDataRootKey = ToDataRootKey(proposerAttestation.Data);
         _attestationDataByRoot[proposerDataRootKey] = proposerAttestation.Data;
-        _gossipSignatures[(proposerAttestation.ValidatorId, proposerDataRootKey)] =
-            signedBlock.Signature.ProposerSignature;
         _pendingAttestations[proposerAttestation.ValidatorId] = proposerAttestation.Data;
+
+        // Store proposer signature for future aggregation only if same subnet (leanSpec filter).
+        var proposerSubnetId = new Types.ValidatorIndex(proposerAttestation.ValidatorId)
+            .ComputeSubnetId(_attestationCommitteeCount);
+        if (proposerSubnetId == _localValidatorSubnetId)
+        {
+            _gossipSignatures[(proposerAttestation.ValidatorId, proposerDataRootKey)] =
+                signedBlock.Signature.ProposerSignature;
+        }
 
         // Promote block-body attestation votes immediately so this head computation
         // reflects them. leanSpec/ethlambda include block-body attestations in the
@@ -437,12 +448,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Called at each interval within a slot.
-    /// At interval 0 and the last interval (IntervalsPerSlot - 1), promotes pending
-    /// attestations and recomputes the head. This matches the leanSpec/ethlambda
-    /// behavior where the proposer at interval 0 needs up-to-date attestation state
-    /// before building a block.
+    /// leanSpec/ethlambda only promote attestations at interval 0 when has_proposal
+    /// is true (i.e., the node is the proposer and needs fresh head before building).
+    /// Interval 4 (end of slot) always promotes.
     /// </summary>
-    public void TickInterval(ulong slot, int intervalInSlot)
+    public void TickInterval(ulong slot, int intervalInSlot, bool hasProposal = false)
     {
         _currentSlot = slot;
 
@@ -452,12 +462,16 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             return;
         }
 
-        // Promote and recompute head at interval 0 (before block proposal) and
-        // interval 4 (end of slot). All other intervals are no-ops for the store.
-        if (intervalInSlot != 0 && intervalInSlot != IntervalsPerSlot - 1)
-            return;
-
-        AcceptNewAttestations();
+        // Interval 0: only promote when this node has a proposal (leanSpec case 0 if has_proposal).
+        // Interval 4 (IntervalsPerSlot - 1): always promote.
+        if (intervalInSlot == 0 && hasProposal)
+        {
+            AcceptNewAttestations();
+        }
+        else if (intervalInSlot == IntervalsPerSlot - 1)
+        {
+            AcceptNewAttestations();
+        }
     }
 
     private void AcceptNewAttestations()

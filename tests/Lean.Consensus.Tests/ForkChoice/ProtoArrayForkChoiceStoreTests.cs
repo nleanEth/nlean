@@ -332,8 +332,8 @@ public sealed class ProtoArrayForkChoiceStoreTests
             if (s == 5) block5Root = currentParent;
         }
 
-        // Tick to slot 5 so _currentSlot allows attestation at slot 5
-        store.TickInterval(5, 0);
+        // Tick to slot 5 (end-of-slot interval) so _currentSlot allows attestation at slot 5
+        store.TickInterval(5, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
         // Add attestations referencing block at slot 5
         var attData = new AttestationData(
@@ -353,8 +353,8 @@ public sealed class ProtoArrayForkChoiceStoreTests
         // Check gossip signatures are stored (keyed by attestation data hash root)
         Assert.That(store.HasGossipSignature(0, attDataRoot), Is.True);
 
-        // Tick past MaxAttestationAgeSlots to trigger pruning
-        store.TickInterval(70, 0);
+        // Tick past MaxAttestationAgeSlots to trigger pruning (end-of-slot interval always promotes)
+        store.TickInterval(70, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
         // Slot 5 data should be pruned (70 - 16 = 54, so anything at slot 5 or earlier is pruned)
         Assert.That(store.HasGossipSignature(0, attDataRoot), Is.False);

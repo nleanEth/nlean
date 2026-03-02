@@ -343,7 +343,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         lock (_storeLock)
         {
-            _store.TickInterval(slot, intervalInSlot);
+            // leanSpec/ethlambda: interval 0 only promotes attestations when has_proposal.
+            var hasProposal = intervalInSlot == 0 &&
+                new Types.ValidatorIndex(_config.LocalValidatorId)
+                    .IsProposerFor(slot, (int)Math.Max(1UL, _config.InitialValidatorCount));
+            _store.TickInterval(slot, intervalInSlot, hasProposal);
             RefreshSnapshot();
         }
 
