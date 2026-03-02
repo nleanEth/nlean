@@ -607,6 +607,7 @@ public sealed class Libp2pNetworkService : INetworkService
             return;
         }
 
+        var token = _bootstrapReconnectLoopCts?.Token ?? CancellationToken.None;
         _ = Task.Run(
             async () =>
             {
@@ -616,12 +617,16 @@ public sealed class Libp2pNetworkService : INetworkService
                     // Avoids tearing down working sessions — fresh dials may fail with QUIC timeouts.
                     await EnsureBootstrapPubsubSessionsAsync();
                 }
+                catch (OperationCanceledException)
+                {
+                    // Shutdown — expected.
+                }
                 catch (Exception ex)
                 {
                     _logger.LogDebug(ex, "Deferred bootstrap pubsub warmup after gossip subscription failed.");
                 }
             },
-            CancellationToken.None);
+            token);
     }
 
     private async Task EnsureBootstrapPubsubSessionsAsync()
@@ -888,6 +893,9 @@ public sealed class Libp2pNetworkService : INetworkService
                 _statusRpcRouter.NotifyPeerConnected(peerKey);
                 lock (_bootstrapSessionsLock)
                 {
+                    // Remove stale sessions for the same peer before adding.
+                    _bootstrapSessions.RemoveAll(s =>
+                        string.Equals(s.RemoteAddress?.ToString(), peerKey, StringComparison.Ordinal));
                     _bootstrapSessions.Add(session);
                 }
                 _logger.LogInformation("Reconnected to bootstrap peer {Address}", peerKey);

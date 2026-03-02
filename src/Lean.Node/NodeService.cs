@@ -88,11 +88,29 @@ public sealed class NodeService : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        await _validatorService.StopAsync(cancellationToken);
-        await _consensusService.StopAsync(cancellationToken);
-        await _networkService.StopAsync(cancellationToken);
-        await _metricsService.StopAsync(cancellationToken);
+        const int perServiceTimeoutMs = 10_000;
+        await StopServiceAsync(_validatorService.StopAsync, nameof(_validatorService), perServiceTimeoutMs);
+        await StopServiceAsync(_consensusService.StopAsync, nameof(_consensusService), perServiceTimeoutMs);
+        await StopServiceAsync(_networkService.StopAsync, nameof(_networkService), perServiceTimeoutMs);
+        await StopServiceAsync(_metricsService.StopAsync, nameof(_metricsService), perServiceTimeoutMs);
         await base.StopAsync(cancellationToken);
+    }
+
+    private async Task StopServiceAsync(Func<CancellationToken, Task> stopFunc, string name, int timeoutMs)
+    {
+        using var cts = new CancellationTokenSource(timeoutMs);
+        try
+        {
+            await stopFunc(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("{Service} stop timed out after {Timeout}ms, continuing shutdown.", name, timeoutMs);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{Service} stop failed, continuing shutdown.", name);
+        }
     }
 
     private static string ResolveNodeVersion()

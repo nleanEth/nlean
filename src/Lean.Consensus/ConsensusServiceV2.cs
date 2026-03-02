@@ -47,7 +47,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private Task? _inboxTask;
     private int _started;
     private int _statusProbeInFlight;
-    private ulong _lastPrunedFinalizedSlot;
+    private long _lastPrunedFinalizedSlot;
 
     public ConsensusServiceV2(
         ProtoArrayForkChoiceStore store,
@@ -356,9 +356,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         LeanMetrics.SetJustifiedSlot(snap.JustifiedSlot);
         LeanMetrics.SetFinalizedSlot(snap.FinalizedSlot);
 
-        if (snap.FinalizedSlot > _lastPrunedFinalizedSlot)
+        if (snap.FinalizedSlot > (ulong)Interlocked.Read(ref _lastPrunedFinalizedSlot))
         {
-            _lastPrunedFinalizedSlot = snap.FinalizedSlot;
+            Interlocked.Exchange(ref _lastPrunedFinalizedSlot, (long)snap.FinalizedSlot);
 
             // Snapshot valid keys under store lock to avoid concurrent mutation.
             HashSet<string> validKeys;
@@ -466,6 +466,18 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             Interlocked.Exchange(ref _started, 0);
             ClearRpcHandlers();
 
+            // Cancel and await any tasks that may have started before disposing CTS.
+            try { _cts?.Cancel(); } catch { /* best-effort */ }
+            _inbox.Writer.TryComplete();
+
+            try { if (_inboxTask is not null) await _inboxTask; }
+            catch { /* swallow cancellation/errors from partial startup */ }
+
+            try { if (_runTask is not null) await _runTask; }
+            catch { /* swallow cancellation/errors from partial startup */ }
+
+            _inboxTask = null;
+            _runTask = null;
             _cts?.Dispose();
             _cts = null;
             throw;

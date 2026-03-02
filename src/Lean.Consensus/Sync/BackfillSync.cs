@@ -293,11 +293,15 @@ public sealed class BackfillSync : IBackfillTrigger
             _peerManager.IncrementInflight(peerId);
             try
             {
-                var fetchTask = _network.RequestBlocksByRootAsync(peerId, batch, ct);
-                var timeoutTask = Task.Delay(PerRequestTimeoutMs);
-                var completed = await Task.WhenAny(fetchTask, timeoutTask);
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(PerRequestTimeoutMs);
 
-                if (completed == timeoutTask || !fetchTask.IsCompletedSuccessfully)
+                List<SignedBlockWithAttestation> fetched;
+                try
+                {
+                    fetched = await _network.RequestBlocksByRootAsync(peerId, batch, timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     _peerManager.OnRequestFailure(peerId);
                     _logger.LogInformation(
@@ -305,8 +309,6 @@ public sealed class BackfillSync : IBackfillTrigger
                         peerId, PerRequestTimeoutMs, attempt + 1, MaxRetries);
                     continue;
                 }
-
-                var fetched = await fetchTask;
                 if (fetched.Count > 0)
                 {
                     _peerManager.OnRequestSuccess(peerId);
