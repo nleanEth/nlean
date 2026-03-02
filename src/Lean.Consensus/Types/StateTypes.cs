@@ -34,6 +34,9 @@ public sealed record State(
 {
     private const ulong JustificationsValidatorsLimit = 1UL << 30;
 
+    // TODO: Replace LINQ .Select().ToList() with incremental Merkle caching for mainnet-scale
+    // validator counts. Current approach allocates temporary List<byte[]> per call, acceptable
+    // for devnet3 (few validators) but will become a bottleneck with thousands of validators.
     public byte[] HashTreeRoot()
     {
         var historicalRoots = HistoricalBlockHashes.Select(hash => hash.HashTreeRoot()).ToList();
