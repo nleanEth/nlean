@@ -306,12 +306,17 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             signedBlock.Signature.ProposerSignature;
         _pendingAttestations[proposerAttestation.ValidatorId] = proposerAttestation.Data;
 
+        // Promote block-body attestation votes immediately so this head computation
+        // reflects them. leanSpec/ethlambda include block-body attestations in the
+        // on_block head election; without this, nlean would lag by one tick interval.
+        var deltas = PromotePendingAttestations();
+
         // Recompute head after every block using proto-array (O(N) propagation + O(1) head).
         // IsViable is disabled (always true) so FindHead follows BestDescendant purely by
         // weight, matching leanSpec's behavior. With the >= justified update, the justified
         // root switches to the majority fork, and FindHead tracks the heaviest chain tip.
         _protoArray.ApplyScoreChanges(
-            new Dictionary<string, long>(), _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
+            deltas, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
         var newHead = _protoArray.FindHead(
             _latestJustified.Root, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
 
@@ -461,28 +466,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             "AcceptNewAttestations START: PendingCount={PendingCount}, KnownCount={KnownCount}",
             _pendingAttestations.Count, _knownAttestations.Count);
 
-        // Promote pending attestations to known
-        var deltas = new Dictionary<string, long>(StringComparer.Ordinal);
-        foreach (var (validatorId, data) in _pendingAttestations)
-        {
-            var headKey = ProtoArray.RootKey(data.Head.Root);
-            if (!_protoArray.ContainsBlock(data.Head.Root))
-                continue;
-
-            // Remove old vote if exists
-            if (_knownAttestations.TryGetValue(validatorId, out var oldData))
-            {
-                var oldKey = ProtoArray.RootKey(oldData.Head.Root);
-                if (_protoArray.ContainsBlock(oldData.Head.Root))
-                    deltas[oldKey] = deltas.GetValueOrDefault(oldKey) - 1;
-            }
-
-            // Add new vote
-            deltas[headKey] = deltas.GetValueOrDefault(headKey) + 1;
-            _knownAttestations[validatorId] = data;
-        }
-
-        _pendingAttestations.Clear();
+        var deltas = PromotePendingAttestations();
 
         // Promote aggregated payloads: new → known.
         foreach (var (key, payloads) in _newAggregatedPayloads)
@@ -523,6 +507,36 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 _latestFinalized.Slot.Value, _protoArray.NodeCount,
                 payloadBytes, _knownAggregatedPayloads.Values.Sum(v => v.Count));
         }
+    }
+
+    /// <summary>
+    /// Promotes pending per-validator attestation votes to known, computing weight deltas.
+    /// Called from both OnBlock (immediate promotion) and AcceptNewAttestations (tick-based).
+    /// </summary>
+    private Dictionary<string, long> PromotePendingAttestations()
+    {
+        var deltas = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var (validatorId, data) in _pendingAttestations)
+        {
+            var headKey = ProtoArray.RootKey(data.Head.Root);
+            if (!_protoArray.ContainsBlock(data.Head.Root))
+                continue;
+
+            // Remove old vote if exists
+            if (_knownAttestations.TryGetValue(validatorId, out var oldData))
+            {
+                var oldKey = ProtoArray.RootKey(oldData.Head.Root);
+                if (_protoArray.ContainsBlock(oldData.Head.Root))
+                    deltas[oldKey] = deltas.GetValueOrDefault(oldKey) - 1;
+            }
+
+            // Add new vote
+            deltas[headKey] = deltas.GetValueOrDefault(headKey) + 1;
+            _knownAttestations[validatorId] = data;
+        }
+
+        _pendingAttestations.Clear();
+        return deltas;
     }
 
     private void UpdateStoreCheckpoints(Checkpoint canonicalJustified, Checkpoint canonicalFinalized)

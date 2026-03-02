@@ -168,6 +168,14 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
+            // Verify the block proposer matches round-robin selection (leanSpec/ethlambda).
+            if (!block.ProposerIndex.IsProposerFor(block.Slot.Value, validators.Count))
+            {
+                postState = default!;
+                reason = $"Block proposer {block.ProposerIndex} is not the expected proposer for slot {block.Slot.Value} (expected {block.Slot.Value % (ulong)validators.Count}).";
+                return false;
+            }
+
             // Parent linkage is already enforced by forkchoice before this transition runs.
             // Re-deriving the parent root from latestBlockHeader can reject imported branches when
             // this simplified transition computes different intermediate state roots than peers.

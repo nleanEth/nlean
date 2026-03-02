@@ -37,7 +37,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 1,
                 parentRoot: Bytes32.Zero(), parentSlot: 0,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 0, proposerIndex: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
             var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
@@ -52,7 +52,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 2,
                 parentRoot: blockOneRoot, parentSlot: 1,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 1, proposerIndex: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
                 targetRoot: blockOneRoot, targetSlot: 1,
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -69,7 +69,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 3,
                 parentRoot: blockTwoRoot, parentSlot: 2,
                 sourceRoot: blockOneRoot, sourceSlot: 1,
-                proposerAttesterId: 2, proposerIndex: 2,
+                proposerAttesterId: 3, proposerIndex: 3,
                 targetRoot: blockTwoRoot, targetSlot: 2,
                 headRoot: blockTwoRoot, headSlot: 2,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -161,10 +161,10 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             Assert.That(atSlotOne, Is.True, "nodes should reach slot 1");
 
             // Phase 1: blocks 1-4, all nodes see them
-            await PublishBlockAsync(nodes[0].Service, nodes, 1, 0);
-            await PublishBlockAsync(nodes[0].Service, nodes, 2, 1);
-            await PublishBlockAsync(nodes[0].Service, nodes, 3, 2);
-            await PublishBlockAsync(nodes[0].Service, nodes, 4, 3);
+            await PublishBlockAsync(nodes[0].Service, nodes, 1, 1);
+            await PublishBlockAsync(nodes[0].Service, nodes, 2, 2);
+            await PublishBlockAsync(nodes[0].Service, nodes, 3, 3);
+            await PublishBlockAsync(nodes[0].Service, nodes, 4, 4);
 
             var firstFinalization = await WaitUntilAsync(
                 () => nodes.All(n =>
@@ -178,10 +178,10 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             await nodes[1].Service.StopAsync(CancellationToken.None);
             var activeNodes = new[] { nodes[0], nodes[2] };
 
-            await PublishBlockAsync(nodes[0].Service, activeNodes, 5, 4);
-            await PublishBlockAsync(nodes[0].Service, activeNodes, 6, 5);
-            await PublishBlockAsync(nodes[0].Service, activeNodes, 7, 6);
-            await PublishBlockAsync(nodes[0].Service, activeNodes, 8, 7);
+            await PublishBlockAsync(nodes[0].Service, activeNodes, 5, 5);
+            await PublishBlockAsync(nodes[0].Service, activeNodes, 6, 6);
+            await PublishBlockAsync(nodes[0].Service, activeNodes, 7, 7);
+            await PublishBlockAsync(nodes[0].Service, activeNodes, 8, 0);
 
             var twoNodeProgress = await WaitUntilAsync(
                 () => nodes[0].Service.HeadSlot >= 8 &&
@@ -208,9 +208,9 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
 
             // Publish blocks 9-11 to all nodes (including restarted node1)
             // Use nodes[0] as reference since it has the full chain state
-            await PublishBlockAsync(nodes[0].Service, nodes, 9, 0);
-            await PublishBlockAsync(nodes[0].Service, nodes, 10, 1);
-            await PublishBlockAsync(nodes[0].Service, nodes, 11, 2);
+            await PublishBlockAsync(nodes[0].Service, nodes, 9, 1);
+            await PublishBlockAsync(nodes[0].Service, nodes, 10, 2);
+            await PublishBlockAsync(nodes[0].Service, nodes, 11, 3);
 
             var secondFinalization = await WaitUntilAsync(
                 () => nodes.All(n =>
@@ -261,7 +261,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 1,
                 parentRoot: Bytes32.Zero(), parentSlot: 0,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 0, proposerIndex: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
             var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
@@ -276,7 +276,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 2,
                 parentRoot: blockOneRoot, parentSlot: 1,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 1, proposerIndex: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
                 targetRoot: blockOneRoot, targetSlot: 1,
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -316,7 +316,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 3,
                 parentRoot: blockTwoRoot, parentSlot: 2,
                 sourceRoot: blockOneRoot, sourceSlot: 1,
-                proposerAttesterId: 2, proposerIndex: 2,
+                proposerAttesterId: 3, proposerIndex: 3,
                 targetRoot: blockTwoRoot, targetSlot: 2,
                 headRoot: blockTwoRoot, headSlot: 2,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -367,7 +367,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 1,
                 parentRoot: Bytes32.Zero(), parentSlot: 0,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 0, proposerIndex: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
             var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
@@ -382,7 +382,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 2,
                 parentRoot: blockOneRoot, parentSlot: 1,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 1, proposerIndex: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
                 targetRoot: blockOneRoot, targetSlot: 1,
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -408,7 +408,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 3,
                 parentRoot: blockTwoRoot, parentSlot: 2,
                 sourceRoot: blockOneRoot, sourceSlot: 1,
-                proposerAttesterId: 2, proposerIndex: 2,
+                proposerAttesterId: 3, proposerIndex: 3,
                 targetRoot: blockTwoRoot, targetSlot: 2,
                 headRoot: blockTwoRoot, headSlot: 2,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -467,7 +467,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 1,
                 parentRoot: Bytes32.Zero(), parentSlot: 0,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 0, proposerIndex: 0,
+                proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
             var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
@@ -479,7 +479,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 2,
                 parentRoot: blockOneRoot, parentSlot: 1,
                 sourceRoot: Bytes32.Zero(), sourceSlot: 0,
-                proposerAttesterId: 1, proposerIndex: 1,
+                proposerAttesterId: 2, proposerIndex: 2,
                 targetRoot: blockOneRoot, targetSlot: 1,
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
@@ -509,7 +509,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 blockSlot: 3,
                 parentRoot: blockTwoRoot, parentSlot: 2,
                 sourceRoot: blockOneRoot, sourceSlot: 1,
-                proposerAttesterId: 2, proposerIndex: 2,
+                proposerAttesterId: 3, proposerIndex: 3,
                 targetRoot: blockTwoRoot, targetSlot: 2,
                 headRoot: blockTwoRoot, headSlot: 2,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
