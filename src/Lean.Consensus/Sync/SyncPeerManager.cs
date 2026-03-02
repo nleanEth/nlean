@@ -39,6 +39,7 @@ public sealed class SyncPeerManager
 
             peer.HeadSlot = headSlot;
             peer.FinalizedSlot = finalizedSlot;
+            peer.StatusReceived = true;
             if (headRoot is not null)
                 peer.HeadRoot = headRoot.Value;
         }
@@ -132,14 +133,16 @@ public sealed class SyncPeerManager
         }
     }
 
-    public ulong GetNetworkFinalizedSlot()
+    public ulong? GetNetworkFinalizedSlot()
     {
         lock (_lock)
         {
-            ulong max = 0;
+            ulong? max = null;
             foreach (var peer in _peers.Values)
             {
-                if (peer.FinalizedSlot > max)
+                if (!peer.StatusReceived)
+                    continue;
+                if (max is null || peer.FinalizedSlot > max)
                     max = peer.FinalizedSlot;
             }
 
@@ -191,5 +194,6 @@ public sealed class SyncPeerManager
         public Bytes32? HeadRoot { get; set; }
         public int RequestsInFlight { get; set; }
         public int Score { get; set; } = InitialScore;
+        public bool StatusReceived { get; set; }
     }
 }

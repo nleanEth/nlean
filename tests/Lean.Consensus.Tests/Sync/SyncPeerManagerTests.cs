@@ -40,7 +40,7 @@ public sealed class SyncPeerManagerTests
         mgr.UpdatePeerStatus("peer-1", headSlot: 100, finalizedSlot: 50);
 
         Assert.That(mgr.GetNetworkHeadSlot(), Is.EqualTo(100UL));
-        Assert.That(mgr.GetNetworkFinalizedSlot(), Is.EqualTo(50UL));
+        Assert.That(mgr.GetNetworkFinalizedSlot(), Is.EqualTo((ulong?)50UL));
     }
 
     [Test]
@@ -64,7 +64,7 @@ public sealed class SyncPeerManagerTests
         mgr.UpdatePeerStatus("peer-1", headSlot: 50, finalizedSlot: 20);
         mgr.UpdatePeerStatus("peer-2", headSlot: 100, finalizedSlot: 60);
 
-        Assert.That(mgr.GetNetworkFinalizedSlot(), Is.EqualTo(60UL));
+        Assert.That(mgr.GetNetworkFinalizedSlot(), Is.EqualTo((ulong?)60UL));
     }
 
     [Test]

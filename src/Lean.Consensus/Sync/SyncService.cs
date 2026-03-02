@@ -86,8 +86,10 @@ public sealed class SyncService : ISyncService
         // During normal operation, transient Syncing states (e.g. one-slot lag)
         // resolve via gossip without needing backfill.
         var networkFinalized = _peerManager.GetNetworkFinalizedSlot();
+        if (networkFinalized is null)
+            return;
         var localHead = _processor.HeadSlot;
-        if (localHead >= networkFinalized)
+        if (localHead >= networkFinalized.Value)
             return;
 
         var best = _peerManager.GetBestPeerHead();
@@ -128,6 +130,14 @@ public sealed class SyncService : ISyncService
         }
 
         var networkFinalized = _peerManager.GetNetworkFinalizedSlot();
+
+        // No peer has reported status yet — stay Idle until we have data.
+        if (networkFinalized is null)
+        {
+            _state = SyncState.Idle;
+            return;
+        }
+
         var localHead = _processor.HeadSlot;
 
         // Sync is complete when the local head is at or past the network's
@@ -135,7 +145,7 @@ public sealed class SyncService : ISyncService
         // backfill in the background and must NOT keep the node stuck in
         // Syncing — otherwise validator duties are suppressed and the
         // network loses quorum.
-        if (localHead >= networkFinalized)
+        if (localHead >= networkFinalized.Value)
             _state = SyncState.Synced;
         else
             _state = SyncState.Syncing;
