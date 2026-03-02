@@ -136,6 +136,13 @@ public sealed class BackfillSync : IBackfillTrigger
                     pending.Enqueue(parentRoot);
             }
 
+            // Re-enqueue any batch roots that were not returned (partial response).
+            foreach (var root in batch)
+            {
+                if (!fetchedRoots.Contains(root))
+                    pending.Enqueue(root);
+            }
+
             depth++;
 
             // Incremental processing: try to process any blocks whose parents
