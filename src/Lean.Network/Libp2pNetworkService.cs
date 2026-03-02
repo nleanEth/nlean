@@ -13,6 +13,7 @@ public sealed class Libp2pNetworkService : INetworkService
     private const int BlockRootLength = 32;
     private static readonly TimeSpan StatusProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BlocksByRootPerPeerTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan BlocksByRootBatchTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StatusProbeMinInterval = TimeSpan.FromSeconds(600);
     private static readonly TimeSpan PubsubDialTimeout = TimeSpan.FromSeconds(5);
     private const string ConnectionDirectionInbound = "inbound";
@@ -330,19 +331,7 @@ public sealed class Libp2pNetworkService : INetworkService
         }
 
         var candidateAddresses = SnapshotBlocksByRootPeerAddresses();
-
-        // Exclude self from candidates to avoid wasting a request slot on a dial to ourselves.
-        var localPeerId = ExtractPeerId(_peer.ListenAddresses.FirstOrDefault()?.ToString() ?? string.Empty);
-        if (!string.IsNullOrWhiteSpace(localPeerId))
-        {
-            var selfKeys = candidateAddresses.Keys
-                .Where(k => string.Equals(ExtractPeerId(k), localPeerId, StringComparison.Ordinal))
-                .ToList();
-            foreach (var selfKey in selfKeys)
-            {
-                candidateAddresses.Remove(selfKey);
-            }
-        }
+        ExcludeSelfFromCandidates(candidateAddresses);
 
         _logger.LogInformation(
             "blocks-by-root starting. Root={Root}, PreferredPeer={PreferredPeer}, CandidateCount={CandidateCount}",
@@ -495,27 +484,17 @@ public sealed class Libp2pNetworkService : INetworkService
         return null;
     }
 
-    public async Task<List<(byte[] Root, byte[] Payload)>> RequestBlocksByRootBatchAsync(
+    public async Task<List<byte[]>> RequestBlocksByRootBatchAsync(
         List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default)
     {
         if (_peer is null || roots.Count == 0)
-            return new List<(byte[] Root, byte[] Payload)>();
+            return new List<byte[]>();
 
         var candidateAddresses = SnapshotBlocksByRootPeerAddresses();
-
-        // Exclude self.
-        var localPeerId = ExtractPeerId(_peer.ListenAddresses.FirstOrDefault()?.ToString() ?? string.Empty);
-        if (!string.IsNullOrWhiteSpace(localPeerId))
-        {
-            var selfKeys = candidateAddresses.Keys
-                .Where(k => string.Equals(ExtractPeerId(k), localPeerId, StringComparison.Ordinal))
-                .ToList();
-            foreach (var selfKey in selfKeys)
-                candidateAddresses.Remove(selfKey);
-        }
+        ExcludeSelfFromCandidates(candidateAddresses);
 
         if (candidateAddresses.Count == 0)
-            return new List<(byte[] Root, byte[] Payload)>();
+            return new List<byte[]>();
 
         var peerKeys = BuildRequestOrder(candidateAddresses, preferredPeerKey);
 
@@ -526,7 +505,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 continue;
 
             using var batchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            batchCts.CancelAfter(TimeSpan.FromSeconds(30));
+            batchCts.CancelAfter(BlocksByRootBatchTimeout);
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             ISession? session = null;
@@ -548,12 +527,7 @@ public sealed class Libp2pNetworkService : INetworkService
                         "blocks-by-root batch hit. Peer={Peer}, Requested={Requested}, Received={Received}, Elapsed={Elapsed}",
                         peerKey, roots.Count, payloads.Length, stopwatch.Elapsed);
 
-                    // Map payloads back — the responder may skip missing roots,
-                    // so we return payloads without root association (caller decodes to find roots).
-                    var results = new List<(byte[] Root, byte[] Payload)>(payloads.Length);
-                    foreach (var payload in payloads)
-                        results.Add((Array.Empty<byte>(), payload));
-                    return results;
+                    return new List<byte[]>(payloads);
                 }
 
                 _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.EmptyResponse, stopwatch.Elapsed);
@@ -579,7 +553,7 @@ public sealed class Libp2pNetworkService : INetworkService
             }
         }
 
-        return new List<(byte[] Root, byte[] Payload)>();
+        return new List<byte[]>();
     }
 
     private ITopic GetOrCreateTopic(string topic, bool subscribe = false)
@@ -1180,6 +1154,19 @@ public sealed class Libp2pNetworkService : INetworkService
                 _blocksByRootPeerAddresses,
                 StringComparer.Ordinal);
         }
+    }
+
+    private void ExcludeSelfFromCandidates(Dictionary<string, Multiformats.Address.Multiaddress> candidateAddresses)
+    {
+        if (_peer is null) return;
+        var localPeerId = ExtractPeerId(_peer.ListenAddresses.FirstOrDefault()?.ToString() ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(localPeerId)) return;
+
+        var selfKeys = candidateAddresses.Keys
+            .Where(k => string.Equals(ExtractPeerId(k), localPeerId, StringComparison.Ordinal))
+            .ToList();
+        foreach (var selfKey in selfKeys)
+            candidateAddresses.Remove(selfKey);
     }
 
     private IReadOnlyList<string> BuildRequestOrder(

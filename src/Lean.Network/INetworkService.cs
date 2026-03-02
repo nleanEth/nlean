@@ -13,7 +13,7 @@ public interface INetworkService
     /// Fetches multiple blocks by root using a single QUIC session per peer.
     /// Avoids the per-block dial+disconnect overhead of RequestBlockByRootAsync.
     /// </summary>
-    Task<List<(byte[] Root, byte[] Payload)>> RequestBlocksByRootBatchAsync(
+    Task<List<byte[]>> RequestBlocksByRootBatchAsync(
         List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default);
     Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default);
 

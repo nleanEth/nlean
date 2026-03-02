@@ -24,7 +24,7 @@ public sealed class Libp2pNetworkRequester : INetworkRequester
         var batchResults = await _network.RequestBlocksByRootBatchAsync(rawRoots, peerId, ct);
 
         var results = new List<SignedBlockWithAttestation>();
-        foreach (var (_, payload) in batchResults)
+        foreach (var payload in batchResults)
         {
             var decodeResult = _decoder.DecodeAndValidate(payload);
             if (decodeResult.IsSuccess && decodeResult.SignedBlock is not null)

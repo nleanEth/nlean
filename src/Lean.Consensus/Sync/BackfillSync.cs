@@ -178,13 +178,14 @@ public sealed class BackfillSync : IBackfillTrigger
         var accepted = 0;
         bool madeProgress;
 
+        // Sort by slot so we process oldest first (parents before children).
+        // A single upfront sort suffices because RemoveAt preserves relative order.
+        unprocessed.Sort((a, b) =>
+            a.Block.Message.Block.Slot.Value.CompareTo(b.Block.Message.Block.Slot.Value));
+
         do
         {
             madeProgress = false;
-
-            // Sort by slot so we process oldest first (parents before children).
-            unprocessed.Sort((a, b) =>
-                a.Block.Message.Block.Slot.Value.CompareTo(b.Block.Message.Block.Slot.Value));
 
             for (var i = unprocessed.Count - 1; i >= 0; i--)
             {

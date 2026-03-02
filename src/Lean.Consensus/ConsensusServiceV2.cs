@@ -457,11 +457,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         catch
         {
             Interlocked.Exchange(ref _started, 0);
-            _blocksByRootRpcRouter?.SetHandler(null);
-            _statusRpcRouter?.SetHandler(null);
-            _statusRpcRouter?.SetPeerStatusHandler(null);
-            _statusRpcRouter?.SetPeerConnectedHandler(null);
-            _statusRpcRouter?.SetPeerDisconnectedHandler(null);
+            ClearRpcHandlers();
 
             _cts?.Dispose();
             _cts = null;
@@ -474,11 +470,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (Interlocked.Exchange(ref _started, 0) == 0)
             return;
 
-        _blocksByRootRpcRouter?.SetHandler(null);
-        _statusRpcRouter?.SetHandler(null);
-        _statusRpcRouter?.SetPeerStatusHandler(null);
-        _statusRpcRouter?.SetPeerConnectedHandler(null);
-        _statusRpcRouter?.SetPeerDisconnectedHandler(null);
+        ClearRpcHandlers();
 
         if (_cts is null)
             return;
@@ -855,9 +847,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return ValueTask.CompletedTask;
 
         var normalizedPeer = peerKey.Trim();
-        // Peer is already added via OnNetworkPeerConnected on connection;
-        // this is a no-op if already present but ensures consistency.
-        _syncService.OnPeerConnected(normalizedPeer);
         var headRoot = new Bytes32(status.HeadRoot);
         return new ValueTask(_syncService.OnPeerStatusAsync(normalizedPeer, status.HeadSlot, status.FinalizedSlot, headRoot));
     }
@@ -870,6 +859,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private void OnNetworkPeerDisconnected(string peerKey)
     {
         _syncService?.OnPeerDisconnected(peerKey);
+    }
+
+    private void ClearRpcHandlers()
+    {
+        _blocksByRootRpcRouter?.SetHandler(null);
+        _statusRpcRouter?.SetHandler(null);
+        _statusRpcRouter?.SetPeerStatusHandler(null);
+        _statusRpcRouter?.SetPeerConnectedHandler(null);
+        _statusRpcRouter?.SetPeerDisconnectedHandler(null);
     }
 
     private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, ulong localValidatorId)
