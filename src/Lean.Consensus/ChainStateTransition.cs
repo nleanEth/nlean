@@ -333,7 +333,9 @@ internal sealed class ChainStateTransition
                     votes.Votes[validatorIndex] = true;
                 }
 
-                var voteCount = votes.Votes.Count(vote => vote);
+                var voteCount = 0;
+                for (var vi = 0; vi < votes.Votes.Length; vi++)
+                    if (votes.Votes[vi]) voteCount++;
                 if (checked(3 * voteCount) < checked(2 * validators.Count))
                 {
                     continue;
