@@ -49,12 +49,16 @@ public sealed class SyncService : ISyncService
     {
         _peerManager.AddPeer(peerId);
         RecomputeState();
+        _logger.LogInformation("SyncService: peer connected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
+            peerId, _peerManager.PeerCount, _state);
     }
 
     public void OnPeerDisconnected(string peerId)
     {
         _peerManager.RemovePeer(peerId);
         RecomputeState();
+        _logger.LogInformation("SyncService: peer disconnected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
+            peerId, _peerManager.PeerCount, _state);
     }
 
     public Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot, Bytes32? headRoot = null)

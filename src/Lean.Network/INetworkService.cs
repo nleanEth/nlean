@@ -8,6 +8,13 @@ public interface INetworkService
     Task SubscribeAsync(string topic, Action<byte[]> handler, CancellationToken cancellationToken = default);
     Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default);
     Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, string preferredPeerKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fetches multiple blocks by root using a single QUIC session per peer.
+    /// Avoids the per-block dial+disconnect overhead of RequestBlockByRootAsync.
+    /// </summary>
+    Task<List<(byte[] Root, byte[] Payload)>> RequestBlocksByRootBatchAsync(
+        List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default);
     Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>

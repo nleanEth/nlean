@@ -59,7 +59,10 @@ public static class NodeApp
                 services.AddSingleton<SignedAttestationGossipDecoder>();
                 services.AddSingleton<SignedAggregatedAttestationGossipDecoder>();
                 services.AddSingleton<IForkChoiceStateTransition, ForkChoiceStateTransition>();
-                services.AddSingleton<ProtoArrayForkChoiceStore>();
+                services.AddSingleton(sp => new ProtoArrayForkChoiceStore(
+                    sp.GetRequiredService<ConsensusConfig>(),
+                    sp.GetRequiredService<IConsensusStateStore>(),
+                    sp.GetService<ILogger<ProtoArrayForkChoiceStore>>()));
                 services.AddSingleton<ITimeSource, SystemTimeSource>();
                 services.AddSingleton(sp =>
                 {

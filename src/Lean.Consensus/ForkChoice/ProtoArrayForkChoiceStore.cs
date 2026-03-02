@@ -30,26 +30,61 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Bytes32 _safeTarget;
     private ulong _validatorCount;
 
-    public ProtoArrayForkChoiceStore(ConsensusConfig config, ILogger<ProtoArrayForkChoiceStore>? logger = null)
+    public ProtoArrayForkChoiceStore(
+        ConsensusConfig config,
+        IConsensusStateStore? stateStore = null,
+        ILogger<ProtoArrayForkChoiceStore>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(config);
 
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
-
-        var chainTransition = new ChainStateTransition(config);
-        var genesisState = chainTransition.CreateGenesisState(_validatorCount);
-        var genesisRoot = new Bytes32(genesisState.LatestBlockHeader.HashTreeRoot());
-
-        var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
-        _latestJustified = genesisCheckpoint;
-        _latestFinalized = genesisCheckpoint;
-        _headRoot = genesisRoot;
-        _headSlot = 0;
-        _currentSlot = 0;
-
-        _protoArray = new ProtoArray(genesisRoot, 0, 0);
-        _safeTarget = genesisRoot;
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
+
+        ConsensusHeadState? loaded = null;
+        stateStore?.TryLoad(out loaded);
+
+        if (loaded is not null
+            && loaded.HeadRoot.Length == 32
+            && loaded.LatestFinalizedSlot > 0)
+        {
+            var headRoot = new Bytes32(loaded.HeadRoot);
+            var justifiedRoot = new Bytes32(loaded.LatestJustifiedRoot);
+            var finalizedRoot = new Bytes32(loaded.LatestFinalizedRoot);
+
+            _headRoot = headRoot;
+            _headSlot = loaded.HeadSlot;
+            _latestJustified = new Checkpoint(justifiedRoot, new Slot(loaded.LatestJustifiedSlot));
+            _latestFinalized = new Checkpoint(finalizedRoot, new Slot(loaded.LatestFinalizedSlot));
+            _safeTarget = new Bytes32(loaded.SafeTargetRoot);
+            _currentSlot = loaded.HeadSlot;
+
+            _protoArray = new ProtoArray(finalizedRoot, loaded.LatestFinalizedSlot, loaded.LatestFinalizedSlot);
+
+            if (!headRoot.Equals(finalizedRoot))
+            {
+                _protoArray.RegisterBlock(headRoot, finalizedRoot, loaded.HeadSlot,
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+            }
+
+            _logger.LogInformation(
+                "Loaded checkpoint state. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}",
+                loaded.HeadSlot, loaded.LatestFinalizedSlot, loaded.LatestJustifiedSlot);
+        }
+        else
+        {
+            var chainTransition = new ChainStateTransition(config);
+            var genesisState = chainTransition.CreateGenesisState(_validatorCount);
+            var genesisRoot = new Bytes32(genesisState.LatestBlockHeader.HashTreeRoot());
+
+            var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
+            _latestJustified = genesisCheckpoint;
+            _latestFinalized = genesisCheckpoint;
+            _headRoot = genesisRoot;
+            _headSlot = 0;
+            _currentSlot = 0;
+            _protoArray = new ProtoArray(genesisRoot, 0, 0);
+            _safeTarget = genesisRoot;
+        }
     }
 
     public Bytes32 HeadRoot => _headRoot;

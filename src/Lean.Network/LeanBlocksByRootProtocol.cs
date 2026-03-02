@@ -4,7 +4,7 @@ using Nethermind.Libp2p.Core;
 
 namespace Lean.Network;
 
-public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
+public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[][]>
 {
     private readonly IBlocksByRootRpcRouter _router;
     private readonly ILogger<LeanBlocksByRootProtocol> _logger;
@@ -17,32 +17,38 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
 
     public string Id => RpcProtocols.BlocksByRoot;
 
-    public async Task<byte[]?> DialAsync(IChannel channel, ISessionContext context, byte[] request)
+    public async Task<byte[][]> DialAsync(IChannel channel, ISessionContext context, byte[][] roots)
     {
         try
         {
-            ArgumentNullException.ThrowIfNull(request);
-            if (request.Length != LeanReqRespCodec.RootLength)
+            ArgumentNullException.ThrowIfNull(roots);
+            if (roots.Length == 0)
+                return [];
+
+            foreach (var root in roots)
             {
-                throw new ArgumentException($"block root must be {LeanReqRespCodec.RootLength} bytes.", nameof(request));
+                if (root is null || root.Length != LeanReqRespCodec.RootLength)
+                    throw new ArgumentException($"Each root must be {LeanReqRespCodec.RootLength} bytes.", nameof(roots));
             }
 
-            var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(new[] { request });
+            var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(roots);
             await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
+            await channel.WriteEofAsync(channel.CancellationToken);
 
-            var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
-            if (response is null)
+            // Read streamed response chunks until EOF.
+            // Each chunk: [response_code: 1 byte][varint: uncompressed_length][snappy_framed_payload]
+            var results = new List<byte[]>();
+            while (true)
             {
-                return null;
+                var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
+                if (response is null)
+                    break; // EOF — no more responses
+
+                if (response.Value.Code == LeanRpcResponseCodes.Success)
+                    results.Add(response.Value.Payload);
             }
 
-            if (response.Value.Code != LeanRpcResponseCodes.Success)
-            {
-                throw new InvalidOperationException(
-                    $"blocks_by_root request failed with code {response.Value.Code}: {Encoding.UTF8.GetString(response.Value.Payload)}");
-            }
-
-            return response.Value.Payload;
+            return results.ToArray();
         }
         finally
         {
@@ -87,6 +93,8 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
                     Convert.ToHexString(root),
                     payload.Length);
             }
+
+            await channel.WriteEofAsync(channel.CancellationToken);
 
             _logger.LogInformation(
                 "blocks_by_root request completed. RequestedRoots: {RequestedRoots}, ResponsesSent: {ResponsesSent}",

@@ -12,7 +12,7 @@ public sealed class BackfillSync : IBackfillTrigger
     private const int MaxRetries = 3;
     private const int BaseRetryDelayMs = 500;
     private const int PerRequestTimeoutMs = 30_000;
-    private const int ChainTimeoutMs = 120_000;
+    private const int ChainTimeoutMs = 600_000;
     private const int QueueCapacity = 32;
 
     private readonly INetworkRequester _network;
@@ -78,9 +78,16 @@ public sealed class BackfillSync : IBackfillTrigger
     {
         var pending = new Queue<Bytes32>(roots);
         var depth = 0;
-        var collected = new List<(SignedBlockWithAttestation Block, Bytes32 Root)>();
+        var unprocessed = new List<(SignedBlockWithAttestation Block, Bytes32 Root)>();
+        var fetchedRoots = new HashSet<Bytes32>();
+        var consecutiveFailures = 0;
+        const int maxConsecutiveFailures = 10;
+        var totalAccepted = 0;
+        var totalFetched = 0;
 
-        // Phase 1: Fetch blocks backwards until we reach known ancestors
+        // Fetch blocks backwards and process incrementally as parents become known.
+        // Unlike the old collect-all-then-process approach, this persists progress
+        // even if the chain timeout fires mid-sync.
         while (pending.Count > 0 && depth < _maxDepth)
         {
             ct.ThrowIfCancellationRequested();
@@ -89,7 +96,7 @@ public sealed class BackfillSync : IBackfillTrigger
             while (pending.Count > 0 && batch.Count < MaxBlocksPerRequest)
             {
                 var root = pending.Dequeue();
-                if (!_processor.IsBlockKnown(root))
+                if (!_processor.IsBlockKnown(root) && !fetchedRoots.Contains(root))
                     batch.Add(root);
             }
 
@@ -98,46 +105,109 @@ public sealed class BackfillSync : IBackfillTrigger
 
             var fetched = await FetchWithRetryAsync(batch, ct);
             if (fetched is null || fetched.Count == 0)
-                break;
+            {
+                consecutiveFailures++;
+                if (consecutiveFailures >= maxConsecutiveFailures)
+                {
+                    _logger.LogInformation(
+                        "Backfill giving up after {Failures} consecutive fetch failures. Fetched: {Fetched}, Accepted: {Accepted}",
+                        consecutiveFailures, totalFetched, totalAccepted);
+                    break;
+                }
+
+                foreach (var root in batch)
+                    pending.Enqueue(root);
+
+                await Task.Delay(BaseRetryDelayMs * (1 << Math.Min(consecutiveFailures, 4)), ct);
+                continue;
+            }
+
+            consecutiveFailures = 0;
 
             foreach (var block in fetched)
             {
                 var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
-                collected.Add((block, blockRoot));
+                unprocessed.Add((block, blockRoot));
+                fetchedRoots.Add(blockRoot);
+                totalFetched++;
 
                 var parentRoot = block.Message.Block.ParentRoot;
-                if (!_processor.IsBlockKnown(parentRoot))
+                if (!_processor.IsBlockKnown(parentRoot) && !fetchedRoots.Contains(parentRoot))
                     pending.Enqueue(parentRoot);
             }
 
             depth++;
-        }
 
-        if (collected.Count > 0)
-        {
-            _logger.LogInformation(
-                "Backfill collected {Count} blocks over {Depth} iterations. Processing in forward order.",
-                collected.Count, depth);
-        }
+            // Incremental processing: try to process any blocks whose parents
+            // are now known in the store. Sort by slot (oldest first) so chains
+            // build up from the known ancestor.
+            var accepted = TryProcessReady(unprocessed);
+            totalAccepted += accepted;
 
-        // Phase 2: Process collected blocks in forward slot order (oldest first)
-        var accepted = 0;
-        foreach (var (block, blockRoot) in collected.OrderBy(x => x.Block.Message.Block.Slot.Value))
-        {
-            var result = _processor.ProcessBlock(block);
-            if (result.Accepted)
+            if (accepted > 0)
             {
-                accepted++;
-                _onBlockAccepted?.Invoke(blockRoot);
+                _logger.LogInformation(
+                    "Backfill incremental: accepted {Accepted} blocks (total fetched: {Fetched}, total accepted: {TotalAccepted}, remaining: {Remaining})",
+                    accepted, totalFetched, totalAccepted, unprocessed.Count);
             }
         }
 
-        if (collected.Count > 0)
+        // Final pass: process any remaining blocks that became ready
+        // after the last fetch.
+        if (unprocessed.Count > 0)
+        {
+            var finalAccepted = TryProcessReady(unprocessed);
+            totalAccepted += finalAccepted;
+        }
+
+        if (totalFetched > 0)
         {
             _logger.LogInformation(
-                "Backfill processed {Accepted}/{Total} blocks successfully.",
-                accepted, collected.Count);
+                "Backfill complete: accepted {Accepted}/{Fetched} blocks over {Depth} iterations.",
+                totalAccepted, totalFetched, depth);
         }
+    }
+
+    /// <summary>
+    /// Tries to process blocks from the unprocessed list whose parents are
+    /// already known in the store. Removes accepted blocks from the list.
+    /// May loop multiple times as each accepted block can unblock its children.
+    /// </summary>
+    private int TryProcessReady(List<(SignedBlockWithAttestation Block, Bytes32 Root)> unprocessed)
+    {
+        var accepted = 0;
+        bool madeProgress;
+
+        do
+        {
+            madeProgress = false;
+
+            // Sort by slot so we process oldest first (parents before children).
+            unprocessed.Sort((a, b) =>
+                a.Block.Message.Block.Slot.Value.CompareTo(b.Block.Message.Block.Slot.Value));
+
+            for (var i = unprocessed.Count - 1; i >= 0; i--)
+            {
+                var (block, blockRoot) = unprocessed[i];
+                var parentRoot = block.Message.Block.ParentRoot;
+
+                if (!_processor.IsBlockKnown(parentRoot))
+                    continue;
+
+                var result = _processor.ProcessBlock(block);
+                if (result.Accepted)
+                {
+                    accepted++;
+                    _onBlockAccepted?.Invoke(blockRoot);
+                    madeProgress = true;
+                }
+
+                // Remove whether accepted or rejected — no point retrying.
+                unprocessed.RemoveAt(i);
+            }
+        } while (madeProgress && unprocessed.Count > 0);
+
+        return accepted;
     }
 
     /// <summary>

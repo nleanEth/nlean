@@ -27,6 +27,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly IStatusRpcRouter? _statusRpcRouter;
     private readonly IBlocksByRootRpcRouter? _blocksByRootRpcRouter;
     private readonly IBlockByRootStore _blockStore;
+    private readonly IConsensusStateStore? _stateStore;
     private readonly IGossipTopicProvider _gossipTopics;
     private readonly ILogger<ConsensusServiceV2> _logger;
     private readonly string[] _attestationSubnetTopics;
@@ -63,6 +64,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         IBlockByRootStore? blockStore = null,
         IGossipTopicProvider? gossipTopics = null,
         ChainStateCache? chainStateCache = null,
+        IConsensusStateStore? stateStore = null,
         ILogger<ConsensusServiceV2>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -80,6 +82,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _statusRpcRouter = statusRpcRouter;
         _blocksByRootRpcRouter = blocksByRootRpcRouter;
         _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
+        _stateStore = stateStore;
         _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultNetwork);
         _logger = logger ?? NullLogger<ConsensusServiceV2>.Instance;
         _chainStateTransition = new ChainStateTransition(_config);
@@ -92,8 +95,18 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _config.LocalValidatorId);
         _chainService = new ChainService(_clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
 
-        var genesisState = _chainStateTransition.CreateGenesisState(Math.Max(1UL, _config.InitialValidatorCount));
-        _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), genesisState);
+        State? initialState = null;
+        if (_stateStore is not null && _store.FinalizedSlot > 0)
+        {
+            _stateStore.TryLoad(out _, out initialState);
+        }
+
+        if (initialState is null)
+        {
+            initialState = _chainStateTransition.CreateGenesisState(Math.Max(1UL, _config.InitialValidatorCount));
+        }
+
+        _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), initialState);
         RefreshSnapshot();
     }
 
@@ -344,6 +357,35 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         {
             _lastPrunedFinalizedSlot = snap.FinalizedSlot;
             _chainStateCache.PruneExcept(_store.ProtoArray);
+
+            if (_stateStore is not null)
+            {
+                try
+                {
+                    var headState = new ConsensusHeadState(
+                        snap.HeadSlot,
+                        snap.HeadRoot.AsSpan(),
+                        snap.JustifiedSlot,
+                        snap.JustifiedRoot.AsSpan(),
+                        snap.FinalizedSlot,
+                        snap.FinalizedRoot.AsSpan(),
+                        _store.SafeTarget.AsSpan().Length == 32 ? snap.HeadSlot : 0UL,
+                        _store.SafeTarget.AsSpan());
+
+                    if (_chainStateCache.TryGet(ChainStateCache.RootKey(snap.HeadRoot), out var chainState))
+                        _stateStore.Save(headState, chainState);
+                    else
+                        _stateStore.Save(headState);
+
+                    _logger.LogInformation(
+                        "Saved checkpoint state. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}",
+                        snap.HeadSlot, snap.FinalizedSlot);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to save checkpoint state.");
+                }
+            }
         }
 
         if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
@@ -379,6 +421,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             {
                 _statusRpcRouter.SetHandler(ResolveStatusAsync);
                 _statusRpcRouter.SetPeerStatusHandler(HandlePeerStatusAsync);
+                _statusRpcRouter.SetPeerConnectedHandler(OnNetworkPeerConnected);
+                _statusRpcRouter.SetPeerDisconnectedHandler(OnNetworkPeerDisconnected);
             }
 
             if (_networkService is not null && _config.EnableGossipProcessing)
@@ -416,6 +460,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _blocksByRootRpcRouter?.SetHandler(null);
             _statusRpcRouter?.SetHandler(null);
             _statusRpcRouter?.SetPeerStatusHandler(null);
+            _statusRpcRouter?.SetPeerConnectedHandler(null);
+            _statusRpcRouter?.SetPeerDisconnectedHandler(null);
 
             _cts?.Dispose();
             _cts = null;
@@ -431,6 +477,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _blocksByRootRpcRouter?.SetHandler(null);
         _statusRpcRouter?.SetHandler(null);
         _statusRpcRouter?.SetPeerStatusHandler(null);
+        _statusRpcRouter?.SetPeerConnectedHandler(null);
+        _statusRpcRouter?.SetPeerDisconnectedHandler(null);
 
         if (_cts is null)
             return;
@@ -807,9 +855,21 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return ValueTask.CompletedTask;
 
         var normalizedPeer = peerKey.Trim();
+        // Peer is already added via OnNetworkPeerConnected on connection;
+        // this is a no-op if already present but ensures consistency.
         _syncService.OnPeerConnected(normalizedPeer);
         var headRoot = new Bytes32(status.HeadRoot);
         return new ValueTask(_syncService.OnPeerStatusAsync(normalizedPeer, status.HeadSlot, status.FinalizedSlot, headRoot));
+    }
+
+    private void OnNetworkPeerConnected(string peerKey)
+    {
+        _syncService?.OnPeerConnected(peerKey);
+    }
+
+    private void OnNetworkPeerDisconnected(string peerKey)
+    {
+        _syncService?.OnPeerDisconnected(peerKey);
     }
 
     private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, ulong localValidatorId)

@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Catchup interop test for devnet3:
-#   Phase 1: Start 3 nodes, wait for >= 2 finalizations
-#   Phase 2: Stop 1 nlean node, wait for >= 2 more finalizations with 2 nodes
-#   Phase 3: Restart the stopped node, wait for >= 2 more finalizations with 3 nodes
+# Catchup interop test for devnet3 (4-node topology):
+#   Phase 1: Start 4 nodes (2 nlean + 2 ethlambda), wait for >= 2 finalizations
+#   Phase 2: Stop 1 nlean node, wait for >= 2 more finalizations with 3 nodes
+#   Phase 3: Restart the stopped node, wait for >= 2 more finalizations with 4 nodes
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 quickstart_dir="${NLEAN_QUICKSTART_DIR:-$root_dir/vendor/lean-quickstart}"
 network_dir="local-devnet-nlean"
-network_name="${NLEAN_NETWORK_NAME:-devnet3}"
-nodes="nlean_0,nlean_1,nlean_2"
-stopped_node="nlean_2"
+network_name="${NLEAN_NETWORK_NAME:-devnet0}"
+nodes="nlean_0,nlean_1,ethlambda_0,ethlambda_1"
+stopped_node="nlean_1"
 with_metrics="true"
 nlean_setup="${NLEAN_QUICKSTART_SETUP:-docker}"
 nlean_docker_image="${NLEAN_DOCKER_IMAGE:-nlean-local:devnet3}"
+ethlambda_docker_image="${NLEAN_ETHLAMBDA_DOCKER_IMAGE:-ghcr.io/lambdaclass/ethlambda:devnet3}"
 use_sudo_shim="${NLEAN_QUICKSTART_USE_SUDO_SHIM:-true}"
 skip_docker_build="${NLEAN_SKIP_DOCKER_BUILD:-false}"
 check_timeout_seconds="${NLEAN_INTEROP_CHECK_TIMEOUT_SECONDS:-600}"
@@ -30,10 +31,10 @@ usage() {
 Usage:
   run-lean-quickstart-devnet3-catchup.sh [options]
 
-Catchup interop test:
-  Phase 1: 3 nodes finalize >= ${finalize_count} times
-  Phase 2: Stop ${stopped_node}, 2 nodes finalize >= ${finalize_count} more times
-  Phase 3: Restart ${stopped_node}, 3 nodes finalize >= ${finalize_count} more times
+Catchup interop test (4-node: 2 nlean + 2 ethlambda):
+  Phase 1: 4 nodes finalize >= ${finalize_count} times
+  Phase 2: Stop ${stopped_node}, 3 nodes finalize >= ${finalize_count} more times
+  Phase 3: Restart ${stopped_node}, 4 nodes finalize >= ${finalize_count} more times
 
 Options:
   --quickstart-dir PATH   Path to lean-quickstart checkout (default: vendor/lean-quickstart)
@@ -88,6 +89,18 @@ resolve_metrics_port() {
     "$network_genesis_dir/validator-config.yaml" 2>/dev/null | head -n 1
 }
 
+resolve_quic_port() {
+  local node_name="$1"
+  yq eval ".validators[] | select(.name == \"${node_name}\") | .enrFields.quic" \
+    "$network_genesis_dir/validator-config.yaml" 2>/dev/null | head -n 1
+}
+
+resolve_is_aggregator() {
+  local node_name="$1"
+  yq eval ".validators[] | select(.name == \"${node_name}\") | .isAggregator" \
+    "$network_genesis_dir/validator-config.yaml" 2>/dev/null | head -n 1
+}
+
 fetch_metrics_payload() {
   local node_name="$1"
   local metrics_port="$2"
@@ -119,8 +132,6 @@ extract_metric_value() {
 }
 
 # Wait for target_nodes to all have finalized_slot >= target_finalized.
-# Only checks the nodes listed in check_nodes array.
-# Returns the minimum finalized slot observed when target is met.
 wait_for_finalization() {
   local phase_name="$1"
   local target_finalized="$2"
@@ -194,7 +205,6 @@ wait_for_finalization() {
   return 1
 }
 
-# Get the current minimum finalized slot across the given nodes.
 get_min_finalized() {
   local check_nodes=("$@")
   local min_val=""
@@ -332,6 +342,54 @@ stop_node_for_mode() {
   fi
 }
 
+# Launch a single node container in detached mode.
+# Handles both nlean and ethlambda node types based on name prefix.
+launch_node_container() {
+  local node_name="$1"
+  local metrics_port quic_port is_aggregator
+
+  metrics_port=$(resolve_metrics_port "$node_name")
+  quic_port=$(resolve_quic_port "$node_name")
+  is_aggregator=$(resolve_is_aggregator "$node_name")
+
+  if [[ "$node_name" == nlean_* ]]; then
+    docker run -d --restart unless-stopped --pull=never \
+      --name "$node_name" --network host \
+      -v "$network_genesis_dir:/config" \
+      -v "$network_root/data/$node_name:/data" \
+      "$nlean_docker_image" \
+      --config /data/node-config.quickstart.json \
+      --validator-config /config/validator-config.yaml \
+      --node "$node_name" \
+      --data-dir /data \
+      --metrics true \
+      >>"$spin_log" 2>&1
+  elif [[ "$node_name" == ethlambda_* ]]; then
+    local aggregator_flag=""
+    if [[ "$is_aggregator" == "true" ]]; then
+      aggregator_flag="--is-aggregator"
+    fi
+    # shellcheck disable=SC2086
+    docker run -d --restart unless-stopped --pull=never \
+      --name "$node_name" --network host \
+      -v "$network_genesis_dir:/config" \
+      -v "$network_root/data/$node_name:/data" \
+      "$ethlambda_docker_image" \
+      --custom-network-config-dir /config \
+      --gossipsub-port "$quic_port" \
+      --node-id "$node_name" \
+      --node-key "/config/${node_name}.key" \
+      --metrics-address 0.0.0.0 \
+      --metrics-port "$metrics_port" \
+      $aggregator_flag \
+      >>"$spin_log" 2>&1
+  else
+    echo "Unknown node type for ${node_name}" >&2
+    return 1
+  fi
+  echo "Started detached container: ${node_name}"
+}
+
 # --- Build / Setup ---
 
 force_client_mode() {
@@ -377,6 +435,22 @@ prepare_validator_config \
   "$network_genesis_dir/validator-config.yaml" \
   "$nodes"
 install -m 755 "$root_dir/client-cmds/nlean-cmd.sh" "$quickstart_dir/client-cmds/nlean-cmd.sh"
+
+# Resolve the aggregator from the validator config (before spin-node.sh overwrites it).
+aggregator_node=$(yq eval '.validators[] | select(.isAggregator == true) | .name' \
+  "$network_genesis_dir/validator-config.yaml" | head -n 1)
+if [[ -z "$aggregator_node" || "$aggregator_node" == "null" ]]; then
+  echo "No aggregator node found in validator-config.yaml" >&2
+  exit 1
+fi
+echo "Aggregator node: $aggregator_node"
+
+# Safety: the aggregator must NOT be the node we plan to stop in Phase 2.
+if [[ "$aggregator_node" == "$stopped_node" ]]; then
+  echo "ERROR: aggregator ($aggregator_node) is the same as stopped_node ($stopped_node)." >&2
+  echo "Change --stopped-node or set a different aggregator in config/validator-config.quickstart.yaml" >&2
+  exit 1
+fi
 force_client_mode "$quickstart_dir/client-cmds/ream-cmd.sh" "docker"
 force_client_mode "$quickstart_dir/client-cmds/zeam-cmd.sh" "docker"
 force_client_mode "$quickstart_dir/client-cmds/ethlambda-cmd.sh" "docker"
@@ -394,17 +468,22 @@ if [[ "$nlean_setup" == "docker" ]]; then
     git_sha=$(git -C "$root_dir" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
     docker build --build-arg GIT_SHA="$git_sha" -t "$nlean_docker_image" "$root_dir"
   fi
+
+  # Ensure ethlambda image is available
+  if ! docker image inspect "$ethlambda_docker_image" >/dev/null 2>&1; then
+    echo "Pulling ethlambda image: $ethlambda_docker_image"
+    docker pull "$ethlambda_docker_image"
+  fi
 fi
 
 # --- Cleanup ---
 
 sudo_shim_dir=""
 spin_pid=""
-restart_spin_pid=""
 spin_log="$network_root/data/spin-node.log"
 
 cleanup_containers() {
-  local container_names=("nlean_0" "nlean_1" "nlean_2" "ethlambda_0" "lean-prometheus" "lean-grafana")
+  local container_names=("nlean_0" "nlean_1" "ethlambda_0" "ethlambda_1" "lean-prometheus" "lean-grafana")
   local existing_containers=""
   existing_containers=$(docker ps -a --format '{{.Names}}' || true)
   for name in "${container_names[@]}"; do
@@ -414,18 +493,21 @@ cleanup_containers() {
   done
 }
 
-cleanup() {
-  if [[ -n "$restart_spin_pid" ]] && kill -0 "$restart_spin_pid" >/dev/null 2>&1; then
-    pkill -INT -P "$restart_spin_pid" >/dev/null 2>&1 || true
-    kill -INT "$restart_spin_pid" >/dev/null 2>&1 || true
-    for _ in {1..10}; do
-      kill -0 "$restart_spin_pid" >/dev/null 2>&1 || break
-      sleep 1
-    done
-    kill -KILL "$restart_spin_pid" >/dev/null 2>&1 || true
-    wait "$restart_spin_pid" >/dev/null 2>&1 || true
-  fi
+save_container_logs() {
+  local log_dir="${NLEAN_INTEROP_LOG_DIR:-/tmp/catchup-node-logs}"
+  mkdir -p "$log_dir"
+  for name in nlean_0 nlean_1 ethlambda_0 ethlambda_1; do
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$name"; then
+      docker logs "$name" > "$log_dir/${name}.log" 2>&1 || true
+    fi
+  done
+  echo "Node logs saved to $log_dir"
+}
 
+cleanup() {
+  save_container_logs
+  # Send SIGINT to spin-node.sh which triggers its own cleanup
+  # (removes containers it started and the metrics stack).
   if [[ -n "$spin_pid" ]] && kill -0 "$spin_pid" >/dev/null 2>&1; then
     pkill -INT -P "$spin_pid" >/dev/null 2>&1 || true
     kill -INT "$spin_pid" >/dev/null 2>&1 || true
@@ -436,6 +518,7 @@ cleanup() {
     kill -KILL "$spin_pid" >/dev/null 2>&1 || true
     wait "$spin_pid" >/dev/null 2>&1 || true
   fi
+  # Also clean up any containers we launched ourselves (Phase 3 restart).
   cleanup_containers
   if [[ -n "$sudo_shim_dir" && -d "$sudo_shim_dir" ]]; then
     rm -rf "$sudo_shim_dir"
@@ -463,16 +546,16 @@ for n in "${clean_nodes[@]}"; do
   rm -rf "$network_root/data/$n/consensus" 2>/dev/null || true
 done
 
-# --- Phase 1: Start 3 nodes, wait for 2 finalizations ---
+# --- Phase 1: Start 4 nodes, wait for 2 finalizations ---
 
 echo "======================================================"
-echo "PHASE 1: Starting 3 nodes: ${nodes}"
+echo "PHASE 1: Starting 4 nodes: ${nodes}"
 echo "======================================================"
 
-# Run spin-node.sh for genesis generation only. Launch it in background,
-# wait for genesis files + node configs to appear, then kill the coordinator.
-# This avoids spin-node.sh's cleanup trap cascading and killing all containers
-# when any single container exits.
+# Run spin-node.sh for genesis generation + container start.
+# spin-node.sh waits for each container PID individually, so stopping
+# one container (Phase 2) does NOT trigger cascading cleanup — it just
+# lets the wait for that PID return while the others continue.
 (
   cd "$quickstart_dir"
   export NETWORK_DIR="$network_dir"
@@ -482,7 +565,7 @@ echo "======================================================"
   export NLEAN_NETWORK_NAME="$network_name"
   export NLEAN_QUICKSTART_NODES="$nodes"
 
-  cmd=(./spin-node.sh --node "$nodes" --generateGenesis --metrics)
+  cmd=(./spin-node.sh --node "$nodes" --aggregator "$aggregator_node" --generateGenesis --metrics)
   if [[ "$use_sudo_shim" == "true" ]]; then
     PATH="$sudo_shim_dir:$PATH" "${cmd[@]}"
   else
@@ -492,178 +575,63 @@ echo "======================================================"
 spin_pid=$!
 echo "spin-node log: $spin_log"
 
-# Wait for all node configs to be generated, then kill the coordinator
-# and start containers in detached mode ourselves.
-phase1_config_deadline=$((SECONDS + 120))
-all_configs_ready="false"
-while (( SECONDS < phase1_config_deadline )); do
-  all_ready="true"
-  IFS=',' read -ra p1_node_list <<< "$nodes"
-  for n in "${p1_node_list[@]}"; do
-    if [[ ! -f "$network_root/data/$n/node-config.quickstart.json" ]]; then
-      all_ready="false"
-      break
-    fi
-  done
-  if [[ "$all_ready" == "true" ]]; then
-    all_configs_ready="true"
-    break
-  fi
-  sleep 2
-done
-
-if [[ "$all_configs_ready" != "true" ]]; then
-  echo "Phase 1 FAILED: node configs not generated in time." >&2
-  exit 1
-fi
-
-# Kill the spin-node coordinator AND all its children so its cleanup trap
-# doesn't race with our container startup below.
-if [[ -n "$spin_pid" ]] && kill -0 "$spin_pid" >/dev/null 2>&1; then
-  pkill -KILL -P "$spin_pid" >/dev/null 2>&1 || true
-  kill -KILL "$spin_pid" >/dev/null 2>&1 || true
-  wait "$spin_pid" >/dev/null 2>&1 || true
-  spin_pid=""
-fi
-
-# Small delay to ensure any lingering child processes have fully exited.
-sleep 2
-
-# Remove any containers started by spin-node.sh
-cleanup_containers
-
-# Enable publishAggregates on ALL nodes since we bypass the coordinator's
-# aggregator assignment.
-IFS=',' read -ra p1_node_list <<< "$nodes"
-for n in "${p1_node_list[@]}"; do
-  local_cfg="$network_root/data/$n/node-config.quickstart.json"
-  if [[ -f "$local_cfg" ]] && command -v python3 >/dev/null 2>&1; then
-    python3 -c "
-import json, sys
-with open(sys.argv[1]) as f: cfg = json.load(f)
-cfg.setdefault('validator', {})['publishAggregates'] = True
-with open(sys.argv[1], 'w') as f: json.dump(cfg, f, indent=2)
-" "$local_cfg"
-  fi
-done
-
-# Launch all nodes in detached mode
-if [[ "$nlean_setup" == "docker" ]]; then
-  for n in "${p1_node_list[@]}"; do
-    docker run -d --restart unless-stopped --pull=never \
-      --name "$n" --network host \
-      -v "$network_genesis_dir:/config" \
-      -v "$network_root/data/$n:/data" \
-      "$nlean_docker_image" \
-      --config /data/node-config.quickstart.json \
-      --validator-config /config/validator-config.yaml \
-      --node "$n" \
-      --data-dir /data \
-      --metrics true \
-      >>"$spin_log" 2>&1
-    echo "Started detached container: ${n}"
-  done
-fi
-
 # Phase 1: wait for first 2 finalizations (finalized >= 2 * slots_per_epoch)
 phase1_target=$((finalize_count * slots_per_epoch))
-nlean_phase1_nodes=("nlean_0" "nlean_1" "nlean_2")
+all_nodes=("nlean_0" "nlean_1" "ethlambda_0" "ethlambda_1")
 
-if ! wait_for_finalization "Phase1-3nodes" "$phase1_target" "${nlean_phase1_nodes[@]}"; then
+if ! wait_for_finalization "Phase1-4nodes" "$phase1_target" "${all_nodes[@]}"; then
   echo "Phase 1 FAILED. Last logs:" >&2
   tail -n 40 "$spin_log" >&2 || true
   exit 1
 fi
 
-# Record the finalized baseline after phase 1
-phase1_finalized=$(get_min_finalized "${nlean_phase1_nodes[@]}")
+phase1_finalized=$(get_min_finalized "${all_nodes[@]}")
 echo "Phase 1 complete. Finalized baseline: ${phase1_finalized}"
 
-# --- Phase 2: Stop 1 node, wait for 2 more finalizations with 2 nodes ---
+# --- Phase 2: Stop 1 node, wait for 2 more finalizations with 3 nodes ---
 
 echo ""
 echo "======================================================"
 echo "PHASE 2: Stopping ${stopped_node}"
 echo "======================================================"
 
-# Containers are already running in detached mode from Phase 1.
-# Just stop/remove the target node.
 stop_node_for_mode "$stopped_node"
 
-# Build list of remaining nlean nodes
-remaining_nlean=()
-for n in "${nlean_phase1_nodes[@]}"; do
+# Build list of remaining nodes
+remaining_nodes=()
+for n in "${all_nodes[@]}"; do
   if [[ "$n" != "$stopped_node" ]]; then
-    remaining_nlean+=("$n")
+    remaining_nodes+=("$n")
   fi
 done
-echo "Remaining nodes: ${remaining_nlean[*]}"
+echo "Remaining nodes: ${remaining_nodes[*]}"
 
-# Phase 2 target: current finalized + 2 more epoch-worth of finalization
 phase2_target=$(awk "BEGIN { printf \"%d\", ${phase1_finalized} + ${finalize_count} * ${slots_per_epoch} }")
 
-if ! wait_for_finalization "Phase2-2nodes" "$phase2_target" "${remaining_nlean[@]}"; then
+if ! wait_for_finalization "Phase2-3nodes" "$phase2_target" "${remaining_nodes[@]}"; then
   echo "Phase 2 FAILED. Last logs:" >&2
   tail -n 40 "$spin_log" >&2 || true
   exit 1
 fi
 
-phase2_finalized=$(get_min_finalized "${remaining_nlean[@]}")
+phase2_finalized=$(get_min_finalized "${remaining_nodes[@]}")
 echo "Phase 2 complete. Finalized: ${phase2_finalized}"
 
-# --- Phase 3: Restart the stopped node, wait for 3 nodes to finalize 2 more times ---
+# --- Phase 3: Restart the stopped node, wait for 4 nodes to finalize 2 more times ---
 
 echo ""
 echo "======================================================"
 echo "PHASE 3: Restarting ${stopped_node}"
 echo "======================================================"
 
-# Re-launch the stopped node directly via docker run.
-# Bypass spin-node.sh to avoid: (1) re-randomizing the aggregator assignment,
-# (2) restarting the metrics stack, (3) redundant docker-pull attempts.
-# Phase 1 already generated the config at $network_root/data/$stopped_node/node-config.quickstart.json.
-# Enable publishAggregates so the node can aggregate attestations regardless
-# of the random aggregator assignment from Phase 1.
-stopped_cfg="$network_root/data/$stopped_node/node-config.quickstart.json"
-if [[ -f "$stopped_cfg" ]] && command -v python3 >/dev/null 2>&1; then
-  python3 -c "
-import json, sys
-with open(sys.argv[1]) as f: cfg = json.load(f)
-cfg.setdefault('validator', {})['publishAggregates'] = True
-with open(sys.argv[1], 'w') as f: json.dump(cfg, f, indent=2)
-" "$stopped_cfg"
-fi
-
+# For docker mode, launch the stopped node as a detached container.
+# For binary mode, stop_binary_node_processes already cleaned up; we
+# need to re-launch via spin-node.sh (unsupported for now — only docker).
 if [[ "$nlean_setup" == "docker" ]]; then
-  docker run -d --restart unless-stopped --pull=never \
-    --name "$stopped_node" --network host \
-    -v "$network_genesis_dir:/config" \
-    -v "$network_root/data/$stopped_node:/data" \
-    "$nlean_docker_image" \
-    --config /data/node-config.quickstart.json \
-    --validator-config /config/validator-config.yaml \
-    --node "$stopped_node" \
-    --data-dir /data \
-    --metrics true \
-    >>"$spin_log" 2>&1
+  launch_node_container "$stopped_node"
 else
-  (
-    set +euo pipefail
-    cd "$quickstart_dir"
-    export NETWORK_DIR="$network_dir"
-    export NLEAN_REPO="$root_dir"
-    export NLEAN_QUICKSTART_SETUP="$nlean_setup"
-    export NLEAN_DOCKER_IMAGE="$nlean_docker_image"
-    export NLEAN_NETWORK_NAME="$network_name"
-
-    cmd=(./spin-node.sh --node "$stopped_node" --metrics)
-    if [[ "$use_sudo_shim" == "true" ]]; then
-      PATH="$sudo_shim_dir:$PATH" "${cmd[@]}"
-    else
-      "${cmd[@]}"
-    fi
-  ) >>"$spin_log" 2>&1 &
-  restart_spin_pid=$!
+  echo "Phase 3 restart in binary mode is not yet supported." >&2
+  exit 1
 fi
 
 echo "Restarted ${stopped_node}. Waiting for it to catch up..."
@@ -673,23 +641,21 @@ if ! wait_for_node_metrics_online "$stopped_node" 120; then
   exit 1
 fi
 
-# Phase 3 target: current finalized + 2 more epoch-worth of finalization, check all 3 nlean nodes
-# But we need the restarted node to also reach the target, proving it caught up.
 phase3_target=$(awk "BEGIN { printf \"%d\", ${phase2_finalized} + ${finalize_count} * ${slots_per_epoch} }")
 
-if ! wait_for_finalization "Phase3-3nodes-catchup" "$phase3_target" "${nlean_phase1_nodes[@]}"; then
+if ! wait_for_finalization "Phase3-4nodes-catchup" "$phase3_target" "${all_nodes[@]}"; then
   echo "Phase 3 FAILED. Last logs:" >&2
   tail -n 40 "$spin_log" >&2 || true
   exit 1
 fi
 
-phase3_finalized=$(get_min_finalized "${nlean_phase1_nodes[@]}")
+phase3_finalized=$(get_min_finalized "${all_nodes[@]}")
 
 echo ""
 echo "======================================================"
 echo "CATCHUP INTEROP TEST PASSED"
 echo "======================================================"
-echo "Phase 1 (3 nodes):   finalized to ${phase1_finalized}"
-echo "Phase 2 (2 nodes):   finalized to ${phase2_finalized}"
-echo "Phase 3 (3 nodes):   finalized to ${phase3_finalized} (${stopped_node} caught up)"
+echo "Phase 1 (4 nodes):   finalized to ${phase1_finalized}"
+echo "Phase 2 (3 nodes):   finalized to ${phase2_finalized} (${stopped_node} stopped)"
+echo "Phase 3 (4 nodes):   finalized to ${phase3_finalized} (${stopped_node} caught up)"
 echo "======================================================"

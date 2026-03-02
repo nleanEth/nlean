@@ -1063,5 +1063,11 @@ public sealed class ValidatorServiceTests
         {
             return Task.CompletedTask;
         }
+
+        public Task<List<(byte[] Root, byte[] Payload)>> RequestBlocksByRootBatchAsync(
+            List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new List<(byte[] Root, byte[] Payload)>());
+        }
     }
 }

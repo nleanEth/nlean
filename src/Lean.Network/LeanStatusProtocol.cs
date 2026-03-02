@@ -23,6 +23,7 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
         {
             var requestPayload = LeanReqRespCodec.EncodeStatus(request);
             await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
+            await channel.WriteEofAsync(channel.CancellationToken);
 
             var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
             if (response is null)

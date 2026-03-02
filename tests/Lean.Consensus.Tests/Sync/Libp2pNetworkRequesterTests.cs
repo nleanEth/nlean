@@ -107,5 +107,19 @@ public sealed class Libp2pNetworkRequesterTests
             Task.CompletedTask;
         public Task ProbePeerStatusesAsync(CancellationToken ct = default) => Task.CompletedTask;
         public Task ConnectToPeersAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<List<(byte[] Root, byte[] Payload)>> RequestBlocksByRootBatchAsync(
+            List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var results = new List<(byte[] Root, byte[] Payload)>();
+            foreach (var root in roots)
+            {
+                var key = Convert.ToHexString(root);
+                if (_responses.TryGetValue(key, out var data))
+                    results.Add((root, data));
+            }
+            return Task.FromResult(results);
+        }
     }
 }

@@ -13,8 +13,12 @@ public sealed class BackfillSyncTests
         var (backfill, network, processor, peerMgr) = CreateBackfillSync();
         peerMgr.AddPeer("peer-1");
 
-        var parentRoot = MakeRoot(0x01);
-        var parentBlock = MakeSignedBlock(MakeRoot(0x00), slot: 1);
+        // grandparent is known (e.g. genesis)
+        var grandparentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(grandparentRoot);
+
+        var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
+        var parentRoot = ComputeRoot(parentBlock);
         network.BlocksByRoot[parentRoot] = parentBlock;
 
         await backfill.RequestParentsAsync(new List<Bytes32> { parentRoot }, CancellationToken.None);
