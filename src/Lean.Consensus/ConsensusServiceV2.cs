@@ -33,10 +33,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly string[] _attestationSubnetTopics;
     private object _storeLock => _store.SyncRoot;
 
-    private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateBounded<ConsensusInboxMessage>(
-        new BoundedChannelOptions(256)
+    private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateUnbounded<ConsensusInboxMessage>(
+        new UnboundedChannelOptions
         {
-            FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = false,
         });
