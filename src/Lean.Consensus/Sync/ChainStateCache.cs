@@ -8,6 +8,7 @@ namespace Lean.Consensus.Sync;
 /// Both <see cref="ConsensusServiceV2"/> and <see cref="ProtoArrayBlockProcessor"/>
 /// read/write through this cache so gossip-processed blocks also have
 /// chain state snapshots available for block production.
+/// Thread-safe: all operations are internally locked.
 /// </summary>
 public sealed class ChainStateCache
 {
@@ -17,35 +18,53 @@ public sealed class ChainStateCache
     /// </summary>
     public const int MaxCachedStates = 128;
 
+    private readonly object _lock = new();
     private readonly Dictionary<string, State> _states = new(StringComparer.Ordinal);
 
-    public int Count => _states.Count;
+    public int Count { get { lock (_lock) return _states.Count; } }
 
-    public bool TryGet(string key, out State state) => _states.TryGetValue(key, out state!);
+    public bool TryGet(string key, out State state)
+    {
+        lock (_lock) return _states.TryGetValue(key, out state!);
+    }
+
+    public State? Get(string key)
+    {
+        lock (_lock) return _states.GetValueOrDefault(key);
+    }
 
     public void Set(string key, State state)
     {
-        _states[key] = state;
-        EvictIfOverCapacity();
+        lock (_lock)
+        {
+            _states[key] = state;
+            EvictIfOverCapacity();
+        }
     }
 
     public void SetIfAbsent(string key, State state)
     {
-        if (_states.TryAdd(key, state))
-            EvictIfOverCapacity();
+        lock (_lock)
+        {
+            if (_states.TryAdd(key, state))
+                EvictIfOverCapacity();
+        }
     }
 
     /// <summary>
-    /// Removes all cached states except those whose roots are still in the proto-array.
-    /// Called when finalization advances to release memory from pruned blocks.
+    /// Removes all cached states except those whose roots are in the given set.
+    /// The caller should snapshot the valid keys under the store lock before calling.
     /// </summary>
-    public void PruneExcept(ProtoArray protoArray)
+    public void PruneExcept(HashSet<string> validKeys)
     {
-        var staleKeys = _states.Keys
-            .Where(key => !protoArray.ContainsKey(key))
-            .ToList();
-        foreach (var key in staleKeys)
-            _states.Remove(key);
+        lock (_lock)
+        {
+            var staleKeys = _states.Keys
+                .Where(key => !validKeys.Contains(key))
+                .ToList();
+            foreach (var key in staleKeys)
+                _states.Remove(key);
+        }
     }
 
     private void EvictIfOverCapacity()

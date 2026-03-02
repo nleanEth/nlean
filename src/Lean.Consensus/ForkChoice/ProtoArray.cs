@@ -21,6 +21,7 @@ public sealed class ProtoArray
 
     public bool ContainsBlock(Bytes32 root) => _indices.ContainsKey(RootKey(root));
     public bool ContainsKey(string rootKey) => _indices.ContainsKey(rootKey);
+    public HashSet<string> GetAllKeys() => new(_indices.Keys, StringComparer.Ordinal);
 
     public void RegisterBlock(Bytes32 root, Bytes32 parentRoot, ulong slot,
         ulong justifiedSlot, ulong finalizedSlot)

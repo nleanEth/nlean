@@ -31,7 +31,7 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
     {
         get
         {
-            lock (_store)
+            lock (_store.SyncRoot)
             {
                 return _store.HeadSlot;
             }
@@ -40,7 +40,7 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
 
     public bool IsBlockKnown(Bytes32 root)
     {
-        lock (_store)
+        lock (_store.SyncRoot)
         {
             return _store.ContainsBlock(root);
         }
@@ -74,7 +74,7 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         }
 
         ForkChoiceApplyResult result;
-        lock (_store)
+        lock (_store.SyncRoot)
         {
             result = _store.OnBlock(
                 signedBlock,

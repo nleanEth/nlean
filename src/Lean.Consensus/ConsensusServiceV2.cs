@@ -360,7 +360,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (snap.FinalizedSlot > _lastPrunedFinalizedSlot)
         {
             _lastPrunedFinalizedSlot = snap.FinalizedSlot;
-            _chainStateCache.PruneExcept(_store.ProtoArray);
+
+            // Snapshot valid keys under store lock to avoid concurrent mutation.
+            HashSet<string> validKeys;
+            lock (_storeLock) { validKeys = _store.ProtoArray.GetAllKeys(); }
+            _chainStateCache.PruneExcept(validKeys);
 
             if (_stateStore is not null)
             {
