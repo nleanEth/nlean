@@ -14,7 +14,7 @@ public sealed class SyncService : ISyncService
     private readonly BackfillSync _backfillSync;
     private readonly ILogger<SyncService> _logger;
 
-    private SyncState _state = SyncState.Idle;
+    private volatile SyncState _state = SyncState.Idle;
 
     public SyncService(
         IBlockProcessor processor,

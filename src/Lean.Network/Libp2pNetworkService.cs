@@ -52,6 +52,7 @@ public sealed class Libp2pNetworkService : INetworkService
     private Connected? _onConnectedHandler;
     private int _bootstrapReconnectTriggeredAfterSubscribe;
     private CancellationTokenSource? _bootstrapReconnectLoopCts;
+    private Task? _bootstrapReconnectLoopTask;
 
     public Libp2pNetworkService(
         ILogger<Libp2pNetworkService> logger,
@@ -142,7 +143,7 @@ public sealed class Libp2pNetworkService : INetworkService
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        StopBootstrapReconnectLoop();
+        await StopBootstrapReconnectLoopAsync();
         await DisconnectBootstrapSessionsAsync();
         Interlocked.Exchange(ref _bootstrapReconnectTriggeredAfterSubscribe, 0);
 
@@ -776,25 +777,28 @@ public sealed class Libp2pNetworkService : INetworkService
 
         _bootstrapReconnectLoopCts = new CancellationTokenSource();
         var token = _bootstrapReconnectLoopCts.Token;
-        _ = Task.Factory.StartNew(
+        _bootstrapReconnectLoopTask = Task.Factory.StartNew(
             () => BootstrapReconnectLoopAsync(token),
             token,
             TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
+            TaskScheduler.Default).Unwrap();
     }
 
-    private void StopBootstrapReconnectLoop()
+    private async Task StopBootstrapReconnectLoopAsync()
     {
         try
         {
             _bootstrapReconnectLoopCts?.Cancel();
+            if (_bootstrapReconnectLoopTask is not null)
+                await _bootstrapReconnectLoopTask.ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException)
         {
-            // Ignore cancellation errors.
+            // Expected on shutdown.
         }
         finally
         {
+            _bootstrapReconnectLoopTask = null;
             _bootstrapReconnectLoopCts?.Dispose();
             _bootstrapReconnectLoopCts = null;
         }
