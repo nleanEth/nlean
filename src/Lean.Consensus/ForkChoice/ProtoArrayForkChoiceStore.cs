@@ -167,13 +167,18 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
-        // Aggregated gossip payloads are stored for block building but do NOT
-        // update per-validator latestNew trackers.  Zeam only updates latestNew
-        // from *individual* gossip attestations (onAttestationUnlocked with
-        // is_from_block=false).  Keeping aggregated attestations out of latestNew
-        // ensures that updateSafeTarget (which reads latestNew only) depends on
-        // real gossip propagation timing, producing a safe_target that lags head
-        // when not all validators' individual attestations have arrived yet.
+        // Match zeam onGossipAggregatedAttestationUnlocked: unpack each participant
+        // and update their latestNew tracker (is_from_block=false).
+        // This is the primary path by which non-aggregator nodes get N votes into
+        // latestNew so that updateSafeTarget can advance the safe target.
+        var headIndex = _protoArray.GetIndex(signed.Data.Head.Root);
+        if (headIndex.HasValue)
+        {
+            foreach (var vid in participantIds)
+            {
+                UpdateTrackerFromGossip(vid, headIndex.Value, signed.Data.Slot.Value, signed.Data);
+            }
+        }
 
         reason = string.Empty;
         return true;
@@ -389,12 +394,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _attestationDataByRoot[dataRootKey] = attestation.Message;
 
         // Match zeam onAttestationUnlocked with is_from_block=false:
-        // Aggregators subscribe to individual attestation subnets and receive all
-        // validators' gossip, so they update latestNew for every received validator
-        // (matching zeam/ethlambda behavior, storeSignature == IsAggregator).
-        // Non-aggregators only receive their own gossip attestation, so only their
-        // local validator's latestNew is updated.
-        if (storeSignature || attestation.ValidatorId == _localValidatorId)
+        // Only the local validator's own individual gossip updates latestNew here.
+        // Other validators' votes reach latestNew via TryOnGossipAggregatedAttestation
+        // (aggregated proof unpacking), matching zeam's onGossipAggregatedAttestationUnlocked.
+        if (attestation.ValidatorId == _localValidatorId)
         {
             var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
             if (headIndex.HasValue)
