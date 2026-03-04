@@ -913,16 +913,6 @@ public sealed class ValidatorService : IValidatorService
                 cancellationToken);
         }
 
-        var subnetCount = Math.Max(1, _consensusConfig.AttestationCommitteeCount);
-        for (var subnetId = 0; subnetId < subnetCount; subnetId++)
-        {
-            var subnetTopic = _gossipTopics.AttestationSubnetTopic(subnetId);
-            if (!string.IsNullOrWhiteSpace(subnetTopic))
-            {
-                await _networkService.SubscribeAsync(subnetTopic, _ => { }, cancellationToken);
-            }
-        }
-
         if (!string.IsNullOrWhiteSpace(_gossipTopics.AggregateTopic))
         {
             await _networkService.SubscribeAsync(_gossipTopics.AggregateTopic, _ => { }, cancellationToken);
