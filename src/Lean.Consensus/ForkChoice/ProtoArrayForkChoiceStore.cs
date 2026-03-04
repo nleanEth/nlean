@@ -513,7 +513,31 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             "AcceptNewAttestations START: TrackerCount={TrackerCount}",
             _attestationTrackers.Count);
 
-        // Step 1: Migrate aggregated payloads new → known.
+        // Step 1: Unpack received aggregated payloads into per-validator latestNew.
+        // Matches zeam acceptNewAttestationsUnlocked: gossip aggregated proofs (stored in
+        // _newAggregatedPayloads when received) are mapped back to individual validator
+        // attestations here — NOT at gossip receive time — so that UpdateSafeTarget at
+        // interval 3 sees only the local validator's own gossip vote (1 vote).
+        foreach (var (dataRootKey, proofs) in _newAggregatedPayloads)
+        {
+            if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
+                continue;
+
+            var headIndex = _protoArray.GetIndex(data.Head.Root);
+            if (!headIndex.HasValue)
+                continue;
+
+            foreach (var proof in proofs)
+            {
+                if (!proof.Participants.TryToValidatorIndices(out var pids))
+                    continue;
+
+                foreach (var pid in pids)
+                    UpdateTrackerFromGossip(pid, headIndex.Value, data.Slot.Value, data);
+            }
+        }
+
+        // Step 2: Migrate aggregated payloads new → known (for block building).
         foreach (var (key, payloads) in _newAggregatedPayloads)
         {
             if (!_knownAggregatedPayloads.TryGetValue(key, out var knownList))
@@ -525,7 +549,9 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         _newAggregatedPayloads.Clear();
 
-        // Step 2: Promote latestNew → latestKnown for all validators.
+        // Step 3: Promote latestNew → latestKnown for all validators.
+        // This covers both the local validator's own gossip (set at interval 1) and
+        // aggregated proof participants (just unpacked in Step 1).
         // Match zeam semantics: only promote when latestNew is fresher than latestKnown,
         // and always clear latestNew after acceptance.
         var keys = new List<ulong>(_attestationTrackers.Keys);
@@ -548,7 +574,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _attestationTrackers[vid] = tracker;
         }
 
-        // Step 3: Compute head with full delta rebuild.
+        // Step 4: Compute head with full delta rebuild.
         var head = ComputeForkChoiceHead(VoteSource.Known, cutoffWeight: 0);
         _headRoot = head.Root;
         _headSlot = head.Slot;
