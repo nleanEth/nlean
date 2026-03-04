@@ -225,8 +225,13 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void TickInterval_At3_UpdatesSafeTarget()
+    public void TickInterval_At3_SafeTargetStaysAtGenesisWhenOnlyNonLocalGossip()
     {
+        // LocalValidatorId=0 (default). With 4 validators cutoffWeight=3.
+        // Individual gossip from validators 1,2,3 should NOT update latestNew —
+        // only the local validator's (0) gossip updates latestNew for safeTarget.
+        // Even with 4 attestations received, safeTarget stays at genesis because
+        // latestNew has only 0 or 1 vote (own validator) < cutoffWeight=3.
         var store = CreateStore(validatorCount: 4);
         var genesisRoot = store.HeadRoot;
 
@@ -241,27 +246,100 @@ public sealed class ProtoArrayForkChoiceStoreTests
         ApplyBlock(store, signed2, 4);
         var block2Root = new Bytes32(block2.HashTreeRoot());
 
-        // Advance current slot so attestations at slot 2 are accepted
-        store.TickInterval(1, 0);
-        store.TickInterval(1, IntervalsPerSlot - 1);
-        store.TickInterval(2, 0);
+        // Advance _currentSlot so attestation validation passes (slot <= currentSlot + 1).
+        store.TickInterval(3, 0);
 
-        // All 4 validators attest to block2
-        for (ulong v = 0; v < 4; v++)
+        var attData = new AttestationData(
+            new Slot(2),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(block2Root, new Slot(2)));
+
+        // Send gossip from validators 1, 2, 3 only (non-local). These are aggregated for
+        // signature collection but must NOT update latestNew for the fork choice safeTarget.
+        for (ulong v = 1; v < 4; v++)
         {
-            var att = CreateAttestation(validatorId: v, slot: 2, headRoot: block2Root);
-            Assert.That(store.TryOnAttestation(att, out var reason), Is.True, reason);
+            var att = new SignedAttestation(v, attData, XmssSignature.Empty());
+            Assert.That(store.TryOnAttestation(att, storeSignature: true, out _), Is.True);
         }
 
-        // Promote attestations at end of slot 2
-        store.TickInterval(2, IntervalsPerSlot - 1);
-
-        // Interval 3 of next slot updates safe_target
+        // Interval 3 calls UpdateSafeTarget. cutoffWeight=3, only 0 local votes → stays.
         store.TickInterval(3, 3);
 
-        // With 4/4 validators voting (100% > 67%), safe_target should advance beyond genesis
+        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.True,
+            "Safe target must not advance from non-local validators' gossip (aggregation only path)");
+    }
+
+    [Test]
+    public void TickInterval_At3_UpdatesSafeTargetWhenLocalValidatorGossips()
+    {
+        // Single-validator setup: localValidatorId=0, validatorCount=1 → cutoffWeight=1.
+        // The local validator's own gossip attestation DOES update latestNew,
+        // and 1 vote == cutoffWeight=1 → safeTarget should advance.
+        var store = CreateStore(validatorCount: 1);
+        var genesisRoot = store.HeadRoot;
+
+        // Build a chain: genesis -> block1 -> block2
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        ApplyBlock(store, WrapBlock(block1), 1);
+        var block1Root = new Bytes32(block1.HashTreeRoot());
+
+        var block2 = CreateBlock(slot: 2, parentRoot: block1Root, proposerIndex: 0);
+        ApplyBlock(store, WrapBlock(block2), 1);
+        var block2Root = new Bytes32(block2.HashTreeRoot());
+
+        // Advance _currentSlot so attestation validation passes.
+        store.TickInterval(3, 0);
+
+        // Local validator (id=0) gossips an attestation for block2.
+        var attData = new AttestationData(
+            new Slot(2),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(block2Root, new Slot(2)));
+        var att = new SignedAttestation(0, attData, XmssSignature.Empty());
+        Assert.That(store.TryOnAttestation(att, storeSignature: true, out _), Is.True);
+
+        // Interval 3 calls UpdateSafeTarget. cutoffWeight=1, 1 local vote → advances.
+        store.TickInterval(3, 3);
+
         Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,
-            "Safe target should advance beyond genesis with 4/4 validator votes");
+            "Safe target should advance when local validator gossips and cutoffWeight is met");
+    }
+
+    [Test]
+    public void TickInterval_At3_SafeTargetStaysAtGenesisWithOnlyKnownVotes()
+    {
+        var store = CreateStore(validatorCount: 4);
+        var genesisRoot = store.HeadRoot;
+
+        // Build genesis -> block1.
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        Assert.That(ApplyBlock(store, WrapBlock(block1), 4).Accepted, Is.True);
+        var block1Root = new Bytes32(block1.HashTreeRoot());
+
+        // Build block2 with on-block attestation votes from validators [0,1,2].
+        // Votes go into LatestKnown (is_from_block=true), NOT latestNew.
+        var attData = new AttestationData(
+            new Slot(1),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(genesisRoot, new Slot(0)));
+        var signed2 = CreateBlockWithAttestations(
+            slot: 2,
+            parentRoot: block1Root,
+            proposerIndex: 1,
+            attestationData: attData,
+            participantIds: new ulong[] { 0, 1, 2 });
+        Assert.That(ApplyBlock(store, signed2, 4).Accepted, Is.True);
+
+        // No individual gossip attestations → latestNew is empty.
+        // UpdateSafeTarget uses VoteSource.New (latestNew only, matching zeam from_known=false).
+        // With no latestNew votes, cutoff not met → safe_target remains at justified (genesis).
+        store.TickInterval(3, 3);
+
+        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.True,
+            "Safe target should remain at genesis when only latestKnown votes exist (no latestNew).");
     }
 
     [Test]
@@ -270,10 +348,10 @@ public sealed class ProtoArrayForkChoiceStoreTests
         var store = CreateStore(validatorCount: 4);
         var genesisRoot = store.HeadRoot;
 
-        // Build a chain: genesis -> s1 -> s2 -> s3 -> s4 -> s5
+        // Build a chain: genesis -> s1 -> s2
         var currentParent = genesisRoot;
         var blockRoots = new List<Bytes32> { genesisRoot };
-        for (ulong slot = 1; slot <= 5; slot++)
+        for (ulong slot = 1; slot <= 2; slot++)
         {
             var block = CreateBlock(slot: slot, parentRoot: currentParent, proposerIndex: slot % 4);
             var signed = WrapBlock(block);
@@ -282,34 +360,39 @@ public sealed class ProtoArrayForkChoiceStoreTests
             blockRoots.Add(currentParent);
         }
 
-        // Advance slot to allow attestations
-        store.TickInterval(1, 0);
-        store.TickInterval(1, IntervalsPerSlot - 1);
-        store.TickInterval(2, 0);
+        // Block at slot 3 for chain structure.
+        var block3 = CreateBlock(slot: 3, parentRoot: blockRoots[2], proposerIndex: 3);
+        var signed3 = WrapBlock(block3);
+        ApplyBlock(store, signed3, 4);
+        blockRoots.Add(new Bytes32(block3.HashTreeRoot()));
 
-        // All 4 validators attest to block at slot 2
-        for (ulong v = 0; v < 4; v++)
+        // Continue chain: s4 -> s5
+        currentParent = blockRoots[3];
+        for (ulong slot = 4; slot <= 5; slot++)
         {
-            var att = CreateAttestation(validatorId: v, slot: 2, headRoot: blockRoots[2]);
-            Assert.That(store.TryOnAttestation(att, out var reason), Is.True, reason);
+            var block = CreateBlock(slot: slot, parentRoot: currentParent, proposerIndex: slot % 4);
+            var signed = WrapBlock(block);
+            ApplyBlock(store, signed, 4);
+            currentParent = new Bytes32(block.HashTreeRoot());
+            blockRoots.Add(currentParent);
         }
 
-        // Promote attestations
-        store.TickInterval(2, IntervalsPerSlot - 1);
+        // Simulate aggregated attestations arriving via gossip: all 4 validators
+        // attest to block2, anchoring safe_target at slot 2.
+        var attData = new AttestationData(
+            new Slot(2),
+            new Checkpoint(blockRoots[2], new Slot(2)),
+            new Checkpoint(blockRoots[2], new Slot(2)),
+            new Checkpoint(blockRoots[2], new Slot(2)));
+        var participants = AggregationBits.FromValidatorIndices(new ulong[] { 0, 1, 2, 3 });
+        var proof = new AggregatedSignatureProof(participants, new byte[32]);
+        store.OnGossipAggregatedAttestation(new SignedAggregatedAttestation(attData, proof));
 
-        // Continue to slot 5 and promote head
-        store.TickInterval(3, 0);
-        store.TickInterval(3, IntervalsPerSlot - 1);
-        store.TickInterval(4, 0);
-        store.TickInterval(4, IntervalsPerSlot - 1);
-        store.TickInterval(5, 0);
-
-        // Update safe target at interval 3 — safe_target should be around slot 2
+        // Interval 3 calls UpdateSafeTarget (zeam gr/devnet3 mapping).
         store.TickInterval(5, 3);
 
-        // The target should be walked back from head toward safe_target
+        // The target should be walked back from head toward safe_target (slot 2)
         var target = store.ComputeTargetCheckpoint();
-        // Target should be valid
         Assert.That(target.Slot.Value, Is.LessThanOrEqualTo(5UL));
         Assert.That(target.Slot.Value, Is.GreaterThanOrEqualTo(0UL));
     }
@@ -332,7 +415,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
             if (s == 5) block5Root = currentParent;
         }
 
-        // Tick to slot 5 (end-of-slot interval) so _currentSlot allows attestation at slot 5
+        // Tick to slot 5 end-of-slot (interval 4 = AcceptNewAttestations) so _currentSlot allows attestation at slot 5
         store.TickInterval(5, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
         // Add attestations referencing block at slot 5
@@ -353,7 +436,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
         // Check gossip signatures are stored (keyed by attestation data hash root)
         Assert.That(store.HasGossipSignature(0, attDataRoot), Is.True);
 
-        // Tick past MaxAttestationAgeSlots to trigger pruning (end-of-slot interval always promotes)
+        // Tick past MaxAttestationAgeSlots to trigger pruning (interval 4 = AcceptNewAttestations)
         store.TickInterval(70, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
         // Slot 5 data should be pruned (70 - 16 = 54, so anything at slot 5 or earlier is pruned)
@@ -392,6 +475,31 @@ public sealed class ProtoArrayForkChoiceStoreTests
         var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), emptyXmssSig);
+        return new SignedBlockWithAttestation(blockWithAttestation, signature);
+    }
+
+    /// <summary>
+    /// Creates a signed block whose body contains an aggregated attestation from the given
+    /// participants. Per leanSpec, fork-choice votes are only updated through on_block
+    /// (block-body attestations), not from gossip.
+    /// </summary>
+    private static SignedBlockWithAttestation CreateBlockWithAttestations(
+        ulong slot, Bytes32 parentRoot, ulong proposerIndex,
+        AttestationData attestationData, ulong[] participantIds)
+    {
+        var bits = AggregationBits.FromValidatorIndices(participantIds);
+        var aggregatedAtt = new AggregatedAttestation(bits, attestationData);
+        var body = new BlockBody(new[] { aggregatedAtt });
+        var block = new Block(new Slot(slot), proposerIndex, parentRoot, Bytes32.Zero(), body);
+
+        var proposerAttestation = new Attestation(proposerIndex, new AttestationData(
+            new Slot(slot), Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
+        var blockWithAttestation = new BlockWithAttestation(block, proposerAttestation);
+
+        var proof = new AggregatedSignatureProof(bits, new byte[32]);
+        var emptyXmssSig = XmssSignature.Empty();
+        var signature = new BlockSignatures(new[] { proof }, emptyXmssSig);
+
         return new SignedBlockWithAttestation(blockWithAttestation, signature);
     }
 

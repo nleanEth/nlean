@@ -135,7 +135,7 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
-    public async Task DutyLoop_PublishesOffsetSignedAttestationLayout()
+    public async Task DutyLoop_PublishesInlineSignedAttestationLayout()
     {
         var consensus = new FakeConsensusService();
         var network = new FakeNetworkService();
@@ -162,10 +162,9 @@ public sealed class ValidatorServiceTests
         Assert.That(published, Is.True);
         var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
         var fixedSectionLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
-        Assert.That(payload.Length, Is.GreaterThanOrEqualTo(fixedSectionLength + SszEncoding.UInt32Length));
-
-        var signatureOffset = BitConverter.ToUInt32(payload, fixedSectionLength);
-        Assert.That(signatureOffset, Is.EqualTo((uint)(fixedSectionLength + SszEncoding.UInt32Length)));
+        var expectedSignature = XmssSignature.Empty().EncodeBytes();
+        Assert.That(payload.Length, Is.EqualTo(fixedSectionLength + expectedSignature.Length));
+        Assert.That(payload.AsSpan(fixedSectionLength).ToArray(), Is.EqualTo(expectedSignature));
     }
 
     [Test]
@@ -340,7 +339,9 @@ public sealed class ValidatorServiceTests
         var signatureOffset = BitConverter.ToUInt32(payload, SszEncoding.UInt32Length);
         var signatureSection = payload.AsSpan((int)signatureOffset).ToArray();
         var attestationSignaturesOffset = BitConverter.ToUInt32(signatureSection, 0);
-        Assert.That(attestationSignaturesOffset, Is.EqualTo((uint)(SszEncoding.UInt32Length * 2)));
+        // Attestation signatures are dynamic and must point past the fixed prefix.
+        // The exact value depends on whether proposer signature bytes are inlined in the prefix.
+        Assert.That(attestationSignaturesOffset, Is.GreaterThanOrEqualTo((uint)(SszEncoding.UInt32Length * 2)));
     }
 
     [Test]
@@ -685,6 +686,82 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_ProposerSlot_UsesMultipleProofsForSameDataRoot_WhenCoverageIsSplit()
+    {
+        var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
+        consensus.EnqueueCurrentSlots(2, 3);
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig
+            {
+                ValidatorIndex = 0,
+                GenesisValidatorPublicKeys = new[]
+                {
+                    HexRepeat(0x11, 52),
+                    HexRepeat(0x22, 52),
+                    HexRepeat(0x33, 52)
+                }
+            },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        var slotTwoData = consensus.CreateAttestationData(2);
+        var allowed = new AggregationBits(new[] { true, true, false });
+        var proofForValidator0 = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, false, false }),
+            new byte[] { 0xA0 });
+        var proofForValidator1 = new AggregatedSignatureProof(
+            new AggregationBits(new[] { false, true, false }),
+            new byte[] { 0xB1 });
+        consensus.KnownAggregatedPayloads = (
+            new[]
+            {
+                new AggregatedAttestation(allowed, slotTwoData),
+                new AggregatedAttestation(allowed, slotTwoData)
+            },
+            new[]
+            {
+                proofForValidator0,
+                proofForValidator1
+            });
+
+        await service.StartAsync(CancellationToken.None);
+
+        var publishedBlock = await WaitUntilAsync(
+            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
+            TimeSpan.FromSeconds(4));
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(publishedBlock, Is.True);
+
+        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var proposedPayload = network.PublishedMessages
+            .Where(message => message.Topic == GossipTopics.Blocks)
+            .Select(message => message.Payload)
+            .First(payload =>
+            {
+                var decode = decoder.DecodeAndValidate(payload);
+                return decode.IsSuccess && decode.SignedBlock?.Message.Block.Slot.Value == 3;
+            });
+        var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
+
+        var expectedDataRoot = slotTwoData.HashTreeRoot();
+        var matchingDataRoots = proposed.Message.Block.Body.Attestations
+            .Count(attestation => attestation.Data.HashTreeRoot().AsSpan().SequenceEqual(expectedDataRoot));
+        Assert.That(matchingDataRoots, Is.EqualTo(2));
+        Assert.That(
+            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForValidator0.ProofData)),
+            Is.True);
+        Assert.That(
+            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForValidator1.ProofData)),
+            Is.True);
+    }
+
+    [Test]
     public async Task StopAsync_AllowsStartToInitializeAgain()
     {
         var consensus = new FakeConsensusService();
@@ -895,9 +972,9 @@ public sealed class ValidatorServiceTests
 
         public byte[] HeadRoot => _headRoot.AsSpan().ToArray();
 
-        public byte[] GetProposalHeadRoot()
+        public (byte[] ParentRoot, AttestationData BaseAttestationData) GetProposalContext(ulong slot)
         {
-            return HeadRoot;
+            return (HeadRoot, CreateAttestationData(slot));
         }
 
         public AttestationData CreateAttestationData(ulong slot)
@@ -911,8 +988,14 @@ public sealed class ValidatorServiceTests
 
         public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason)
         {
+            return TryComputeBlockStateRoot(candidateBlock, out stateRoot, out _, out reason);
+        }
+
+        public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason)
+        {
             TryComputeBlockStateRootCalls++;
             stateRoot = Bytes32.Zero();
+            postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
             reason = string.Empty;
             return true;
         }

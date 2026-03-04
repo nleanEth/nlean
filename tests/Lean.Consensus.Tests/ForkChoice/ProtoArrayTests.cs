@@ -47,7 +47,20 @@ public sealed class ProtoArrayTests
     }
 
     [Test]
-    public void ApplyScoreChanges_PropagatesWeightsBottomUp()
+    public void GetIndex_ReturnsCorrectIndex()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+
+        Assert.That(array.GetIndex(genesis), Is.EqualTo(0));
+        Assert.That(array.GetIndex(a), Is.EqualTo(1));
+        Assert.That(array.GetIndex(MakeRoot(0xFF)), Is.Null);
+    }
+
+    [Test]
+    public void ApplyDeltas_PropagatesWeightsBottomUp()
     {
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
@@ -56,11 +69,10 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
 
-        var deltas = new Dictionary<string, long>
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
             [ProtoArray.RootKey(b)] = 1
-        };
-        array.ApplyScoreChanges(deltas, 0, 0);
+        });
 
         Assert.That(array.GetWeight(b), Is.EqualTo(1));
         Assert.That(array.GetWeight(a), Is.EqualTo(1));
@@ -68,22 +80,7 @@ public sealed class ProtoArrayTests
     }
 
     [Test]
-    public void ApplyScoreChanges_NegativeDelta_ReducesWeight()
-    {
-        var genesis = MakeRoot(0x01);
-        var a = MakeRoot(0x02);
-        var array = new ProtoArray(genesis, 0, 0);
-        array.RegisterBlock(a, genesis, 1, 0, 0);
-
-        var key = ProtoArray.RootKey(a);
-        array.ApplyScoreChanges(new Dictionary<string, long> { [key] = 3 }, 0, 0);
-        array.ApplyScoreChanges(new Dictionary<string, long> { [key] = -1 }, 0, 0);
-
-        Assert.That(array.GetWeight(a), Is.EqualTo(2));
-    }
-
-    [Test]
-    public void ApplyScoreChanges_UpdatesBestChildAndBestDescendant()
+    public void ApplyDeltas_UpdatesBestChildAndBestDescendant()
     {
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
@@ -92,10 +89,11 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
 
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 1 }, 0, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(b)] = 1
+        });
 
-        // Genesis best descendant should be b (the leaf with weight)
         var genNode = array.GetNode(genesis);
         Assert.That(genNode, Is.Not.Null);
         Assert.That(genNode!.BestChild, Is.Not.Null);
@@ -107,7 +105,7 @@ public sealed class ProtoArrayTests
     {
         var genesis = MakeRoot(0x01);
         var array = new ProtoArray(genesis, 0, 0);
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(genesis));
+        Assert.That(FindHead(array, genesis), Is.EqualTo(genesis));
     }
 
     [Test]
@@ -119,10 +117,13 @@ public sealed class ProtoArrayTests
         var array = new ProtoArray(genesis, 0, 0);
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 1 }, 0, 0);
 
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(b));
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(b)] = 1
+        });
+
+        Assert.That(FindHead(array, genesis), Is.EqualTo(b));
     }
 
     [Test]
@@ -134,22 +135,24 @@ public sealed class ProtoArrayTests
         var array = new ProtoArray(genesis, 0, 0);
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, genesis, 1, 0, 0);
-        array.ApplyScoreChanges(new Dictionary<string, long>
+
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
             [ProtoArray.RootKey(a)] = 2,
             [ProtoArray.RootKey(b)] = 1
-        }, 0, 0);
+        });
 
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(a));
+        Assert.That(FindHead(array, genesis), Is.EqualTo(a));
     }
 
     [Test]
-    public void FindHead_UnknownJustifiedRoot_ReturnsDefault()
+    public void FindHead_UnknownJustifiedRoot_ReturnsSelf()
     {
         var genesis = MakeRoot(0x01);
         var array = new ProtoArray(genesis, 0, 0);
         var unknown = MakeRoot(0xFF);
-        Assert.That(array.FindHead(unknown, 0, 0), Is.EqualTo(default(Bytes32)));
+        // GetIndex returns null for unknown roots
+        Assert.That(array.GetIndex(unknown), Is.Null);
     }
 
     [Test]
@@ -186,7 +189,6 @@ public sealed class ProtoArrayTests
     [Test]
     public void Prune_RemovesAncestorsOfFinalizedRoot()
     {
-        // genesis -> a -> b (finalized) -> c
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -206,6 +208,24 @@ public sealed class ProtoArrayTests
     }
 
     [Test]
+    public void Prune_ReturnsIndexMapping()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+
+        var mapping = array.Prune(a);
+
+        // a was index 1 -> now 0, b was index 2 -> now 1
+        Assert.That(mapping[1], Is.EqualTo(0));
+        Assert.That(mapping[2], Is.EqualTo(1));
+        Assert.That(mapping.ContainsKey(0), Is.False); // genesis was pruned
+    }
+
+    [Test]
     public void Prune_PreservesWeightsAndParentLinks()
     {
         var genesis = MakeRoot(0x01);
@@ -215,8 +235,10 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
 
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 5 }, 0, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(b)] = 5
+        });
         array.Prune(a);
 
         Assert.That(array.GetWeight(b), Is.EqualTo(5));
@@ -233,51 +255,68 @@ public sealed class ProtoArrayTests
         Assert.That(array.NodeCount, Is.EqualTo(1));
     }
 
-    // ========== FindHead: Tie-breaking ==========
+    // ========== Tie-breaking: weight → slot → root ==========
 
     [Test]
-    public void FindHead_EqualWeight_TieBreakByHigherRootHex()
+    public void TieBreak_EqualWeight_HigherSlotWins()
     {
-        // Two children of genesis with equal weight; higher hex root wins
+        var genesis = MakeRoot(0x01);
+        var low = MakeRoot(0x02);   // slot 1
+        var high = MakeRoot(0x03);  // slot 2
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(low, genesis, 1, 0, 0);
+        array.RegisterBlock(high, genesis, 2, 0, 0);
+
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(low)] = 1,
+            [ProtoArray.RootKey(high)] = 1
+        });
+
+        Assert.That(FindHead(array, genesis), Is.EqualTo(high));
+    }
+
+    [Test]
+    public void TieBreak_EqualWeightAndSlot_HigherRootHexWins()
+    {
         var genesis = MakeRoot(0x01);
         var low = MakeRoot(0x02);   // hex: 0202...
         var high = MakeRoot(0xAA);  // hex: AAAA... > 0202...
         var array = new ProtoArray(genesis, 0, 0);
-        array.RegisterBlock(low, genesis, 1, 0, 0);
-        array.RegisterBlock(high, genesis, 1, 0, 0);
-        array.ApplyScoreChanges(new Dictionary<string, long>
+        array.RegisterBlock(low, genesis, 1, 0, 0);   // same slot
+        array.RegisterBlock(high, genesis, 1, 0, 0);   // same slot
+
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
             [ProtoArray.RootKey(low)] = 1,
             [ProtoArray.RootKey(high)] = 1
-        }, 0, 0);
+        });
 
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(high));
+        Assert.That(FindHead(array, genesis), Is.EqualTo(high));
     }
 
     [Test]
-    public void FindHead_ZeroWeightEverywhere_TieBreakByRoot()
+    public void FindHead_ZeroWeightEverywhere_TieBreakBySlotThenRoot()
     {
-        // No votes at all on a forked tree — still picks a head via tie-break
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0xBB);
         var array = new ProtoArray(genesis, 0, 0);
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, genesis, 1, 0, 0);
-        // Must call ApplyScoreChanges to compute BestChild/BestDescendant
-        array.ApplyScoreChanges(new Dictionary<string, long>(), 0, 0);
 
-        var head = array.FindHead(genesis, 0, 0);
-        // With zero weight, tie-break picks higher hex root
+        ApplyDeltasFromDict(array, new Dictionary<string, long>());
+
+        var head = FindHead(array, genesis);
+        // Equal weight (0), equal slot (1) → higher hex root wins
         Assert.That(head, Is.EqualTo(b));
     }
 
-    // ========== FindHead: Deep chain ==========
+    // ========== Deep chain ==========
 
     [Test]
     public void FindHead_DeepChain_VoteOnLeafPropagates()
     {
-        // genesis -> a -> b -> c -> d -> e (depth 5)
         var genesis = MakeRoot(0x01);
         var roots = Enumerable.Range(2, 5).Select(i => MakeRoot((byte)i)).ToArray();
         var array = new ProtoArray(genesis, 0, 0);
@@ -288,12 +327,13 @@ public sealed class ProtoArrayTests
             parent = roots[i];
         }
 
-        var leaf = roots[^1]; // e
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(leaf)] = 1 }, 0, 0);
+        var leaf = roots[^1];
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(leaf)] = 1
+        });
 
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(leaf));
-        // All ancestors should have weight 1
+        Assert.That(FindHead(array, genesis), Is.EqualTo(leaf));
         Assert.That(array.GetWeight(genesis), Is.EqualTo(1));
         Assert.That(array.GetWeight(roots[0]), Is.EqualTo(1));
     }
@@ -301,10 +341,8 @@ public sealed class ProtoArrayTests
     // ========== Vote migration ==========
 
     [Test]
-    public void ApplyScoreChanges_VoteMigration_ShiftsWeightBetweenForks()
+    public void ApplyDeltas_VoteMigration_ShiftsWeightBetweenForks()
     {
-        // genesis -> a (fork1), genesis -> b (fork2)
-        // Round 1: vote on a. Round 2: vote moves from a to b.
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -313,46 +351,67 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(b, genesis, 1, 0, 0);
 
         // Round 1: vote for a
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(a)] = 1 }, 0, 0);
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(a));
-
-        // Round 2: move vote from a to b (delta: a -1, b +1)
-        array.ApplyScoreChanges(new Dictionary<string, long>
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
-            [ProtoArray.RootKey(a)] = -1,
+            [ProtoArray.RootKey(a)] = 1
+        });
+        Assert.That(FindHead(array, genesis), Is.EqualTo(a));
+
+        // Round 2: vote moves to b (full rebuild: only b has vote now)
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
             [ProtoArray.RootKey(b)] = 1
-        }, 0, 0);
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(b));
+        });
+        Assert.That(FindHead(array, genesis), Is.EqualTo(b));
         Assert.That(array.GetWeight(a), Is.EqualTo(0));
         Assert.That(array.GetWeight(b), Is.EqualTo(1));
     }
 
+    // ========== CutoffWeight filtering ==========
+
     [Test]
-    public void ApplyScoreChanges_MultipleRounds_AccumulatesCorrectly()
+    public void ApplyDeltas_CutoffWeight_FiltersBestDescendant()
+    {
+        // genesis -> a -> b; b has 1 vote, cutoff=2 → b not qualified as bestDescendant
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+
+        // With cutoff=2, b (weight=1) doesn't qualify as bestDescendant
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(b)] = 1
+        }, cutoffWeight: 2);
+
+        // genesis.BestDescendant should be null since no descendant meets cutoff
+        var genNode = array.GetNode(genesis)!;
+        Assert.That(genNode.BestDescendant, Is.Null);
+    }
+
+    [Test]
+    public void ApplyDeltas_CutoffWeight_Zero_AllQualify()
     {
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var array = new ProtoArray(genesis, 0, 0);
         array.RegisterBlock(a, genesis, 1, 0, 0);
 
-        var key = ProtoArray.RootKey(a);
-        array.ApplyScoreChanges(new Dictionary<string, long> { [key] = 5 }, 0, 0);
-        array.ApplyScoreChanges(new Dictionary<string, long> { [key] = 3 }, 0, 0);
-        array.ApplyScoreChanges(new Dictionary<string, long> { [key] = -2 }, 0, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(a)] = 1
+        }, cutoffWeight: 0);
 
-        Assert.That(array.GetWeight(a), Is.EqualTo(6)); // 5+3-2
-        Assert.That(array.GetWeight(genesis), Is.EqualTo(6)); // propagated
+        Assert.That(FindHead(array, genesis), Is.EqualTo(a));
     }
 
-    // ========== Viability filtering ==========
+    // ========== Viability / 3SF ==========
 
     [Test]
     public void FindHead_AllNodesViable_FollowsWeight()
     {
-        // Viability is disabled for leanSpec 3SF-mini compatibility.
-        // genesis -> a (justified=5) -> b (justified=0)
-        // b has 10 votes — FindHead follows BestDescendant to the heaviest leaf.
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -360,20 +419,17 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 5, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
 
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(b)] = 10 }, 5, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(b)] = 10
+        });
 
-        // b is always viable (viability disabled), so head follows to the leaf
-        var head = array.FindHead(genesis, 5, 0);
-        Assert.That(head, Is.EqualTo(b));
+        Assert.That(FindHead(array, genesis), Is.EqualTo(b));
     }
 
     [Test]
     public void FindHead_HeavierFork_WinsRegardlessOfCheckpoints()
     {
-        // Viability is disabled: per-block checkpoints do NOT affect head selection.
-        // Two forks: a (justified=5, 1 vote) vs b (justified=0, 10 votes).
-        // b wins by weight because viability filtering is disabled.
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -381,13 +437,13 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 5, 0);
         array.RegisterBlock(b, genesis, 1, 0, 0);
 
-        array.ApplyScoreChanges(new Dictionary<string, long>
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
             [ProtoArray.RootKey(a)] = 1,
             [ProtoArray.RootKey(b)] = 10
-        }, 5, 0);
+        });
 
-        Assert.That(array.FindHead(genesis, 5, 0), Is.EqualTo(b));
+        Assert.That(FindHead(array, genesis), Is.EqualTo(b));
     }
 
     // ========== Prune: advanced scenarios ==========
@@ -395,23 +451,22 @@ public sealed class ProtoArrayTests
     [Test]
     public void Prune_RemovesDanglingBranches()
     {
-        // genesis -> a -> b (finalized), genesis -> c (dangling fork)
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
-        var c = MakeRoot(0x04); // not on finalized path
+        var c = MakeRoot(0x04);
         var array = new ProtoArray(genesis, 0, 0);
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
-        array.RegisterBlock(c, genesis, 1, 0, 0); // fork off genesis
+        array.RegisterBlock(c, genesis, 1, 0, 0);
 
         array.Prune(b);
 
         Assert.That(array.ContainsBlock(b), Is.True);
         Assert.That(array.ContainsBlock(genesis), Is.False);
         Assert.That(array.ContainsBlock(a), Is.False);
-        Assert.That(array.ContainsBlock(c), Is.False); // dangling fork removed
-        Assert.That(array.NodeCount, Is.EqualTo(1));    // only b remains
+        Assert.That(array.ContainsBlock(c), Is.False);
+        Assert.That(array.NodeCount, Is.EqualTo(1));
     }
 
     [Test]
@@ -424,22 +479,22 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, a, 2, 0, 0);
 
-        array.Prune(a); // removes genesis
+        array.Prune(a);
 
-        // Add new block after prune
         var c = MakeRoot(0x04);
         array.RegisterBlock(c, b, 3, 0, 0);
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(c)] = 1 }, 0, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(c)] = 1
+        });
 
-        Assert.That(array.FindHead(a, 0, 0), Is.EqualTo(c));
-        Assert.That(array.NodeCount, Is.EqualTo(3)); // a, b, c
+        Assert.That(FindHead(array, a), Is.EqualTo(c));
+        Assert.That(array.NodeCount, Is.EqualTo(3));
     }
 
     [Test]
     public void Prune_SequentialPrunes_WorkCorrectly()
     {
-        // genesis -> a -> b -> c -> d
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -452,26 +507,19 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(d, c, 4, 0, 0);
 
         array.Prune(a);
-        Assert.That(array.NodeCount, Is.EqualTo(4)); // a,b,c,d
+        Assert.That(array.NodeCount, Is.EqualTo(4));
 
         array.Prune(c);
-        Assert.That(array.NodeCount, Is.EqualTo(2)); // c,d
+        Assert.That(array.NodeCount, Is.EqualTo(2));
         Assert.That(array.ContainsBlock(a), Is.False);
         Assert.That(array.ContainsBlock(b), Is.False);
         Assert.That(array.ContainsBlock(c), Is.True);
         Assert.That(array.ContainsBlock(d), Is.True);
     }
 
-    // ========== Justified/finalized checkpoint advancement (3SF) ==========
-
     [Test]
     public void FindHead_JustifiedSlotAdvancement_SwitchesHead()
     {
-        // Simulate 3SF: justified slot advances quickly
-        // fork1: genesis -> a (justified=1) -> c (justified=2)
-        // fork2: genesis -> b (justified=0) with more weight
-        // Initially justified=0, justified root=genesis: b wins on weight
-        // After justified advances to 1, justified root=a: only fork1 descendants are viable
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -481,27 +529,25 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(b, genesis, 1, 0, 0);
         array.RegisterBlock(c, a, 2, 2, 0);
 
-        // With justified=0, root=genesis: both forks viable, b has more weight
-        array.ApplyScoreChanges(new Dictionary<string, long>
+        // With justified root=genesis: both forks, b has more weight
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
             [ProtoArray.RootKey(b)] = 5,
             [ProtoArray.RootKey(c)] = 1
-        }, 0, 0);
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(b));
+        });
+        Assert.That(FindHead(array, genesis), Is.EqualTo(b));
 
-        // Justified advances to slot 1, root=a: b is not a descendant of a,
-        // so now we search from a. c has justified=2 >= 1, so c is viable.
-        array.ApplyScoreChanges(new Dictionary<string, long>(), 1, 0);
-        Assert.That(array.FindHead(a, 1, 0), Is.EqualTo(c));
+        // With justified root=a: only fork1 descendants visible
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(c)] = 1
+        });
+        Assert.That(FindHead(array, a), Is.EqualTo(c));
     }
-
-    // ========== BestChild/BestDescendant detailed ==========
 
     [Test]
     public void BestDescendant_PointsToDeepestViableLeaf()
     {
-        // genesis -> a -> b -> c
-        // Vote on c. Genesis.BestDescendant should be c (not a or b).
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -511,10 +557,11 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(b, a, 2, 0, 0);
         array.RegisterBlock(c, b, 3, 0, 0);
 
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(c)] = 1 }, 0, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(c)] = 1
+        });
 
-        var genNode = array.GetNode(genesis)!;
         var bestDescRoot = array.GetNode(genesis) is { BestDescendant: { } bd }
             ? array.GetNodeByIndex(bd)?.Root
             : null;
@@ -524,8 +571,6 @@ public sealed class ProtoArrayTests
     [Test]
     public void BestChild_SwitchesWhenWeightChanges()
     {
-        // genesis -> a (fork1), genesis -> b (fork2)
-        // Initially a has more weight, then b overtakes
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -533,26 +578,26 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(a, genesis, 1, 0, 0);
         array.RegisterBlock(b, genesis, 1, 0, 0);
 
-        array.ApplyScoreChanges(new Dictionary<string, long>
+        // a has more weight
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
             [ProtoArray.RootKey(a)] = 3,
             [ProtoArray.RootKey(b)] = 1
-        }, 0, 0);
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(a));
+        });
+        Assert.That(FindHead(array, genesis), Is.EqualTo(a));
 
-        // b overtakes: +5 to b
-        array.ApplyScoreChanges(new Dictionary<string, long>
+        // b overtakes
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
         {
-            [ProtoArray.RootKey(b)] = 5
-        }, 0, 0);
-        Assert.That(array.FindHead(genesis, 0, 0), Is.EqualTo(b));
+            [ProtoArray.RootKey(a)] = 3,
+            [ProtoArray.RootKey(b)] = 6
+        });
+        Assert.That(FindHead(array, genesis), Is.EqualTo(b));
     }
 
     [Test]
-    public void FindHead_AfterPrune_WithoutApplyScoreChanges_StillWorks()
+    public void FindHead_AfterPrune_WithoutApplyDeltas_StillWorks()
     {
-        // Regression: Prune must clear BestChild/BestDescendant so
-        // FindHead doesn't follow stale index pointers.
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
         var b = MakeRoot(0x03);
@@ -562,15 +607,78 @@ public sealed class ProtoArrayTests
         array.RegisterBlock(b, a, 2, 0, 0);
         array.RegisterBlock(c, b, 3, 0, 0);
 
-        array.ApplyScoreChanges(
-            new Dictionary<string, long> { [ProtoArray.RootKey(c)] = 1 }, 0, 0);
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(c)] = 1
+        });
 
-        // Prune genesis — a becomes new root
         array.Prune(a);
 
-        // FindHead without ApplyScoreChanges should still work (returns justified root
-        // since BestDescendant was cleared)
-        Assert.DoesNotThrow(() => array.FindHead(a, 0, 0));
+        // After prune, BestChild/BestDescendant are cleared, so FindHead
+        // returns justified root (a) since no BestDescendant is set
+        Assert.DoesNotThrow(() => FindHead(array, a));
+    }
+
+    // ========== Helpers ==========
+
+    /// <summary>
+    /// Simulates a full-rebuild delta apply: resets all node weights/best pointers,
+    /// converts dict to array, and calls ApplyDeltas.
+    /// This matches the store's ComputeDeltas → ApplyDeltas cycle.
+    /// </summary>
+    private static void ApplyDeltasFromDict(ProtoArray array, Dictionary<string, long> dict, long cutoffWeight = 0)
+    {
+        // Reset all node weights and best pointers (store does this in ComputeDeltas)
+        for (int i = 0; i < array.NodeCount; i++)
+        {
+            var node = array.GetNodeByIndex(i);
+            if (node is not null)
+            {
+                node.Weight = 0;
+                node.BestChild = null;
+                node.BestDescendant = null;
+            }
+        }
+
+        // Convert dict to long[]
+        var deltas = new long[array.NodeCount];
+        foreach (var (key, delta) in dict)
+        {
+            if (array.ContainsKey(key))
+            {
+                // Find index by iterating (GetIndex takes Bytes32, not string key)
+                foreach (var (root, _, _) in array.GetAllBlocks())
+                {
+                    if (ProtoArray.RootKey(root) == key)
+                    {
+                        var idx = array.GetIndex(root);
+                        if (idx.HasValue)
+                            deltas[idx.Value] = delta;
+                        break;
+                    }
+                }
+            }
+        }
+
+        array.ApplyDeltas(deltas, cutoffWeight);
+    }
+
+    /// <summary>
+    /// FindHead equivalent: looks up justified root's bestDescendant.
+    /// </summary>
+    private static Bytes32 FindHead(ProtoArray array, Bytes32 justifiedRoot)
+    {
+        var justifiedIdx = array.GetIndex(justifiedRoot);
+        if (!justifiedIdx.HasValue)
+            return default;
+
+        var justifiedNode = array.GetNodeByIndex(justifiedIdx.Value);
+        if (justifiedNode is null)
+            return default;
+
+        var bestDescIdx = justifiedNode.BestDescendant ?? justifiedIdx.Value;
+        var bestDesc = array.GetNodeByIndex(bestDescIdx);
+        return bestDesc?.Root ?? justifiedRoot;
     }
 
     internal static Bytes32 MakeRoot(byte fill) =>

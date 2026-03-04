@@ -119,7 +119,26 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public byte[] HeadRoot => _snapshot.HeadRoot.AsSpan().ToArray();
 
-    public byte[] GetProposalHeadRoot() => HeadRoot;
+    public (byte[] ParentRoot, AttestationData BaseAttestationData) GetProposalContext(ulong slot)
+    {
+        lock (_storeLock)
+        {
+            // Align with ethlambda/leanSpec get_proposal_head:
+            // proposal path must force pending attestation acceptance before selecting parent/head.
+            _store.PrepareForProposal(slot);
+            RefreshSnapshot();
+
+            var parentRoot = _store.HeadRoot.AsSpan().ToArray();
+            var target = _store.ComputeTargetCheckpoint();
+            var baseAttestationData = new AttestationData(
+                new Slot(slot),
+                new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
+                target,
+                new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)));
+
+            return (parentRoot, baseAttestationData);
+        }
+    }
 
     public AttestationData CreateAttestationData(ulong slot)
     {
@@ -311,21 +330,53 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         lock (_storeLock)
         {
+            // leanSpec/ethlambda: build "latest-known attestation per validator" first,
+            // then select matching proofs. Each validator's vote counted exactly once.
+            // (state.py:709-816, store.rs:749-1001)
+
+            // Step 1: From _knownAttestations (per-validator latest), group validators
+            // by their attestation data, filtering by source and slot.
+            var knownAttestations = _store.GetKnownAttestations();
+            var validatorsByDataKey = new Dictionary<string, List<ulong>>(StringComparer.Ordinal);
+            var dataByKey = new Dictionary<string, AttestationData>(StringComparer.Ordinal);
+
+            foreach (var (vid, data) in knownAttestations)
+            {
+                if (data.Slot.Value >= slot)
+                    continue;
+                if (!data.Source.Equals(requiredSource))
+                    continue;
+
+                var key = Convert.ToHexString(data.HashTreeRoot());
+                if (!validatorsByDataKey.TryGetValue(key, out var list))
+                {
+                    list = new List<ulong>();
+                    validatorsByDataKey[key] = list;
+                    dataByKey[key] = data;
+                }
+                list.Add(vid);
+            }
+
+            // Step 2: Build 1:1 paired attestation/proof entries.
+            // Use de-duplicated bits (per-validator latest) for each attestation,
+            // keeping one attestation per proof to maintain index pairing
+            // required by ValidatorService.SelectBestProofs.
             var attestations = new List<AggregatedAttestation>();
             var proofs = new List<AggregatedSignatureProof>();
             var pool = _store.GetKnownPayloadPool();
 
-            foreach (var (dataRootKey, payloadList) in pool)
+            foreach (var (key, validators) in validatorsByDataKey)
             {
-                if (!_store.TryGetAttestationData(dataRootKey, out var data))
-                    continue;
-                if (data.Slot.Value >= slot)
-                    continue;
+                var data = dataByKey[key];
+                var bits = AggregationBits.FromValidatorIndices(validators.ToArray());
 
-                foreach (var proof in payloadList)
+                if (pool.TryGetValue(key, out var poolProofs))
                 {
-                    attestations.Add(new AggregatedAttestation(proof.Participants, data));
-                    proofs.Add(proof);
+                    foreach (var proof in poolProofs)
+                    {
+                        attestations.Add(new AggregatedAttestation(bits, data));
+                        proofs.Add(proof);
+                    }
                 }
             }
 

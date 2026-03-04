@@ -14,13 +14,14 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public object SyncRoot { get; } = new object();
 
     private readonly ProtoArray _protoArray;
-    private readonly Dictionary<ulong, AttestationData> _pendingAttestations = new();
-    private readonly Dictionary<ulong, AttestationData> _knownAttestations = new();
+    private readonly Dictionary<ulong, AttestationTracker> _attestationTrackers = new();
     private readonly Dictionary<(ulong, string), XmssSignature> _gossipSignatures = new();
     private readonly Dictionary<string, AttestationData> _attestationDataByRoot = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<AggregatedSignatureProof>> _newAggregatedPayloads = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<AggregatedSignatureProof>> _knownAggregatedPayloads = new(StringComparer.Ordinal);
     private readonly ILogger _logger;
+
+    private long[] _deltas = Array.Empty<long>();
 
     private Bytes32 _headRoot;
     private ulong _headSlot;
@@ -29,8 +30,15 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Checkpoint _latestFinalized;
     private Bytes32 _safeTarget;
     private ulong _validatorCount;
+    private readonly ulong _localValidatorId;
     private readonly int _localValidatorSubnetId;
     private readonly int _attestationCommitteeCount;
+    private enum VoteSource
+    {
+        Known,
+        New,
+        Merged
+    }
 
     public ProtoArrayForkChoiceStore(
         ConsensusConfig config,
@@ -40,6 +48,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         ArgumentNullException.ThrowIfNull(config);
 
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
+        _localValidatorId = config.LocalValidatorId;
         _attestationCommitteeCount = Math.Max(1, config.AttestationCommitteeCount);
         _localValidatorSubnetId = new Types.ValidatorIndex(config.LocalValidatorId).ComputeSubnetId(_attestationCommitteeCount);
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
@@ -149,7 +158,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
 
         var dataRootKey = ToDataRootKey(signed.Data);
-
         _attestationDataByRoot[dataRootKey] = signed.Data;
 
         if (!_newAggregatedPayloads.TryGetValue(dataRootKey, out var list))
@@ -159,10 +167,13 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
-        foreach (var vid in participantIds)
-        {
-            _pendingAttestations[vid] = signed.Data;
-        }
+        // Aggregated gossip payloads are stored for block building but do NOT
+        // update per-validator latestNew trackers.  Zeam only updates latestNew
+        // from *individual* gossip attestations (onAttestationUnlocked with
+        // is_from_block=false).  Keeping aggregated attestations out of latestNew
+        // ensures that updateSafeTarget (which reads latestNew only) depends on
+        // real gossip propagation timing, producing a safe_target that lags head
+        // when not all validators' individual attestations have arrived yet.
 
         reason = string.Empty;
         return true;
@@ -171,8 +182,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     /// <summary>
     /// Extract per-validator attestation data from ALL known aggregated payloads,
     /// filtering only by slot (attestation.slot &lt; blockSlot).
-    /// No source checkpoint filtering — used by the fixed-point block building loop
-    /// which needs to re-check available attestations against changing justified checkpoints.
+    /// Used by the fixed-point block building loop.
     /// </summary>
     public List<Attestation> ExtractAllAttestationsFromKnownPayloads(ulong blockSlot)
     {
@@ -209,8 +219,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Returns the raw known aggregated payload pool keyed by data root hex.
-    /// Used by the proof selection algorithm (greedy set cover) to look up
-    /// candidate proofs for each attestation data group.
+    /// Used by the proof selection algorithm (greedy set cover).
     /// </summary>
     public IReadOnlyDictionary<string, List<AggregatedSignatureProof>> GetKnownPayloadPool()
     {
@@ -223,9 +232,35 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     }
 
     /// <summary>
+    /// Align proposal flow with ethlambda/leanSpec: force pending-attestation acceptance
+    /// before selecting proposal head for the slot.
+    /// </summary>
+    public void PrepareForProposal(ulong slot)
+    {
+        // Interval 0 proposer path can accept new attestations.
+        TickInterval(slot, 0, hasProposal: true);
+        // get_proposal_head() also performs an explicit accept after ticking.
+        AcceptNewAttestations();
+    }
+
+    /// <summary>
+    /// Returns the per-validator latest known attestation data from AttestationTrackers.
+    /// Used by block building for de-duplicated attestation sets.
+    /// </summary>
+    public IReadOnlyDictionary<ulong, AttestationData> GetKnownAttestations()
+    {
+        var result = new Dictionary<ulong, AttestationData>();
+        foreach (var (vid, tracker) in _attestationTrackers)
+        {
+            if (tracker.LatestKnown is { } known && known.Data is not null)
+                result[vid] = known.Data;
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Registers a block in the fork choice store using checkpoints from the
-    /// canonical state transition. Matches zeam/ethlambda architecture where
-    /// the fork choice store does not run its own state transition.
+    /// canonical state transition. Matches zeam/ethlambda architecture.
     /// </summary>
     public ForkChoiceApplyResult OnBlock(
         SignedBlockWithAttestation signedBlock,
@@ -239,7 +274,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var aggregatedAttestations = block.Body.Attestations;
         var attestationSignatures = signedBlock.Signature.AttestationSignatures;
 
-        // Reject duplicates
         if (_protoArray.ContainsBlock(blockRoot))
         {
             return ForkChoiceApplyResult.Rejected(
@@ -248,7 +282,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 _headSlot, _headRoot);
         }
 
-        // Reject unknown parent
         if (!_protoArray.ContainsBlock(block.ParentRoot))
         {
             return ForkChoiceApplyResult.Rejected(
@@ -266,8 +299,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 _headRoot);
         }
 
-        // Register in proto-array using canonical state transition checkpoints.
-        // Do not clamp to store checkpoints; node viability must reflect canonical state.
         _protoArray.RegisterBlock(
             blockRoot, block.ParentRoot, block.Slot.Value,
             canonicalJustified.Slot.Value,
@@ -277,11 +308,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         UpdateStoreCheckpoints(canonicalJustified, canonicalFinalized);
 
-        // Block-body attestations become immediately known.
-        // Also extract per-validator fork choice votes: leanSpec on_block() calls
-        // process_attestation() which updates both state AND latest messages.
-        // Without this, cross-client attestation votes embedded in blocks are
-        // invisible to fork choice, causing persistent fork deadlocks.
+        // Process block-body attestations: update tracker.LatestKnown (is_from_block=true).
+        // Also store aggregated payloads as known for block building.
         for (var i = 0; i < aggregatedAttestations.Count; i++)
         {
             var attestation = aggregatedAttestations[i];
@@ -296,19 +324,23 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             }
             knownProofs.Add(proof);
 
-            if (proof.Participants.TryToValidatorIndices(out var vids))
+            // Use AggregationBits to extract per-validator votes from block attestations.
+            // Matches zeam onAttestationUnlocked with is_from_block=true.
+            if (attestation.AggregationBits.TryToValidatorIndices(out var vids))
             {
                 foreach (var vid in vids)
-                    _pendingAttestations[vid] = attestation.Data;
+                {
+                    var headIndex = _protoArray.GetIndex(attestation.Data.Head.Root);
+                    if (headIndex.HasValue)
+                        UpdateTrackerFromBlock(vid, headIndex.Value, attestation.Data.Slot.Value, attestation.Data);
+                }
             }
         }
 
-        // Proposer attestation: always track the vote for head election.
+        // Proposer attestation: store for future aggregation, but do NOT add to fork choice votes.
         var proposerDataRootKey = ToDataRootKey(proposerAttestation.Data);
         _attestationDataByRoot[proposerDataRootKey] = proposerAttestation.Data;
-        _pendingAttestations[proposerAttestation.ValidatorId] = proposerAttestation.Data;
 
-        // Store proposer signature for future aggregation only if same subnet (leanSpec filter).
         var proposerSubnetId = new Types.ValidatorIndex(proposerAttestation.ValidatorId)
             .ComputeSubnetId(_attestationCommitteeCount);
         if (proposerSubnetId == _localValidatorSubnetId)
@@ -317,23 +349,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 signedBlock.Signature.ProposerSignature;
         }
 
-        // Promote block-body attestation votes immediately so this head computation
-        // reflects them. leanSpec/ethlambda include block-body attestations in the
-        // on_block head election; without this, nlean would lag by one tick interval.
-        var deltas = PromotePendingAttestations();
+        // Compute head using zeam-style full delta rebuild.
+        var newHead = ComputeForkChoiceHead(VoteSource.Known, cutoffWeight: 0);
 
-        // Recompute head after every block using proto-array (O(N) propagation + O(1) head).
-        // IsViable is disabled (always true) so FindHead follows BestDescendant purely by
-        // weight, matching leanSpec's behavior. With the >= justified update, the justified
-        // root switches to the majority fork, and FindHead tracks the heaviest chain tip.
-        _protoArray.ApplyScoreChanges(
-            deltas, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
-        var newHead = _protoArray.FindHead(
-            _latestJustified.Root, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
-
-        var headChanged = !newHead.Equals(_headRoot);
-        _headRoot = newHead;
-        _headSlot = _protoArray.GetSlot(newHead) ?? _headSlot;
+        var headChanged = !newHead.Root.Equals(_headRoot);
+        _headRoot = newHead.Root;
+        _headSlot = newHead.Slot;
 
         return ForkChoiceApplyResult.AcceptedResult(headChanged, _headSlot, _headRoot);
     }
@@ -366,7 +387,24 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         var dataRootKey = ToDataRootKey(attestation.Message);
         _attestationDataByRoot[dataRootKey] = attestation.Message;
-        _pendingAttestations[attestation.ValidatorId] = attestation.Message;
+
+        // Match zeam onAttestationUnlocked with is_from_block=false:
+        // Only the LOCAL validator's own attestation updates latestNew.
+        // Gossip from other validators (received for aggregation) is used only
+        // for signature collection and does NOT affect fork choice safeTarget.
+        // This ensures UpdateSafeTarget is based on the local validator's view,
+        // preventing the aggregator node from having a spuriously large latestNew
+        // vote set that would cause an aggressive safe target and consecutive
+        // justification.
+        if (attestation.ValidatorId == _localValidatorId)
+        {
+            var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
+            if (headIndex.HasValue)
+            {
+                UpdateTrackerFromGossip(attestation.ValidatorId, headIndex.Value, attestation.Message.Slot.Value, attestation.Message);
+            }
+        }
+
         if (storeSignature)
         {
             _gossipSignatures[(attestation.ValidatorId, dataRootKey)] = attestation.Signature;
@@ -389,7 +427,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Collects gossiped committee signatures grouped by attestation data root.
-    /// Returns groups of (AttestationData, validatorIds, signatures).
     /// </summary>
     public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
     {
@@ -421,9 +458,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _gossipSignatures.Remove(key);
         }
 
-        // Sort each group by validator ID (ascending) so aggregation proof
-        // matches the verification order used by other clients (ethlambda),
-        // which extract public keys in ascending order from the bitfield.
         var result = new List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>();
         foreach (var group in groups.Values)
         {
@@ -448,41 +482,42 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Called at each interval within a slot.
-    /// leanSpec/ethlambda only promote attestations at interval 0 when has_proposal
-    /// is true (i.e., the node is the proposer and needs fresh head before building).
-    /// Interval 4 (end of slot) always promotes.
+    /// Matches ethlambda devnet3 tick_interval mapping:
+    ///   0 = accept_new_attestations (if has_proposal)
+    ///   1 = nothing
+    ///   2 = nothing
+    ///   3 = update_safe_target
+    ///   4 = accept_new_attestations (unconditional)
     /// </summary>
     public void TickInterval(ulong slot, int intervalInSlot, bool hasProposal = false)
     {
         _currentSlot = slot;
 
-        if (intervalInSlot == 3)
+        switch (intervalInSlot)
         {
-            UpdateSafeTarget();
-            return;
-        }
-
-        // Interval 0: only promote when this node has a proposal (leanSpec case 0 if has_proposal).
-        // Interval 4 (IntervalsPerSlot - 1): always promote.
-        if (intervalInSlot == 0 && hasProposal)
-        {
-            AcceptNewAttestations();
-        }
-        else if (intervalInSlot == IntervalsPerSlot - 1)
-        {
-            AcceptNewAttestations();
+            case 0 when hasProposal:
+                AcceptNewAttestations();
+                break;
+            case 3:
+                UpdateSafeTarget();
+                break;
+            case 4:
+                AcceptNewAttestations();
+                break;
         }
     }
 
+    /// <summary>
+    /// Zeam-style accept_new_attestations: promote latestNew → latestKnown for all validators,
+    /// then recompute head.
+    /// </summary>
     private void AcceptNewAttestations()
     {
         _logger.LogDebug(
-            "AcceptNewAttestations START: PendingCount={PendingCount}, KnownCount={KnownCount}",
-            _pendingAttestations.Count, _knownAttestations.Count);
+            "AcceptNewAttestations START: TrackerCount={TrackerCount}",
+            _attestationTrackers.Count);
 
-        var deltas = PromotePendingAttestations();
-
-        // Promote aggregated payloads: new → known.
+        // Step 1: Migrate aggregated payloads new → known.
         foreach (var (key, payloads) in _newAggregatedPayloads)
         {
             if (!_knownAggregatedPayloads.TryGetValue(key, out var knownList))
@@ -494,16 +529,35 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         _newAggregatedPayloads.Clear();
 
-        // Use proto-array for head selection (O(N) propagation + O(1) head lookup).
-        // Viability is disabled, so FindHead follows the heaviest chain tip purely by weight.
-        _protoArray.ApplyScoreChanges(deltas, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
-        var newHead = _protoArray.FindHead(
-            _latestJustified.Root, _latestJustified.Slot.Value, _latestFinalized.Slot.Value);
-        _headRoot = newHead;
-        _headSlot = _protoArray.GetSlot(newHead) ?? _headSlot;
+        // Step 2: Promote latestNew → latestKnown for all validators.
+        // Match zeam semantics: only promote when latestNew is fresher than latestKnown,
+        // and always clear latestNew after acceptance.
+        var keys = new List<ulong>(_attestationTrackers.Keys);
+        foreach (var vid in keys)
+        {
+            var tracker = _attestationTrackers[vid];
+            if (!tracker.LatestNew.HasValue)
+            {
+                continue;
+            }
 
-        // Slot-based pruning: remove attestation data older than MaxAttestationAgeSlots
-        // regardless of finalization state. This bounds memory growth when finalization stalls.
+            var latestNew = tracker.LatestNew.Value;
+            var knownSlot = tracker.LatestKnown?.Slot ?? 0UL;
+            if (latestNew.Slot > knownSlot)
+            {
+                tracker.LatestKnown = latestNew;
+            }
+
+            tracker.LatestNew = null;
+            _attestationTrackers[vid] = tracker;
+        }
+
+        // Step 3: Compute head with full delta rebuild.
+        var head = ComputeForkChoiceHead(VoteSource.Known, cutoffWeight: 0);
+        _headRoot = head.Root;
+        _headSlot = head.Slot;
+
+        // Slot-based pruning of attestation data
         if (_currentSlot > (ulong)MaxAttestationAgeSlots)
         {
             PruneAttestationDataOlderThan(_currentSlot - (ulong)MaxAttestationAgeSlots);
@@ -514,8 +568,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             var payloadBytes = _knownAggregatedPayloads.Values
                 .Sum(list => list.Sum(p => (long)p.ProofData.Length));
             _logger.LogDebug(
-                "AcceptNewAttestations. Slot: {Slot}, PendingPromoted: {Promoted}, DeltaCount: {DeltaCount}, FindHeadRoot: {HeadRoot}, FindHeadSlot: {HeadSlot}, JustifiedRoot: {JRoot}, JustifiedSlot: {JSlot}, FinalizedSlot: {FSlot}, ProtoNodeCount: {NodeCount}, PayloadPoolBytes: {PoolBytes}, PayloadPoolCount: {PoolCount}",
-                _currentSlot, deltas.Count, deltas.Values.Sum(v => Math.Abs(v)),
+                "AcceptNewAttestations. Slot: {Slot}, HeadRoot: {HeadRoot}, HeadSlot: {HeadSlot}, JustifiedRoot: {JRoot}, JustifiedSlot: {JSlot}, FinalizedSlot: {FSlot}, ProtoNodeCount: {NodeCount}, PayloadPoolBytes: {PoolBytes}, PayloadPoolCount: {PoolCount}",
+                _currentSlot,
                 ProtoArray.RootKey(_headRoot)[..8], _headSlot,
                 ProtoArray.RootKey(_latestJustified.Root)[..8], _latestJustified.Slot.Value,
                 _latestFinalized.Slot.Value, _protoArray.NodeCount,
@@ -524,41 +578,160 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     }
 
     /// <summary>
-    /// Promotes pending per-validator attestation votes to known, computing weight deltas.
-    /// Called from both OnBlock (immediate promotion) and AcceptNewAttestations (tick-based).
+    /// Computes safe_target at interval 3 using the same proto-array mechanism
+    /// with cutoffWeight = ceil(2N/3). Uses latestNew ONLY (VoteSource.New)
+    /// to match zeam's updateSafeTargetUnlocked(from_known=false).
+    /// This ensures safe_target depends on real gossip propagation timing:
+    /// if not all validators' individual attestations arrived, cutoff is not
+    /// met and safe_target falls back toward justified, producing a larger
+    /// target-source gap that blocks premature finalization.
     /// </summary>
-    private Dictionary<string, long> PromotePendingAttestations()
+    private void UpdateSafeTarget()
     {
-        var deltas = new Dictionary<string, long>(StringComparer.Ordinal);
-        foreach (var (validatorId, data) in _pendingAttestations)
-        {
-            var headKey = ProtoArray.RootKey(data.Head.Root);
-            if (!_protoArray.ContainsBlock(data.Head.Root))
-                continue;
+        var numValidators = _validatorCount;
+        var cutoffWeight = (long)((numValidators * 2 + 2) / 3);
 
-            // Remove old vote if exists
-            if (_knownAttestations.TryGetValue(validatorId, out var oldData))
+        var safeHead = ComputeForkChoiceHead(VoteSource.New, cutoffWeight: cutoffWeight);
+        _safeTarget = safeHead.Root;
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            var safeSlot = safeHead.Slot;
+            _logger.LogDebug(
+                "UpdateSafeTarget. ValidatorCount: {ValidatorCount}, CutoffWeight: {CutoffWeight}, SafeTargetSlot: {SafeTargetSlot}, SafeTargetRoot: {SafeTargetRoot}",
+                numValidators, cutoffWeight, safeSlot, Convert.ToHexString(_safeTarget.AsSpan())[..8]);
+        }
+    }
+
+    /// <summary>
+    /// Zeam-style full-rebuild delta computation + proto-array head lookup.
+    /// Known = LatestKnown (head election), New = LatestNew, Merged = per-validator fresher of known/new.
+    /// </summary>
+    private (Bytes32 Root, ulong Slot) ComputeForkChoiceHead(VoteSource source, long cutoffWeight)
+    {
+        var deltas = ComputeDeltas(source);
+        _protoArray.ApplyDeltas(deltas, cutoffWeight);
+
+        var justifiedIdx = _protoArray.GetIndex(_latestJustified.Root);
+        if (!justifiedIdx.HasValue)
+            return (_latestJustified.Root, _latestJustified.Slot.Value);
+
+        var justifiedNode = _protoArray.GetNodeByIndex(justifiedIdx.Value);
+        if (justifiedNode is null)
+            return (_latestJustified.Root, _latestJustified.Slot.Value);
+
+        var bestDescIdx = justifiedNode.BestDescendant ?? justifiedIdx.Value;
+        var bestDesc = _protoArray.GetNodeByIndex(bestDescIdx);
+        if (bestDesc is null)
+            return (_latestJustified.Root, _latestJustified.Slot.Value);
+
+        return (bestDesc.Root, bestDesc.Slot);
+    }
+
+    /// <summary>
+    /// Full delta rebuild: for every validator, subtract old appliedIndex, add selected vote.
+    /// Matches zeam computeDeltasUnlocked.
+    /// </summary>
+    private long[] ComputeDeltas(VoteSource source)
+    {
+        var nodeCount = _protoArray.NodeCount;
+
+        // Grow buffer if needed
+        if (_deltas.Length < nodeCount)
+            _deltas = new long[nodeCount];
+
+        // Zero-fill deltas buffer (NOT node weights — zeam maintains weights
+        // incrementally via subtract-old/add-new delta mechanism).
+        Array.Clear(_deltas, 0, nodeCount);
+
+        foreach (var (validatorId, tracker) in _attestationTrackers)
+        {
+            var t = tracker;
+
+            // Subtract old applied vote
+            if (t.AppliedIndex.HasValue && t.AppliedIndex.Value < nodeCount)
+                _deltas[t.AppliedIndex.Value] -= 1;
+
+            t.AppliedIndex = null;
+
+            // Select source based on vote set.
+            ProtoAttestation? selected = source switch
             {
-                var oldKey = ProtoArray.RootKey(oldData.Head.Root);
-                if (_protoArray.ContainsBlock(oldData.Head.Root))
-                    deltas[oldKey] = deltas.GetValueOrDefault(oldKey) - 1;
+                VoteSource.Known => t.LatestKnown,
+                VoteSource.New => t.LatestNew,
+                VoteSource.Merged => SelectMergedVote(t),
+                _ => null
+            };
+
+            if (selected.HasValue && selected.Value.Index < nodeCount)
+            {
+                _deltas[selected.Value.Index] += 1;
+                t.AppliedIndex = selected.Value.Index;
             }
 
-            // Add new vote
-            deltas[headKey] = deltas.GetValueOrDefault(headKey) + 1;
-            _knownAttestations[validatorId] = data;
+            _attestationTrackers[validatorId] = t;
         }
 
-        _pendingAttestations.Clear();
-        return deltas;
+        return _deltas;
+    }
+
+    private static ProtoAttestation? SelectMergedVote(AttestationTracker tracker)
+    {
+        if (!tracker.LatestKnown.HasValue)
+            return tracker.LatestNew;
+
+        if (!tracker.LatestNew.HasValue)
+            return tracker.LatestKnown;
+
+        // Match extract_latest_attestations semantics: keep the freshest attestation.
+        return tracker.LatestKnown.Value.Slot >= tracker.LatestNew.Value.Slot
+            ? tracker.LatestKnown
+            : tracker.LatestNew;
+    }
+
+    /// <summary>
+    /// Update attestation tracker from block attestation (is_from_block=true).
+    /// Sets latestKnown and clears latestNew if the block attestation is newer.
+    /// </summary>
+    private void UpdateTrackerFromBlock(ulong validatorId, int headIndex, ulong slot, AttestationData data)
+    {
+        var tracker = _attestationTrackers.GetValueOrDefault(validatorId);
+
+        var knownSlot = tracker.LatestKnown?.Slot ?? 0UL;
+        if (slot > knownSlot)
+        {
+            tracker.LatestKnown = new ProtoAttestation { Index = headIndex, Slot = slot, Data = data };
+        }
+
+        // Clear latestNew if block attestation is newer
+        var newSlot = tracker.LatestNew?.Slot ?? 0UL;
+        if (slot > newSlot)
+        {
+            tracker.LatestNew = null;
+        }
+
+        _attestationTrackers[validatorId] = tracker;
+    }
+
+    /// <summary>
+    /// Update attestation tracker from gossip attestation (is_from_block=false).
+    /// Sets latestNew only.
+    /// </summary>
+    private void UpdateTrackerFromGossip(ulong validatorId, int headIndex, ulong slot, AttestationData data)
+    {
+        var tracker = _attestationTrackers.GetValueOrDefault(validatorId);
+
+        var newSlot = tracker.LatestNew?.Slot ?? 0UL;
+        if (slot > newSlot)
+        {
+            tracker.LatestNew = new ProtoAttestation { Index = headIndex, Slot = slot, Data = data };
+        }
+
+        _attestationTrackers[validatorId] = tracker;
     }
 
     private void UpdateStoreCheckpoints(Checkpoint canonicalJustified, Checkpoint canonicalFinalized)
     {
-        // Match ethlambda: strictly greater. Using >= causes the justified root to
-        // flip-flop between forks when they produce the same justified slot but
-        // different roots. This taints attestation source checkpoints with the wrong
-        // root, causing the state transition to skip them (source.Root != history[slot]).
         if (canonicalJustified.Slot.Value > _latestJustified.Slot.Value)
         {
             _latestJustified = canonicalJustified;
@@ -570,8 +743,73 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
 
         _latestFinalized = canonicalFinalized;
-        _protoArray.Prune(_latestFinalized.Root);
+
+        // Prune proto-array and remap attestation tracker indices
+        var indexMapping = _protoArray.Prune(_latestFinalized.Root);
+        if (indexMapping.Count > 0)
+            RemapAttestationTrackerIndices(indexMapping);
+
         PruneFinalizedAttestationData();
+    }
+
+    /// <summary>
+    /// Remap AttestationTracker indices after proto-array pruning.
+    /// Matches zeam rebase logic: null out indices that were pruned.
+    /// </summary>
+    private void RemapAttestationTrackerIndices(Dictionary<int, int> oldToNew)
+    {
+        var keys = new List<ulong>(_attestationTrackers.Keys);
+        foreach (var vid in keys)
+        {
+            var tracker = _attestationTrackers[vid];
+            var changed = false;
+
+            if (tracker.AppliedIndex.HasValue)
+            {
+                if (oldToNew.TryGetValue(tracker.AppliedIndex.Value, out var newIdx))
+                {
+                    tracker.AppliedIndex = newIdx;
+                }
+                else
+                {
+                    tracker.AppliedIndex = null;
+                }
+                changed = true;
+            }
+
+            if (tracker.LatestKnown.HasValue)
+            {
+                var known = tracker.LatestKnown.Value;
+                if (oldToNew.TryGetValue(known.Index, out var newIdx))
+                {
+                    known.Index = newIdx;
+                    tracker.LatestKnown = known;
+                }
+                else
+                {
+                    tracker.LatestKnown = null;
+                }
+                changed = true;
+            }
+
+            if (tracker.LatestNew.HasValue)
+            {
+                var n = tracker.LatestNew.Value;
+                if (oldToNew.TryGetValue(n.Index, out var newIdx))
+                {
+                    n.Index = newIdx;
+                    tracker.LatestNew = n;
+                }
+                else
+                {
+                    tracker.LatestNew = null;
+                }
+                changed = true;
+            }
+
+            if (changed)
+                _attestationTrackers[vid] = tracker;
+        }
     }
 
     private void PruneFinalizedAttestationData()
@@ -579,13 +817,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         PruneAttestationDataOlderThan(_latestFinalized.Slot.Value);
     }
 
-    /// <summary>
-    /// Slot-based pruning: removes all attestation data, gossip signatures, and
-    /// aggregated payloads for slots at or below the given cutoff. Called both on
-    /// finalization advances (cutoff = finalized slot) and periodically on tick
-    /// (cutoff = currentSlot - MaxAttestationAgeSlots) to bound memory growth
-    /// even when finalization stalls.
-    /// </summary>
     private void PruneAttestationDataOlderThan(ulong cutoffSlot)
     {
         var staleDataKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -616,16 +847,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _newAggregatedPayloads.Remove(dataKey);
         }
 
-        // Prune validator attestation records whose data is now stale.
-        var staleVids = new List<ulong>();
-        foreach (var kv in _knownAttestations)
-        {
-            if (kv.Value.Slot.Value <= cutoffSlot)
-                staleVids.Add(kv.Key);
-        }
-        foreach (var vid in staleVids)
-            _knownAttestations.Remove(vid);
-
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             var payloadBytes = _knownAggregatedPayloads.Values
@@ -636,143 +857,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 _gossipSignatures.Count, _knownAggregatedPayloads.Values.Sum(v => v.Count),
                 payloadBytes);
         }
-
     }
 
     /// <summary>
-    /// Computes safe_target at interval 3 by running LMD GHOST with a 2/3 supermajority
-    /// threshold. Merges both attestation pools (known + new) for the full picture.
-    /// Matches leanSpec update_safe_target() / ethlambda update_safe_target().
-    /// </summary>
-    private void UpdateSafeTarget()
-    {
-        var numValidators = _validatorCount;
-        // ceil(2/3 * numValidators)
-        var minTargetScore = (long)((numValidators * 2 + 2) / 3);
-
-        // Merge both attestation pools to extract per-validator votes
-        var allAttestations = new Dictionary<ulong, AttestationData>();
-
-        // Known individual attestations (already promoted)
-        foreach (var (vid, data) in _knownAttestations)
-            allAttestations[vid] = data;
-
-        // Pending individual attestations (not yet promoted)
-        foreach (var (vid, data) in _pendingAttestations)
-            allAttestations[vid] = data;
-
-        // Extract votes from known aggregated payloads
-        ExtractVotesFromPayloads(_knownAggregatedPayloads, allAttestations);
-
-        // Extract votes from new aggregated payloads
-        ExtractVotesFromPayloads(_newAggregatedPayloads, allAttestations);
-
-        // Run LMD GHOST with min_score threshold
-        _safeTarget = ComputeLmdGhostHead(_latestJustified.Root, allAttestations, minTargetScore);
-        if (_logger.IsEnabled(LogLevel.Debug))
-        {
-            var safeSlot = _protoArray.GetSlot(_safeTarget) ?? 0UL;
-            _logger.LogDebug(
-                "UpdateSafeTarget. ValidatorCount: {ValidatorCount}, MinTargetScore: {MinTargetScore}, AttestationVoters: {AttestationVoters}, SafeTargetSlot: {SafeTargetSlot}, SafeTargetRoot: {SafeTargetRoot}",
-                numValidators, minTargetScore, allAttestations.Count, safeSlot, Convert.ToHexString(_safeTarget.AsSpan())[..8]);
-        }
-    }
-
-    private void ExtractVotesFromPayloads(
-        Dictionary<string, List<AggregatedSignatureProof>> payloads,
-        Dictionary<ulong, AttestationData> target)
-    {
-        foreach (var (dataRootKey, proofs) in payloads)
-        {
-            if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
-                continue;
-
-            foreach (var proof in proofs)
-            {
-                if (proof.Participants.TryToValidatorIndices(out var ids))
-                {
-                    foreach (var id in ids)
-                        target[id] = data;
-                }
-            }
-        }
-    }
-
-    // TODO: Replace full-rebuild LMD GHOST with incremental proto-array deltas (separate PR).
-    // Current approach rebuilds blocks dict + walks all attestations back to startRoot every call: O(attestations × depth).
-    // zeam's approach (forkchoice.zig): add Weight/BestChild/BestDescendant to ProtoNode,
-    // track per-validator AttestationTracker (appliedIndex + latestKnown/latestNew),
-    // computeDeltas (old index -1, new index +1) → applyDeltas propagates up parent chain
-    // and recomputes bestChild/bestDescendant with cutoff_weight filter.
-    // Both head (cutoff=0) and safe_target (cutoff=2n/3) use the same mechanism: O(nodes).
-    /// <summary>
-    /// LMD GHOST implementation for safe_target computation.
-    /// Walks from start_root, accumulating attestation weights, filtering by min_score.
-    /// Matches leanSpec _compute_lmd_ghost_head() / ethlambda compute_lmd_ghost_head().
-    /// </summary>
-    private Bytes32 ComputeLmdGhostHead(
-        Bytes32 startRoot,
-        Dictionary<ulong, AttestationData> attestations,
-        long minScore)
-    {
-        var startSlot = _protoArray.GetSlot(startRoot) ?? 0UL;
-
-        // Build blocks lookup: root -> (slot, parentRoot)
-        var blocks = new Dictionary<string, (ulong Slot, Bytes32 ParentRoot)>(StringComparer.Ordinal);
-        foreach (var (root, slot, parentRoot) in _protoArray.GetAllBlocks())
-            blocks[ProtoArray.RootKey(root)] = (slot, parentRoot);
-
-        // Compute per-block weights by walking from each vote's head back to start
-        var weights = new Dictionary<string, long>(StringComparer.Ordinal);
-        foreach (var data in attestations.Values)
-        {
-            var currentKey = ProtoArray.RootKey(data.Head.Root);
-            while (blocks.TryGetValue(currentKey, out var blk) && blk.Slot > startSlot)
-            {
-                weights[currentKey] = weights.GetValueOrDefault(currentKey) + 1;
-                currentKey = ProtoArray.RootKey(blk.ParentRoot);
-            }
-        }
-
-        // Build children map, filtering by min_score
-        var childrenMap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach (var (rootKey, blk) in blocks)
-        {
-            var parentKey = ProtoArray.RootKey(blk.ParentRoot);
-            if (blk.ParentRoot.Equals(Bytes32.Zero()))
-                continue;
-
-            if (minScore > 0 && weights.GetValueOrDefault(rootKey) < minScore)
-                continue;
-
-            if (!childrenMap.TryGetValue(parentKey, out var children))
-            {
-                children = new List<string>();
-                childrenMap[parentKey] = children;
-            }
-            children.Add(rootKey);
-        }
-
-        // Greedy walk from start_root following heaviest child
-        var head = ProtoArray.RootKey(startRoot);
-        while (childrenMap.TryGetValue(head, out var ch) && ch.Count > 0)
-        {
-            // Pick child with highest weight, tie-break by lexicographic root key
-            head = ch.OrderByDescending(c => weights.GetValueOrDefault(c))
-                     .ThenByDescending(c => c, StringComparer.Ordinal)
-                     .First();
-        }
-
-        // Convert hex key back to Bytes32
-        return new Bytes32(Convert.FromHexString(head));
-    }
-
-    /// <summary>
-    /// Computes attestation target checkpoint matching leanSpec get_attestation_target():
-    /// 1. Start at head
-    /// 2. Walk back toward safe_target (max JUSTIFICATION_LOOKBACK_SLOTS steps)
-    /// 3. Walk back until slot is justifiable after finalized_slot
-    /// 4. Clamp to at least justified checkpoint (ethlambda safeguard)
+    /// Computes attestation target checkpoint matching leanSpec get_attestation_target().
     /// </summary>
     public Checkpoint ComputeTargetCheckpoint()
     {
@@ -784,8 +872,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         var initialHeadSlot = targetSlot;
 
-        // Walk back toward safe target (up to JUSTIFICATION_LOOKBACK_SLOTS steps).
-        // Matches leanSpec: no justified guard — just walk toward safe_target.
         for (var i = 0; i < JustificationLookbackSlots; i++)
         {
             if (targetSlot > safeTargetSlot)
@@ -802,7 +888,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             }
         }
 
-        // Walk back until slot is justifiable after finalized_slot
         while (targetSlot > finalizedSlot &&
                !new Slot(targetSlot).IsJustifiableAfter(new Slot(finalizedSlot)))
         {
@@ -819,9 +904,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             "ComputeTargetCheckpoint. HeadSlot: {HeadSlot}, SafeTargetSlot: {SafeTargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, FinalTarget: {FinalTarget}",
             initialHeadSlot, safeTargetSlot, justifiedSlot, finalizedSlot, targetSlot);
 
-        // Clamp: target must not walk behind justified (ethlambda safeguard).
-        // When a block advances latest_justified between safe_target updates,
-        // the walk-back above can land on a slot behind the new justified checkpoint.
         if (targetSlot < justifiedSlot)
         {
             _logger.LogDebug(

@@ -10,9 +10,10 @@ public interface IConsensusService
     ulong FinalizedSlot { get; }
     bool HasUnknownBlockRootsInFlight { get; }
     byte[] HeadRoot { get; }
-    byte[] GetProposalHeadRoot();
+    (byte[] ParentRoot, AttestationData BaseAttestationData) GetProposalContext(ulong slot);
     AttestationData CreateAttestationData(ulong slot);
     bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason);
+    bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason);
     bool TryApplyLocalBlock(SignedBlockWithAttestation signedBlock, out string reason);
     bool TryApplyLocalAttestation(SignedAttestation signedAttestation, out string reason);
     bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason);

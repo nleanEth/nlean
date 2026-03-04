@@ -5,7 +5,7 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 quickstart_dir="${NLEAN_QUICKSTART_DIR:-$root_dir/vendor/lean-quickstart}"
 network_dir="local-devnet-nlean"
 network_name="${NLEAN_NETWORK_NAME:-devnet0}"
-nodes="${NLEAN_INTEROP_NODES:-nlean_0,nlean_1,ethlambda_0,ethlambda_1}"
+nodes="${NLEAN_INTEROP_NODES:-nlean_0,nlean_1,qlean_0,qlean_1}"
 with_metrics="true"
 nlean_setup="${NLEAN_QUICKSTART_SETUP:-docker}"
 nlean_docker_image="${NLEAN_DOCKER_IMAGE:-nlean-local:devnet3}"
@@ -260,7 +260,6 @@ prepare_validator_config() {
 }
 
 "$root_dir/scripts/libp2p/build-patched-pubsub-package.sh"
-"$root_dir/scripts/libp2p/build-patched-quic-package.sh"
 
 prepare_validator_config \
   "$root_dir/config/validator-config.quickstart.yaml" \
@@ -322,6 +321,10 @@ run_spin_node() {
   local cmd=("./spin-node.sh" --node "$nodes")
   cmd+=(--generateGenesis)
 
+  if [[ -n "${NLEAN_AGGREGATOR_NODE:-}" ]]; then
+    cmd+=(--aggregator "$NLEAN_AGGREGATOR_NODE")
+  fi
+
   if [[ "$with_metrics" == "true" ]]; then
     cmd+=(--metrics)
   fi
@@ -334,7 +337,6 @@ run_spin_node() {
     export NLEAN_DOCKER_IMAGE="$nlean_docker_image"
     export NLEAN_NETWORK_NAME="$network_name"
     export NLEAN_QUICKSTART_NODES="$nodes"
-    export PRESERVE_AGGREGATORS=true
 
     if [[ "$use_sudo_shim" == "true" ]]; then
       PATH="$sudo_shim_dir:$PATH" "${cmd[@]}"

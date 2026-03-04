@@ -256,6 +256,72 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         Assert.That(store.HeadSlot, Is.EqualTo(2UL));
     }
 
+    [Test]
+    public void AcceptNewAttestations_DoesNotRegressLatestKnown_WhenLatestNewIsOlder()
+    {
+        var store = CreateStore();
+        var genesisRoot = store.HeadRoot;
+        var genesisData = MakeAttestationData(store);
+
+        // Two competing children at slot 1.
+        var blockA = new Block(new Slot(1), 0, genesisRoot, Bytes32.Zero(),
+            new BlockBody(Array.Empty<AggregatedAttestation>()));
+        var signedA = new SignedBlockWithAttestation(
+            new BlockWithAttestation(blockA, new Attestation(0, genesisData)),
+            new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
+        Assert.That(ApplyBlock(store, signedA).Accepted, Is.True);
+        var rootA = new Bytes32(blockA.HashTreeRoot());
+
+        var blockD = new Block(new Slot(1), 1, genesisRoot, Bytes32.Zero(),
+            new BlockBody(Array.Empty<AggregatedAttestation>()));
+        var signedD = new SignedBlockWithAttestation(
+            new BlockWithAttestation(blockD, new Attestation(1, genesisData)),
+            new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
+        Assert.That(ApplyBlock(store, signedD).Accepted, Is.True);
+        var rootD = new Bytes32(blockD.HashTreeRoot());
+
+        // Put validator 0's latestKnown on A at slot 1 via block-body attestation.
+        var attForA = new AttestationData(
+            new Slot(1),
+            new Checkpoint(rootA, new Slot(1)),
+            new Checkpoint(genesisRoot, new Slot(0)),
+            new Checkpoint(genesisRoot, new Slot(0)));
+        var knownBits = new AggregationBits(new[] { true, false, false, false });
+        var knownProof = new AggregatedSignatureProof(knownBits, new byte[32]);
+        var blockB = new Block(new Slot(2), 2, rootA, Bytes32.Zero(),
+            new BlockBody(new[] { new AggregatedAttestation(knownBits, attForA) }));
+        var signedB = new SignedBlockWithAttestation(
+            new BlockWithAttestation(blockB, new Attestation(2, attForA)),
+            new BlockSignatures(new[] { knownProof }, XmssSignature.Empty()));
+        Assert.That(ApplyBlock(store, signedB).Accepted, Is.True);
+
+        var knownBefore = store.GetKnownAttestations();
+        Assert.That(knownBefore.ContainsKey(0), Is.True);
+        Assert.That(knownBefore[0].Head.Root, Is.EqualTo(rootA));
+        Assert.That(knownBefore[0].Slot.Value, Is.EqualTo(1UL));
+
+        // Inject an older gossip vote for validator 0 on fork D.
+        var olderData = new AttestationData(
+            new Slot(0),
+            new Checkpoint(rootD, new Slot(1)),
+            new Checkpoint(genesisRoot, new Slot(0)),
+            new Checkpoint(genesisRoot, new Slot(0)));
+        var olderBits = AggregationBits.FromValidatorIndices(new ulong[] { 0 });
+        var olderProof = new AggregatedSignatureProof(olderBits, new byte[16]);
+        Assert.That(
+            store.TryOnGossipAggregatedAttestation(new SignedAggregatedAttestation(olderData, olderProof), out var reason),
+            Is.True,
+            reason);
+
+        // Interval 4 => AcceptNewAttestations.
+        store.TickInterval(2, IntervalsPerSlot - 1);
+
+        var knownAfter = store.GetKnownAttestations();
+        Assert.That(knownAfter.ContainsKey(0), Is.True);
+        Assert.That(knownAfter[0].Head.Root, Is.EqualTo(rootA));
+        Assert.That(knownAfter[0].Slot.Value, Is.EqualTo(1UL));
+    }
+
     private static ProtoArrayForkChoiceStore CreateStore()
     {
         var config = new ConsensusConfig { InitialValidatorCount = 4 };

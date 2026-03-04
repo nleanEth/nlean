@@ -273,7 +273,7 @@ public sealed class ValidatorService : IValidatorService
                 }
 
                 if (_validatorDutyConfig.PublishAggregates &&
-                    intervalInSlot >= 2 &&
+                    intervalInSlot == 2 &&
                     lastAggregatedSlot != slot)
                 {
                     lastAggregatedSlot = slot;
@@ -568,7 +568,7 @@ public sealed class ValidatorService : IValidatorService
 
     private async Task<bool> TryPublishProposerBlockAsync(ulong slot, CancellationToken cancellationToken)
     {
-        var parentRootBytes = _consensusService.GetProposalHeadRoot();
+        var (parentRootBytes, baseAttestationData) = _consensusService.GetProposalContext(slot);
         if (parentRootBytes.Length != SszEncoding.Bytes32Length)
         {
             _logger.LogWarning(
@@ -579,7 +579,6 @@ public sealed class ValidatorService : IValidatorService
         }
 
         var parentRoot = new Bytes32(parentRootBytes);
-        var baseAttestationData = _consensusService.CreateAttestationData(slot);
         _logger.LogInformation(
             "Proposer checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
             slot,
@@ -590,7 +589,7 @@ public sealed class ValidatorService : IValidatorService
             _consensusService.FinalizedSlot,
             Convert.ToHexString(baseAttestationData.Source.Root.AsSpan()),
             Convert.ToHexString(baseAttestationData.Target.Root.AsSpan()));
-        var (aggregatedAttestations, aggregatedProofs) = BuildAggregatedAttestations(slot, baseAttestationData.Source);
+        var (aggregatedAttestations, aggregatedProofs) = BuildAggregatedAttestations(slot, parentRoot, baseAttestationData.Source);
 
         var candidateBlock = new Block(
             new Slot(slot),
@@ -654,19 +653,58 @@ public sealed class ValidatorService : IValidatorService
         return true;
     }
 
+    /// <summary>
+    /// Fixed-point attestation collection matching leanSpec build_block (state.py:780-837).
+    /// Iteratively discovers attestations across source levels as justified advances.
+    /// </summary>
     private (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) BuildAggregatedAttestations(
         ulong slot,
-        Checkpoint requiredSource)
+        Bytes32 parentRoot,
+        Checkpoint initialSource)
     {
-        var (knownAttestations, knownProofs) = _consensusService.GetKnownAggregatedPayloadsForBlock(slot, requiredSource);
-        if (knownAttestations.Count == 0 || knownProofs.Count == 0)
+        var allAttestations = new List<AggregatedAttestation>();
+        var allProofs = new List<AggregatedSignatureProof>();
+        var currentSource = initialSource;
+
+        // Fixed-point loop: each iteration may advance justified, unlocking new attestations.
+        for (var iteration = 0; iteration < 10; iteration++)
         {
-            return (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
+            var (iterAttestations, iterProofs) = _consensusService.GetKnownAggregatedPayloadsForBlock(slot, currentSource);
+            if (iterAttestations.Count == 0)
+                break;
+
+            allAttestations.AddRange(iterAttestations);
+            allProofs.AddRange(iterProofs);
+
+            // Select best from ALL accumulated candidates, build candidate block, run STF.
+            var tempAttestations = new List<AggregatedAttestation>();
+            var tempProofs = new List<AggregatedSignatureProof>();
+            SelectBestProofs(allAttestations, allProofs, tempAttestations, tempProofs, "consensus");
+            if (tempAttestations.Count == 0)
+                break;
+
+            var candidateBlock = new Block(
+                new Slot(slot), _validatorId, parentRoot, Bytes32.Zero(),
+                new BlockBody(tempAttestations));
+
+            if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out _, out var postJustified, out _))
+                break;
+
+            if (postJustified.Slot.Value <= currentSource.Slot.Value)
+                break; // Fixed point reached — justified did not advance.
+
+            _logger.LogInformation(
+                "Fixed-point iteration {Iteration}: justified advanced {OldSlot} -> {NewSlot}",
+                iteration, currentSource.Slot.Value, postJustified.Slot.Value);
+
+            currentSource = postJustified;
         }
 
+        // Final selection from all accumulated candidates.
         var selectedAttestations = new List<AggregatedAttestation>();
         var selectedProofs = new List<AggregatedSignatureProof>();
-        SelectBestProofs(knownAttestations, knownProofs, selectedAttestations, selectedProofs, "consensus");
+        if (allAttestations.Count > 0)
+            SelectBestProofs(allAttestations, allProofs, selectedAttestations, selectedProofs, "consensus");
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -695,127 +733,96 @@ public sealed class ValidatorService : IValidatorService
         List<AggregatedSignatureProof> outputProofs,
         string source)
     {
-        var candidateProofs = new List<(string DataRootKey, string TargetRootKey, AttestationData Data, AggregatedSignatureProof Proof, List<ulong> Participants)>();
+        var groups = new Dictionary<string, (AttestationData Data, HashSet<ulong> Allowed, List<AggregatedSignatureProof> Proofs)>(
+            StringComparer.Ordinal);
+
         var limit = Math.Min(inputAttestations.Count, inputProofs.Count);
-        var bestPerDataRoot = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var i = 0; i < limit; i++)
         {
             var attestation = inputAttestations[i];
             var proof = inputProofs[i];
-            if (!proof.Participants.TryToValidatorIndices(out var participantIds) || participantIds.Count == 0)
+
+            if (!proof.Participants.TryToValidatorIndices(out var proofParticipants) ||
+                proofParticipants.Count == 0)
+            {
+                continue;
+            }
+
+            if (!attestation.AggregationBits.TryToValidatorIndices(out var allowedIds))
             {
                 continue;
             }
 
             var dataRootKey = Convert.ToHexString(attestation.Data.HashTreeRoot());
-            var targetRootKey = Convert.ToHexString(attestation.Data.Target.Root.AsSpan());
-
-            if (bestPerDataRoot.TryGetValue(dataRootKey, out var existingIndex))
+            if (!groups.TryGetValue(dataRootKey, out var group))
             {
-                var existingCount = candidateProofs[existingIndex].Participants.Count;
-                if (participantIds.Count <= existingCount)
-                {
-                    continue;
-                }
+                group = (attestation.Data, new HashSet<ulong>(), new List<AggregatedSignatureProof>());
+            }
 
-                candidateProofs[existingIndex] = (dataRootKey, targetRootKey, attestation.Data, proof, participantIds.ToList());
-            }
-            else
+            foreach (var allowedId in allowedIds)
             {
-                bestPerDataRoot[dataRootKey] = candidateProofs.Count;
-                candidateProofs.Add((dataRootKey, targetRootKey, attestation.Data, proof, participantIds.ToList()));
+                group.Allowed.Add(allowedId);
             }
+            group.Proofs.Add(proof);
+            groups[dataRootKey] = group;
         }
 
-        if (candidateProofs.Count == 0)
+        if (groups.Count == 0)
         {
             return;
         }
 
-        var quorumThreshold = ComputeTwoThirdsThreshold(Math.Max(1UL, _validatorCount));
-        var selectedDataRoots = new HashSet<string>(StringComparer.Ordinal);
-        var globallyCoveredParticipants = new HashSet<ulong>();
-
-        var targetGroups = candidateProofs
-            .GroupBy(candidate => candidate.TargetRootKey, StringComparer.Ordinal)
-            .Select(group =>
-            {
-                var coverage = new HashSet<ulong>(group.SelectMany(candidate => candidate.Participants));
-                var sortedCandidates = group
-                    .OrderByDescending(candidate => candidate.Participants.Count)
-                    .ThenByDescending(candidate => candidate.Data.Slot.Value)
-                    .ThenBy(candidate => candidate.DataRootKey, StringComparer.Ordinal)
-                    .ToList();
-
-                return (
-                    TargetRootKey: group.Key,
-                    CoverageCount: coverage.Count,
-                    MaxTargetSlot: group.Max(candidate => candidate.Data.Target.Slot.Value),
-                    CanReachQuorum: coverage.Count >= quorumThreshold,
-                    Candidates: sortedCandidates);
-            })
-            .OrderByDescending(group => group.CanReachQuorum)
-            .ThenByDescending(group => group.CoverageCount)
-            .ThenByDescending(group => group.MaxTargetSlot)
-            .ThenBy(group => group.TargetRootKey, StringComparer.Ordinal)
-            .ToList();
-
-        foreach (var group in targetGroups)
+        // Align with ethlambda select_aggregated_proofs:
+        // for each attestation data root, greedily cover remaining validators using known proofs.
+        foreach (var entry in groups.OrderByDescending(g => g.Value.Data.Slot.Value).ThenBy(g => g.Key, StringComparer.Ordinal))
         {
             if (outputAttestations.Count >= MaxAggregatedProofsPerBlock)
             {
                 break;
             }
 
-            var groupCoveredParticipants = new HashSet<ulong>();
-            var remainingGroupCandidates = group.Candidates
-                .Where(candidate => !selectedDataRoots.Contains(candidate.DataRootKey))
-                .ToList();
+            var data = entry.Value.Data;
+            var proofs = entry.Value.Proofs;
+            var remaining = new SortedSet<ulong>(entry.Value.Allowed);
 
-            while (outputAttestations.Count < MaxAggregatedProofsPerBlock && remainingGroupCandidates.Count > 0)
+            while (outputAttestations.Count < MaxAggregatedProofsPerBlock && remaining.Count > 0)
             {
-                var bestIndex = -1;
-                var bestGroupCoverageGain = -1;
-                var bestGlobalCoverageGain = -1;
-                var bestParticipantCount = -1;
-                ulong bestSlot = 0;
+                // ethlambda picks an arbitrary validator from remaining and only
+                // considers proofs containing that validator.
+                var targetValidator = remaining.Min();
 
-                for (var index = 0; index < remainingGroupCandidates.Count; index++)
+                AggregatedSignatureProof? bestProof = null;
+                List<ulong>? bestCovered = null;
+                var maxCoverage = 0;
+                foreach (var candidateProof in proofs)
                 {
-                    var candidate = remainingGroupCandidates[index];
-                    var groupCoverageGain = candidate.Participants.Count(id => !groupCoveredParticipants.Contains(id));
-                    var globalCoverageGain = candidate.Participants.Count(id => !globallyCoveredParticipants.Contains(id));
-                    var participantCount = candidate.Participants.Count;
-                    var slotValue = candidate.Data.Slot.Value;
-
-                    if (groupCoverageGain > bestGroupCoverageGain ||
-                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain > bestGlobalCoverageGain) ||
-                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount > bestParticipantCount) ||
-                        (groupCoverageGain == bestGroupCoverageGain && globalCoverageGain == bestGlobalCoverageGain && participantCount == bestParticipantCount && slotValue > bestSlot))
+                    if (!candidateProof.Participants.TryToValidatorIndices(out var proofParticipants) ||
+                        proofParticipants.Count == 0 ||
+                        !proofParticipants.Contains(targetValidator))
                     {
-                        bestIndex = index;
-                        bestGroupCoverageGain = groupCoverageGain;
-                        bestGlobalCoverageGain = globalCoverageGain;
-                        bestParticipantCount = participantCount;
-                        bestSlot = slotValue;
+                        continue;
                     }
+
+                    var covered = proofParticipants.Where(remaining.Contains).ToList();
+                    if (covered.Count <= maxCoverage)
+                    {
+                        continue;
+                    }
+
+                    maxCoverage = covered.Count;
+                    bestProof = candidateProof;
+                    bestCovered = covered;
                 }
 
-                if (bestIndex < 0 || bestGroupCoverageGain <= 0)
+                if (bestProof is null || bestCovered is null || bestCovered.Count == 0)
                 {
                     break;
                 }
 
-                var selected = remainingGroupCandidates[bestIndex];
-                var participants = CloneAggregationBits(selected.Proof.Participants);
-                outputAttestations.Add(new AggregatedAttestation(participants, selected.Data));
-                outputProofs.Add(CloneAggregatedProof(selected.Proof));
-                selectedDataRoots.Add(selected.DataRootKey);
-                foreach (var participant in selected.Participants)
-                {
-                    groupCoveredParticipants.Add(participant);
-                    globallyCoveredParticipants.Add(participant);
-                }
+                // Output attestation bits must match proof participants exactly.
+                var participants = CloneAggregationBits(bestProof.Participants);
+                outputAttestations.Add(new AggregatedAttestation(participants, data));
+                outputProofs.Add(CloneAggregatedProof(bestProof));
 
                 var participantIds = participants.TryToValidatorIndices(out var ids)
                     ? string.Join(",", ids)
@@ -823,17 +830,16 @@ public sealed class ValidatorService : IValidatorService
                 _logger.LogDebug(
                     "Prepared block aggregate proof. Source: {Source}, Slot: {Slot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], DataRoot: {DataRoot}, TargetRoot: {TargetRoot}, ProofBytes: {ProofBytes}",
                     source,
-                    selected.Data.Slot.Value,
-                    selected.Data.Target.Slot.Value,
+                    data.Slot.Value,
+                    data.Target.Slot.Value,
                     participantIds,
-                    Convert.ToHexString(selected.Data.HashTreeRoot()),
-                    Convert.ToHexString(selected.Data.Target.Root.AsSpan()),
-                    selected.Proof.ProofData.Length);
+                    Convert.ToHexString(data.HashTreeRoot()),
+                    Convert.ToHexString(data.Target.Root.AsSpan()),
+                    bestProof.ProofData.Length);
 
-                remainingGroupCandidates.RemoveAt(bestIndex);
-                if (group.CanReachQuorum && groupCoveredParticipants.Count >= quorumThreshold)
+                foreach (var vid in bestCovered)
                 {
-                    break;
+                    remaining.Remove(vid);
                 }
             }
         }
