@@ -388,13 +388,21 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ToDataRootKey(attestation.Message);
         _attestationDataByRoot[dataRootKey] = attestation.Message;
 
-        // Match zeam/ethlambda onAttestationUnlocked with is_from_block=false:
-        // All gossip attestations update latestNew, so UpdateSafeTarget uses
-        // the full network's gossip view (matching ethlambda behavior).
-        var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
-        if (headIndex.HasValue)
+        // Match zeam onAttestationUnlocked with is_from_block=false:
+        // Only the LOCAL validator's own attestation updates latestNew.
+        // Gossip from other validators (received for aggregation) is used only
+        // for signature collection and does NOT affect fork choice safeTarget.
+        // This ensures UpdateSafeTarget is based on the local validator's view,
+        // preventing the aggregator node from having a spuriously large latestNew
+        // vote set that would cause an aggressive safe target and consecutive
+        // justification.
+        if (attestation.ValidatorId == _localValidatorId)
         {
-            UpdateTrackerFromGossip(attestation.ValidatorId, headIndex.Value, attestation.Message.Slot.Value, attestation.Message);
+            var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
+            if (headIndex.HasValue)
+            {
+                UpdateTrackerFromGossip(attestation.ValidatorId, headIndex.Value, attestation.Message.Slot.Value, attestation.Message);
+            }
         }
 
         if (storeSignature)
