@@ -225,13 +225,11 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void TickInterval_At3_SafeTargetStaysAtGenesisWhenOnlyNonLocalGossip()
+    public void TickInterval_At3_SafeTargetAdvancesWhenNonLocalGossipMeetsCutoff()
     {
-        // LocalValidatorId=0 (default). With 4 validators cutoffWeight=3.
-        // Individual gossip from validators 1,2,3 should NOT update latestNew —
-        // only the local validator's (0) gossip updates latestNew for safeTarget.
-        // Even with 4 attestations received, safeTarget stays at genesis because
-        // latestNew has only 0 or 1 vote (own validator) < cutoffWeight=3.
+        // All gossip attestations update latestNew (matching ethlambda behavior).
+        // With 4 validators cutoffWeight=ceil(2*4/3)=3. Gossip from validators 1,2,3
+        // (3 votes) meets the cutoff → safeTarget should advance to the gossiped block.
         var store = CreateStore(validatorCount: 4);
         var genesisRoot = store.HeadRoot;
 
@@ -255,19 +253,19 @@ public sealed class ProtoArrayForkChoiceStoreTests
             new Checkpoint(block2Root, new Slot(2)),
             new Checkpoint(block2Root, new Slot(2)));
 
-        // Send gossip from validators 1, 2, 3 only (non-local). These are aggregated for
-        // signature collection but must NOT update latestNew for the fork choice safeTarget.
+        // Send gossip from validators 1, 2, 3. All update latestNew now.
+        // 3 votes >= cutoffWeight=3 → safeTarget should advance.
         for (ulong v = 1; v < 4; v++)
         {
             var att = new SignedAttestation(v, attData, XmssSignature.Empty());
             Assert.That(store.TryOnAttestation(att, storeSignature: true, out _), Is.True);
         }
 
-        // Interval 3 calls UpdateSafeTarget. cutoffWeight=3, only 0 local votes → stays.
+        // Interval 3 calls UpdateSafeTarget. cutoffWeight=3, 3 votes → advances.
         store.TickInterval(3, 3);
 
-        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.True,
-            "Safe target must not advance from non-local validators' gossip (aggregation only path)");
+        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,
+            "Safe target should advance when non-local gossip meets cutoffWeight");
     }
 
     [Test]
