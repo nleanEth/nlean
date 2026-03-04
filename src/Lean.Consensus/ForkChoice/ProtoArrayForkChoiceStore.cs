@@ -167,18 +167,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
-        // Match zeam onGossipAggregatedAttestationUnlocked: unpack each participant
-        // and update their latestNew tracker (is_from_block=false).
-        // This is the primary path by which non-aggregator nodes get N votes into
-        // latestNew so that updateSafeTarget can advance the safe target.
-        var headIndex = _protoArray.GetIndex(signed.Data.Head.Root);
-        if (headIndex.HasValue)
-        {
-            foreach (var vid in participantIds)
-            {
-                UpdateTrackerFromGossip(vid, headIndex.Value, signed.Data.Slot.Value, signed.Data);
-            }
-        }
+        // Aggregated gossip payloads are stored for block building only.
+        // They do NOT update per-validator latestNew trackers: every node
+        // (aggregator and non-aggregator alike) uses only its own individual
+        // gossip attestation (1 vote) for UpdateSafeTarget, matching ethlambda's
+        // behavior where the aggregator doesn't receive its own proof back and
+        // all nodes base safeTarget on locally-known data.
 
         reason = string.Empty;
         return true;
@@ -393,10 +387,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ToDataRootKey(attestation.Message);
         _attestationDataByRoot[dataRootKey] = attestation.Message;
 
-        // Match zeam onAttestationUnlocked with is_from_block=false:
-        // Only the local validator's own individual gossip updates latestNew here.
-        // Other validators' votes reach latestNew via TryOnGossipAggregatedAttestation
-        // (aggregated proof unpacking), matching zeam's onGossipAggregatedAttestationUnlocked.
+        // Only the local validator's own individual gossip updates latestNew.
+        // Other validators' votes do not update latestNew here: the aggregator
+        // collects them to build the proof (via storeSignature / gossipSignatures),
+        // but the proof is published for other nodes to consume — not fed back into
+        // the aggregator's own safeTarget computation (matching ethlambda behavior).
         if (attestation.ValidatorId == _localValidatorId)
         {
             var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
