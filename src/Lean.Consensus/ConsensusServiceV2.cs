@@ -488,12 +488,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 await SubscribeTopicAsync(_gossipTopics.BlockTopic, _cts.Token);
                 await SubscribeTopicAsync(_gossipTopics.AggregateTopic, _cts.Token);
 
-                if (_config.IsAggregator)
+                // All nodes subscribe to the attestation subnet so they can publish
+                // their own individual attestation. Non-aggregators use storeSignature=false
+                // (see ProcessGossipAttestationFromInbox) so they don't accumulate signatures.
+                foreach (var subnetTopic in _attestationSubnetTopics)
                 {
-                    foreach (var subnetTopic in _attestationSubnetTopics)
-                    {
-                        await SubscribeTopicAsync(subnetTopic, _cts.Token);
-                    }
+                    await SubscribeTopicAsync(subnetTopic, _cts.Token);
                 }
             }
 
