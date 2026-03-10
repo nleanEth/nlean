@@ -245,7 +245,6 @@ internal sealed class ChainStateTransition
                 rootToSlot[ToKey(historicalBlockHashes[(int)slot])] = slot;
             }
 
-            var originalFinalizedSlot = latestFinalized.Slot.Value;
             attestationsProcessingStopwatch.Start();
             foreach (var aggregated in block.Body.Attestations)
             {
@@ -302,7 +301,7 @@ internal sealed class ChainStateTransition
                     continue;
                 }
 
-                if (!new Slot(targetSlot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                if (!new Slot(targetSlot).IsJustifiableAfter(latestFinalized.Slot))
                 {
                     continue;
                 }
@@ -357,7 +356,7 @@ internal sealed class ChainStateTransition
                 var canFinalize = true;
                 for (var slot = sourceSlot + 1; slot < targetSlot; slot++)
                 {
-                    if (new Slot(slot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                    if (new Slot(slot).IsJustifiableAfter(latestFinalized.Slot))
                     {
                         canFinalize = false;
                         break;

@@ -56,7 +56,6 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
         var latestFinalized = parentState.LatestFinalized;
         var justificationVotes = CloneVotes(parentState.JustificationVotes);
         var justifiedSlots = CloneJustifiedSlots(parentState.JustifiedSlots, latestFinalized, latestJustified);
-        var originalFinalizedSlot = latestFinalized.Slot.Value;
 
         foreach (var aggregated in block.Body.Attestations)
         {
@@ -73,7 +72,6 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
                     validatorCount,
                     ref latestJustified,
                     ref latestFinalized,
-                    originalFinalizedSlot,
                     justificationVotes,
                     justifiedSlots,
                     out reason))
@@ -119,7 +117,6 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
         ulong validatorCount,
         ref Checkpoint latestJustified,
         ref Checkpoint latestFinalized,
-        ulong originalFinalizedSlot,
         Dictionary<string, VoteAccumulator> justificationVotes,
         HashSet<ulong> justifiedSlots,
         out string reason)
@@ -151,7 +148,7 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
             return true;
         }
 
-        if (!IsJustifiableSlot(originalFinalizedSlot, data.Target.Slot.Value))
+        if (!IsJustifiableSlot(latestFinalized.Slot.Value, data.Target.Slot.Value))
         {
             reason = string.Empty;
             return true;
@@ -184,11 +181,13 @@ public sealed class ForkChoiceStateTransition : IForkChoiceStateTransition
             // matching leanSpec's unconditional assignment.
             latestJustified = data.Target;
 
+            // leanSpec finalization rule: finalize source only when NO justifiable
+            // slots exist between source and target. Any justifiable gap blocks
+            // finalization regardless of whether those slots are already justified.
             var canFinalize = true;
             for (var slot = data.Source.Slot.Value + 1; slot < data.Target.Slot.Value; slot++)
             {
-                if (IsJustifiableSlot(originalFinalizedSlot, slot) &&
-                    !IsSlotJustified(slot, latestFinalized.Slot.Value, latestJustified.Slot.Value, justifiedSlots))
+                if (IsJustifiableSlot(latestFinalized.Slot.Value, slot))
                 {
                     canFinalize = false;
                     break;

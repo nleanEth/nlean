@@ -236,6 +236,63 @@ public sealed class ForkChoiceStateTransitionTests
     }
 
     [Test]
+    public void TryTransition_UsesLiveFinalizedSlotForLaterAttestationsInSameBlock()
+    {
+        var transition = new ForkChoiceStateTransition(new ConsensusConfig());
+        var sourceRoot = NewRoot(0x10);
+        var target2Root = NewRoot(0x20);
+        var target7Root = NewRoot(0x70);
+
+        var parentState = new ForkChoiceNodeState(
+            new Checkpoint(sourceRoot, new Slot(1)),
+            Checkpoint.Default(),
+            3,
+            null,
+            new[] { 1UL });
+
+        var first = new AggregatedAttestation(
+            new AggregationBits(new[] { true, true, false }),
+            new AttestationData(
+                new Slot(2),
+                new Checkpoint(target2Root, new Slot(2)),
+                new Checkpoint(target2Root, new Slot(2)),
+                new Checkpoint(sourceRoot, new Slot(1))));
+
+        var second = new AggregatedAttestation(
+            new AggregationBits(new[] { true, true, false }),
+            new AttestationData(
+                new Slot(7),
+                new Checkpoint(target7Root, new Slot(7)),
+                new Checkpoint(target7Root, new Slot(7)),
+                new Checkpoint(target2Root, new Slot(2))));
+
+        var block = new Block(
+            new Slot(7),
+            new ValidatorIndex(0),
+            sourceRoot,
+            Bytes32.Zero(),
+            new BlockBody(new[] { first, second }));
+
+        var blockWithAttestation = new BlockWithAttestation(block, new Attestation(0, first.Data));
+        var signedBlock = new SignedBlockWithAttestation(
+            blockWithAttestation,
+            new BlockSignatures(
+                new[]
+                {
+                    new AggregatedSignatureProof(first.AggregationBits, new byte[] { 0x01 }),
+                    new AggregatedSignatureProof(second.AggregationBits, new byte[] { 0x02 })
+                },
+                XmssSignature.Empty()));
+
+        var ok = transition.TryTransition(parentState, signedBlock, out var postState, out var reason);
+
+        Assert.That(ok, Is.True, reason);
+        Assert.That(postState.LatestFinalized.Slot.Value, Is.EqualTo(1));
+        Assert.That(postState.LatestJustified.Slot.Value, Is.EqualTo(7),
+            "Second attestation should become justifiable after latestFinalized advances to slot 1 in the same block.");
+    }
+
+    [Test]
     public void TryTransition_RejectsWhenTargetRootMapsToDifferentTargetSlots()
     {
         var transition = new ForkChoiceStateTransition(new ConsensusConfig());
