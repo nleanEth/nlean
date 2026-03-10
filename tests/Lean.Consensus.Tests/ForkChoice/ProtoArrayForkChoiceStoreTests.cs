@@ -308,7 +308,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void TickInterval_At3_SafeTargetStaysAtGenesisWithOnlyKnownVotes()
+    public void TickInterval_At3_SafeTargetAdvancesWithOnlyKnownVotes()
     {
         var store = CreateStore(validatorCount: 4);
         var genesisRoot = store.HeadRoot;
@@ -334,12 +334,12 @@ public sealed class ProtoArrayForkChoiceStoreTests
         Assert.That(ApplyBlock(store, signed2, 4).Accepted, Is.True);
 
         // No individual gossip attestations → latestNew is empty.
-        // UpdateSafeTarget uses VoteSource.New (latestNew only, matching zeam from_known=false).
-        // With no latestNew votes, cutoff not met → safe_target remains at justified (genesis).
+        // UpdateSafeTarget now uses VoteSource.Merged (known + new), matching leanSpec.
+        // 3/4 known votes >= ceil(4*2/3)=3 → safe_target should advance past genesis.
         store.TickInterval(3, 3);
 
-        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.True,
-            "Safe target should remain at genesis when only latestKnown votes exist (no latestNew).");
+        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,
+            "Safe target should advance when known votes meet the 2/3 threshold (merged pool).");
     }
 
     [Test]

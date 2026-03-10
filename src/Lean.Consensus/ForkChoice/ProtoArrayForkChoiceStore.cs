@@ -167,12 +167,22 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
-        // Aggregated gossip payloads are stored for block building only.
-        // They do NOT update per-validator latestNew trackers: every node
-        // (aggregator and non-aggregator alike) uses only its own individual
-        // gossip attestation (1 vote) for UpdateSafeTarget, matching ethlambda's
-        // behavior where the aggregator doesn't receive its own proof back and
-        // all nodes base safeTarget on locally-known data.
+        // Unpack aggregated proof participants into per-validator latestNew trackers
+        // immediately at gossip receive time. This matches leanSpec's
+        // on_gossip_aggregated_attestation which stores per-validator entries in
+        // latest_new_aggregated_payloads, and update_safe_target at interval 3 which
+        // merges both pools and extracts per-validator attestations via
+        // extract_attestations_from_aggregated_payloads. Without this, UpdateSafeTarget
+        // sees only the local validator's own vote in latestNew, causing safe_target
+        // divergence across nodes and vote splitting that prevents justification.
+        var headIndex = _protoArray.GetIndex(signed.Data.Head.Root);
+        if (headIndex.HasValue)
+        {
+            foreach (var pid in participantIds)
+            {
+                UpdateTrackerFromGossip(pid, headIndex.Value, signed.Data.Slot.Value, signed.Data);
+            }
+        }
 
         reason = string.Empty;
         return true;
@@ -514,10 +524,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _attestationTrackers.Count);
 
         // Step 1: Unpack received aggregated payloads into per-validator latestNew.
-        // Matches zeam acceptNewAttestationsUnlocked: gossip aggregated proofs (stored in
-        // _newAggregatedPayloads when received) are mapped back to individual validator
-        // attestations here — NOT at gossip receive time — so that UpdateSafeTarget at
-        // interval 3 sees only the local validator's own gossip vote (1 vote).
+        // Note: per-validator latestNew is now also set at gossip receive time
+        // (TryOnGossipAggregatedAttestation) so that UpdateSafeTarget at interval 3
+        // sees all validators' votes. This step is idempotent: UpdateTrackerFromGossip
+        // uses a slot guard, so re-unpacking same-slot data is a no-op.
         foreach (var (dataRootKey, proofs) in _newAggregatedPayloads)
         {
             if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
@@ -601,19 +611,18 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Computes safe_target at interval 3 using the same proto-array mechanism
-    /// with cutoffWeight = ceil(2N/3). Uses latestNew ONLY (VoteSource.New)
-    /// to match zeam's updateSafeTargetUnlocked(from_known=false).
-    /// This ensures safe_target depends on real gossip propagation timing:
-    /// if not all validators' individual attestations arrived, cutoff is not
-    /// met and safe_target falls back toward justified, producing a larger
-    /// target-source gap that blocks premature finalization.
+    /// with cutoffWeight = ceil(2N/3). Merges both known and new attestation pools
+    /// to match leanSpec's update_safe_target which combines both pools.
+    /// This ensures proposer attestations (which enter known directly, bypassing
+    /// the new pipeline) and self-attestations are counted, preventing safe_target
+    /// from undercounting support.
     /// </summary>
     private void UpdateSafeTarget()
     {
         var numValidators = _validatorCount;
         var cutoffWeight = (long)((numValidators * 2 + 2) / 3);
 
-        var safeHead = ComputeForkChoiceHead(VoteSource.New, cutoffWeight: cutoffWeight);
+        var safeHead = ComputeForkChoiceHead(VoteSource.Merged, cutoffWeight: cutoffWeight);
         _safeTarget = safeHead.Root;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -754,7 +763,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     private void UpdateStoreCheckpoints(Checkpoint canonicalJustified, Checkpoint canonicalFinalized)
     {
-        if (canonicalJustified.Slot.Value > _latestJustified.Slot.Value)
+        // Use >= to match leanSpec's max(..., key=slot) semantics.
+        // In 3SF-mini, different forks can produce different justified roots at the same slot.
+        // Using > would prevent switching to the correct justified root on the canonical fork.
+        if (canonicalJustified.Slot.Value >= _latestJustified.Slot.Value)
         {
             _latestJustified = canonicalJustified;
         }
