@@ -117,6 +117,48 @@ public sealed class ConsensusServiceV2Tests
         Assert.That(svc.HasUnknownBlockRootsInFlight, Is.False);
     }
 
+    [Test]
+    public void GetKnownAggregatedPayloadsForBlock_UsesExactValidatorProofGate()
+    {
+        var (svc, _, store, _) = CreateService();
+        var genesisRoot = store.HeadRoot;
+        var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
+
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        Assert.That(svc.TryComputeBlockStateRoot(block1, out var stateRoot, out _), Is.True);
+        var validBlock1 = new Block(block1.Slot, block1.ProposerIndex, block1.ParentRoot, stateRoot, block1.Body);
+        Assert.That(store.OnBlock(WrapBlock(validBlock1), genesisCheckpoint, genesisCheckpoint, validatorCount: 2).Accepted, Is.True);
+        var block1Root = new Bytes32(validBlock1.HashTreeRoot());
+        var block1Checkpoint = new Checkpoint(block1Root, new Slot(1));
+
+        var attData = new AttestationData(
+            new Slot(1),
+            new Checkpoint(block1Root, new Slot(1)),
+            block1Checkpoint,
+            genesisCheckpoint);
+
+        Assert.That(store.TryOnAttestation(new SignedAttestation(0, attData, XmssSignature.Empty()), out var reason0), Is.True, reason0);
+        Assert.That(store.TryOnAttestation(new SignedAttestation(1, attData, XmssSignature.Empty()), out var reason1), Is.True, reason1);
+        store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+
+        var proofForOnlyValidator1 = new AggregatedSignatureProof(
+            AggregationBits.FromValidatorIndices(new ulong[] { 1 }),
+            new byte[] { 0xAB });
+        Assert.That(
+            store.TryOnGossipAggregatedAttestation(new SignedAggregatedAttestation(attData, proofForOnlyValidator1), out var aggReason),
+            Is.True,
+            aggReason);
+        store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+
+        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(slot: 2, requiredSource: genesisCheckpoint);
+
+        Assert.That(attestations, Has.Count.EqualTo(1));
+        Assert.That(proofs, Has.Count.EqualTo(1));
+        Assert.That(proofs[0].ProofData, Is.EqualTo(proofForOnlyValidator1.ProofData));
+        Assert.That(attestations[0].AggregationBits.TryToValidatorIndices(out var validatorIds), Is.True);
+        Assert.That(validatorIds, Is.EquivalentTo(new[] { 1UL }));
+    }
+
     private static (ConsensusServiceV2 svc, FakeTimeSource time,
         ProtoArrayForkChoiceStore store, SlotClock clock) CreateServiceWithSync(SyncState state)
     {

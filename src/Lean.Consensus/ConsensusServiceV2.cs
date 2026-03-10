@@ -330,17 +330,16 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         lock (_storeLock)
         {
-            // leanSpec/ethlambda: build "latest-known attestation per validator" first,
-            // then select matching proofs. Each validator's vote counted exactly once.
-            // (state.py:709-816, store.rs:749-1001)
-
-            // Step 1: From _knownAttestations (per-validator latest), group validators
-            // by their attestation data, filtering by source and slot.
+            // Keep tracker-first implementation, but match leanSpec's exact
+            // SignatureKey(validator_id, data_root) gate semantics:
+            // a validator contributes a block-building candidate only if there is
+            // at least one known proof for this data_root that explicitly includes
+            // that validator.
             var knownAttestations = _store.GetKnownAttestations();
-            var validatorsByDataKey = new Dictionary<string, List<ulong>>(StringComparer.Ordinal);
-            var dataByKey = new Dictionary<string, AttestationData>(StringComparer.Ordinal);
-
-            foreach (var (vid, data) in knownAttestations)
+            var attestations = new List<AggregatedAttestation>();
+            var proofs = new List<AggregatedSignatureProof>();
+            var pool = _store.GetKnownPayloadPool();
+            foreach (var (validatorId, data) in knownAttestations)
             {
                 if (data.Slot.Value >= slot)
                     continue;
@@ -348,35 +347,22 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     continue;
 
                 var key = Convert.ToHexString(data.HashTreeRoot());
-                if (!validatorsByDataKey.TryGetValue(key, out var list))
+                if (!pool.TryGetValue(key, out var poolProofs))
                 {
-                    list = new List<ulong>();
-                    validatorsByDataKey[key] = list;
-                    dataByKey[key] = data;
+                    continue;
                 }
-                list.Add(vid);
-            }
 
-            // Step 2: Build 1:1 paired attestation/proof entries.
-            // Use de-duplicated bits (per-validator latest) for each attestation,
-            // keeping one attestation per proof to maintain index pairing
-            // required by ValidatorService.SelectBestProofs.
-            var attestations = new List<AggregatedAttestation>();
-            var proofs = new List<AggregatedSignatureProof>();
-            var pool = _store.GetKnownPayloadPool();
-
-            foreach (var (key, validators) in validatorsByDataKey)
-            {
-                var data = dataByKey[key];
-                var bits = AggregationBits.FromValidatorIndices(validators.ToArray());
-
-                if (pool.TryGetValue(key, out var poolProofs))
+                foreach (var proof in poolProofs)
                 {
-                    foreach (var proof in poolProofs)
+                    if (!proof.Participants.TryToValidatorIndices(out var proofParticipants) ||
+                        !proofParticipants.Contains(validatorId))
                     {
-                        attestations.Add(new AggregatedAttestation(bits, data));
-                        proofs.Add(proof);
+                        continue;
                     }
+
+                    var bits = AggregationBits.FromValidatorIndices(new[] { validatorId });
+                    attestations.Add(new AggregatedAttestation(bits, data));
+                    proofs.Add(proof);
                 }
             }
 
