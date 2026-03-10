@@ -23,7 +23,7 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
         {
             var requestPayload = LeanReqRespCodec.EncodeStatus(request);
             await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
-            await channel.WriteEofAsync(channel.CancellationToken);
+            await TryWriteEofAsync(channel);
 
             var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
             if (response is null)
@@ -41,7 +41,7 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
         }
         finally
         {
-            await channel.CloseAsync();
+            await TryCloseAsync(channel);
         }
     }
 
@@ -112,7 +112,7 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
         }
         finally
         {
-            await channel.CloseAsync();
+            await TryCloseAsync(channel);
         }
     }
 
@@ -125,6 +125,30 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
         catch
         {
             // Ignore best-effort error response failures.
+        }
+    }
+
+    private async Task TryWriteEofAsync(IChannel channel)
+    {
+        try
+        {
+            await channel.WriteEofAsync(channel.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "status RPC EOF write ignored during stream shutdown.");
+        }
+    }
+
+    private async Task TryCloseAsync(IChannel channel)
+    {
+        try
+        {
+            await channel.CloseAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "status RPC channel close ignored during stream shutdown.");
         }
     }
 

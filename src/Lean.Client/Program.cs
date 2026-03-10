@@ -8,6 +8,39 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+        {
+            try
+            {
+                Console.Error.WriteLine($"[fatal] AppDomain unhandled exception. IsTerminating={eventArgs.IsTerminating}");
+                if (eventArgs.ExceptionObject is Exception ex)
+                {
+                    Console.Error.WriteLine(ex);
+                }
+                else if (eventArgs.ExceptionObject is not null)
+                {
+                    Console.Error.WriteLine(eventArgs.ExceptionObject);
+                }
+            }
+            catch
+            {
+                // Best-effort fatal logging only.
+            }
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
+        {
+            try
+            {
+                Console.Error.WriteLine("[fatal] Unobserved task exception.");
+                Console.Error.WriteLine(eventArgs.Exception);
+            }
+            catch
+            {
+                // Best-effort fatal logging only.
+            }
+        };
+
         var cliOptions = CliOptions.Parse(args);
 
         if (cliOptions.ShowHelp)
@@ -34,9 +67,18 @@ internal static class Program
 
         var nodeOptions = NodeOptions.Load(overrides);
 
-        using var host = NodeApp.Build(nodeOptions);
-        await host.RunAsync();
-        return 0;
+        try
+        {
+            using var host = NodeApp.Build(nodeOptions);
+            await host.RunAsync();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("[fatal] Host terminated with exception.");
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
     }
 
     private static void PrintHelp()

@@ -53,6 +53,7 @@ public sealed class NodeService : BackgroundService
 
         try
         {
+            _logger.LogInformation("NodeService startup: starting metrics service.");
             await _metricsService.StartAsync(stoppingToken);
             LeanMetrics.SetNodeInfo(_options.NodeName ?? string.Empty, ResolveNodeVersion());
         }
@@ -60,19 +61,32 @@ public sealed class NodeService : BackgroundService
         {
             _logger.LogWarning(ex, "Metrics service failed to start; continuing without metrics.");
         }
+        _logger.LogInformation("NodeService startup: starting network service.");
         await _networkService.StartAsync(stoppingToken);
+        _logger.LogInformation("NodeService startup: starting consensus service.");
         await _consensusService.StartAsync(stoppingToken);
 
         if (_options.Validator.Enabled)
         {
+            _logger.LogInformation("NodeService startup: starting validator service.");
             await _validatorService.StartAsync(stoppingToken);
         }
 
         // Connect to bootstrap peers AFTER starting the validator service.
-        // Bootstrap dials are sequential and can block for minutes when peers
-        // aren't up yet (e.g., first node in a devnet). The reconnect loop
+        // This is best-effort — the reconnect loop (started inside ConnectToPeersAsync)
         // handles ongoing connectivity regardless of initial connection results.
-        await _networkService.ConnectToPeersAsync(stoppingToken);
+        // We must not let bootstrap failures prevent the node from starting:
+        // consensus, validator, and the QUIC listener are already active and
+        // peers can connect inbound while the reconnect loop retries outbound.
+        try
+        {
+            _logger.LogInformation("NodeService startup: connecting to bootstrap peers.");
+            await _networkService.ConnectToPeersAsync(stoppingToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Initial bootstrap connection failed; reconnect loop will retry.");
+        }
 
         _logger.LogInformation("Lean node started. Network: {Network}", _options.Network);
 

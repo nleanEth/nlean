@@ -33,7 +33,7 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[]
 
             var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(roots);
             await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
-            await channel.WriteEofAsync(channel.CancellationToken);
+            await TryWriteEofAsync(channel);
 
             // Read streamed response chunks until EOF.
             // Each chunk: [response_code: 1 byte][varint: uncompressed_length][snappy_framed_payload]
@@ -52,7 +52,7 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[]
         }
         finally
         {
-            await channel.CloseAsync();
+            await TryCloseAsync(channel);
         }
     }
 
@@ -94,7 +94,7 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[]
                     payload.Length);
             }
 
-            await channel.WriteEofAsync(channel.CancellationToken);
+            await TryWriteEofAsync(channel);
 
             _logger.LogInformation(
                 "blocks_by_root request completed. RequestedRoots: {RequestedRoots}, ResponsesSent: {ResponsesSent}",
@@ -112,7 +112,7 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[]
         }
         finally
         {
-            await channel.CloseAsync();
+            await TryCloseAsync(channel);
         }
     }
 
@@ -125,6 +125,30 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[]
         catch
         {
             // Ignore best-effort error response failures.
+        }
+    }
+
+    private async Task TryWriteEofAsync(IChannel channel)
+    {
+        try
+        {
+            await channel.WriteEofAsync(channel.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "blocks_by_root EOF write ignored during stream shutdown.");
+        }
+    }
+
+    private async Task TryCloseAsync(IChannel channel)
+    {
+        try
+        {
+            await channel.CloseAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "blocks_by_root channel close ignored during stream shutdown.");
         }
     }
 }
