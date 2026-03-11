@@ -13,7 +13,7 @@ validators:
       quic: 9101
     metricsPort: 18081
     count: 1
-    isAggregator: false
+    isAggregator: true
 
   - name: "nlean_1"
     privkey: "bdf953adc161873ba026330c56450453f582e3c4ee6cb713644794bcfdd85fe5"
@@ -24,20 +24,20 @@ validators:
     count: 1
     isAggregator: false
 
-  - name: "ethlambda_0"
+  - name: "nlean_2"
     privkey: "299550529a79bc2dce003747c52fb0639465c893e00b0440ac66144d625e066a"
     enrFields:
       ip: "127.0.0.1"
-      quic: 9107
-    metricsPort: 18087
+      quic: 9103
+    metricsPort: 18083
     count: 1
-    isAggregator: true
+    isAggregator: false
 
-  - name: "ethlambda_1"
+  - name: "nlean_3"
     privkey: "c4f5a6b7d8e9012345abcdef6789012345abcdef6789012345abcdef67890123"
     enrFields:
       ip: "127.0.0.1"
-      quic: 9108
-    metricsPort: 18088
+      quic: 9104
+    metricsPort: 18084
     count: 1
     isAggregator: false

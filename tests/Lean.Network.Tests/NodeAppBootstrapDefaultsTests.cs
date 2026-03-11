@@ -11,6 +11,38 @@ namespace Lean.Network.Tests;
 [TestFixture]
 public sealed class NodeAppBootstrapDefaultsTests
 {
+    private const string Enr0 =
+        "enr:-IW4QOl1O0s_EnqwCuACxi91AAHK0utmnP30g8ZsGF_UkOJIDNHQzkaHhXkAioUK1gUHjL-P_PkYVr3EScebjZ0Wyd8BgmlkgnY0gmlwhH8AAAGEcXVpY4IjjYlzZWNwMjU2azGhA9TjdFfQ2XF6n-U-SCdT8ukmuQQUtZShaE5QcBVOAcp_";
+
+    private const string Enr1 =
+        "enr:-IW4QJwBZx9mbNOwm1fB6sFtDfLRbDHR8fs2rzmgx0X6ZzlzPtyo-4TChI0LF5TkL9o4XFEPSrx4bNwyHUiixYEzfaYBgmlkgnY0gmlwhH8AAAGEcXVpY4IjjolzZWNwMjU2azGhAhMMnGF1rmIPQ9tWgqfkNmvsG-aIyc9EJU5JFo3Tegys";
+
+    private const string TwoValidatorsYaml =
+        "validators:\n" +
+        "  - name: nlean_0\n" +
+        "    privkey: \"1111111111111111111111111111111111111111111111111111111111111111\"\n" +
+        "    enrFields:\n" +
+        "      ip: \"127.0.0.1\"\n" +
+        "      quic: 9101\n" +
+        "  - name: nlean_1\n" +
+        "    privkey: \"2222222222222222222222222222222222222222222222222222222222222222\"\n" +
+        "    enrFields:\n" +
+        "      ip: \"127.0.0.1\"\n" +
+        "      quic: 9102\n";
+
+    private const string OneValidatorWithEnrYaml =
+        "validators:\n" +
+        "  - name: nlean_0\n" +
+        "    privkey: \"1111111111111111111111111111111111111111111111111111111111111111\"\n" +
+        "    enrFields:\n" +
+        "      ip: \"127.0.0.1\"\n" +
+        "      quic: 9101\n";
+
+    private const string OneValidatorYaml =
+        "validators:\n" +
+        "  - name: nlean_0\n" +
+        "    privkey: \"1111111111111111111111111111111111111111111111111111111111111111\"\n";
+
     [Test]
     public void Build_DoesNotInferBootstrapPeers_WhenBootstrapPeersAreEmpty_AndNodesYamlIsMissing()
     {
@@ -20,21 +52,7 @@ public sealed class NodeAppBootstrapDefaultsTests
         try
         {
             var validatorConfigPath = Path.Combine(tempRoot, "validator-config.yaml");
-            File.WriteAllText(
-                validatorConfigPath,
-                """
-                validators:
-                  - name: nlean_0
-                    privkey: "1111111111111111111111111111111111111111111111111111111111111111"
-                    enrFields:
-                      ip: "127.0.0.1"
-                      quic: 9101
-                  - name: nlean_1
-                    privkey: "2222222222222222222222222222222222222222222222222222222222222222"
-                    enrFields:
-                      ip: "127.0.0.1"
-                      quic: 9102
-                """);
+            File.WriteAllText(validatorConfigPath, TwoValidatorsYaml);
 
             var options = CreateOptions(tempRoot, validatorConfigPath);
 
@@ -64,22 +82,10 @@ public sealed class NodeAppBootstrapDefaultsTests
         try
         {
             var validatorConfigPath = Path.Combine(tempRoot, "validator-config.yaml");
-            File.WriteAllText(
-                validatorConfigPath,
-                """
-                validators:
-                  - name: nlean_0
-                    privkey: "1111111111111111111111111111111111111111111111111111111111111111"
-                    enrFields:
-                      ip: "127.0.0.1"
-                      quic: 9101
-                """);
+            File.WriteAllText(validatorConfigPath, OneValidatorWithEnrYaml);
             File.WriteAllText(
                 Path.Combine(tempRoot, "nodes.yaml"),
-                """
-                - enr:-IW4QOl1O0s_EnqwCuACxi91AAHK0utmnP30g8ZsGF_UkOJIDNHQzkaHhXkAioUK1gUHjL-P_PkYVr3EScebjZ0Wyd8BgmlkgnY0gmlwhH8AAAGEcXVpY4IjjYlzZWNwMjU2azGhA9TjdFfQ2XF6n-U-SCdT8ukmuQQUtZShaE5QcBVOAcp_
-                - enr:-IW4QJwBZx9mbNOwm1fB6sFtDfLRbDHR8fs2rzmgx0X6ZzlzPtyo-4TChI0LF5TkL9o4XFEPSrx4bNwyHUiixYEzfaYBgmlkgnY0gmlwhH8AAAGEcXVpY4IjjolzZWNwMjU2azGhAhMMnGF1rmIPQ9tWgqfkNmvsG-aIyc9EJU5JFo3Tegys
-                """);
+                "- " + Enr0 + "\n- " + Enr1 + "\n");
 
             var options = CreateOptions(tempRoot, validatorConfigPath);
             using var host = NodeApp.Build(options);
@@ -110,18 +116,10 @@ public sealed class NodeAppBootstrapDefaultsTests
         try
         {
             var validatorConfigPath = Path.Combine(tempRoot, "validator-config.yaml");
-            File.WriteAllText(
-                validatorConfigPath,
-                """
-                validators:
-                  - name: nlean_0
-                    privkey: "1111111111111111111111111111111111111111111111111111111111111111"
-                """);
+            File.WriteAllText(validatorConfigPath, OneValidatorYaml);
             File.WriteAllText(
                 Path.Combine(tempRoot, "nodes.yaml"),
-                """
-                - enr:-IW4QOl1O0s_EnqwCuACxi91AAHK0utmnP30g8ZsGF_UkOJIDNHQzkaHhXkAioUK1gUHjL-P_PkYVr3EScebjZ0Wyd8BgmlkgnY0gmlwhH8AAAGEcXVpY4IjjYlzZWNwMjU2azGhA9TjdFfQ2XF6n-U-SCdT8ukmuQQUtZShaE5QcBVOAcp_
-                """);
+                "- " + Enr0 + "\n");
 
             var options = CreateOptions(tempRoot, validatorConfigPath);
             options.Libp2p.BootstrapPeers.Add("/ip4/127.0.0.1/udp/9999/quic-v1/p2p/16Uiu2HAmJYwZZ");
@@ -152,13 +150,7 @@ public sealed class NodeAppBootstrapDefaultsTests
         try
         {
             var validatorConfigPath = Path.Combine(tempRoot, "validator-config.yaml");
-            File.WriteAllText(
-                validatorConfigPath,
-                """
-                validators:
-                  - name: nlean_0
-                    privkey: "1111111111111111111111111111111111111111111111111111111111111111"
-                """);
+            File.WriteAllText(validatorConfigPath, OneValidatorYaml);
 
             var options = CreateOptions(tempRoot, validatorConfigPath);
             using var host = NodeApp.Build(options);

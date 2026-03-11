@@ -68,6 +68,8 @@ public sealed class NodeService : BackgroundService
 
         if (_options.Validator.Enabled)
         {
+            if (_consensusService is ConsensusServiceV2 csv2)
+                csv2.SetDutyTarget(_validatorService);
             _logger.LogInformation("NodeService startup: starting validator service.");
             await _validatorService.StartAsync(stoppingToken);
         }
@@ -103,6 +105,8 @@ public sealed class NodeService : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         const int perServiceTimeoutMs = 10_000;
+        if (_consensusService is ConsensusServiceV2 csv2)
+            csv2.SetDutyTarget(null);
         await StopServiceAsync(_validatorService.StopAsync, nameof(_validatorService), perServiceTimeoutMs);
         await StopServiceAsync(_consensusService.StopAsync, nameof(_consensusService), perServiceTimeoutMs);
         await StopServiceAsync(_networkService.StopAsync, nameof(_networkService), perServiceTimeoutMs);

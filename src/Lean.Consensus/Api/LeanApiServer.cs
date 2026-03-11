@@ -73,33 +73,33 @@ public sealed class LeanApiServer
             switch (path)
             {
                 case "/lean/v0/health":
-                    WriteJson(response, 200, """{"status":"ok"}""");
+                    WriteJson(response, 200, "{\"status\":\"ok\"}");
                     break;
 
                 case "/lean/v0/checkpoints/justified":
                     var snap1 = _getSnapshot();
                     WriteJson(response, 200,
-                        $$"""{"slot":{{snap1.JustifiedSlot}},"root":"{{snap1.JustifiedRoot}}"}""");
+                        $"{{\"slot\":{snap1.JustifiedSlot},\"root\":\"{snap1.JustifiedRoot}\"}}");
                     break;
 
                 case "/lean/v0/checkpoints/finalized":
                     var snap2 = _getSnapshot();
                     WriteJson(response, 200,
-                        $$"""{"slot":{{snap2.FinalizedSlot}},"root":"{{snap2.FinalizedRoot}}"}""");
+                        $"{{\"slot\":{snap2.FinalizedSlot},\"root\":\"{snap2.FinalizedRoot}\"}}");
                     break;
 
                 case "/lean/v0/states/finalized":
                     var accept = context.Request.Headers["Accept"] ?? "";
                     if (!accept.Contains("application/octet-stream"))
                     {
-                        WriteJson(response, 406, """{"error":"Accept: application/octet-stream required"}""");
+                        WriteJson(response, 406, "{\"error\":\"Accept: application/octet-stream required\"}");
                         break;
                     }
 
                     var ssz = _getFinalizedStateSsz();
                     if (ssz is null)
                     {
-                        WriteJson(response, 404, """{"error":"finalized state not available"}""");
+                        WriteJson(response, 404, "{\"error\":\"finalized state not available\"}");
                         break;
                     }
 
@@ -110,13 +110,13 @@ public sealed class LeanApiServer
                     break;
 
                 default:
-                    WriteJson(response, 404, """{"error":"not found"}""");
+                    WriteJson(response, 404, "{\"error\":\"not found\"}");
                     break;
             }
         }
         catch
         {
-            WriteJson(response, 500, """{"error":"internal server error"}""");
+            WriteJson(response, 500, "{\"error\":\"internal server error\"}");
         }
         finally
         {

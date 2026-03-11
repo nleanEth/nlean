@@ -31,6 +31,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly IGossipTopicProvider _gossipTopics;
     private readonly ILogger<ConsensusServiceV2> _logger;
     private readonly string[] _attestationSubnetTopics;
+    private IIntervalDutyTarget? _dutyTarget;
     private object _storeLock => _store.SyncRoot;
 
     private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateUnbounded<ConsensusInboxMessage>(
@@ -108,6 +109,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), initialState);
         RefreshSnapshot();
     }
+
+    public void SetDutyTarget(IIntervalDutyTarget? target) => _dutyTarget = target;
 
     public ulong CurrentSlot => _clock.CurrentSlot;
     public ulong HeadSlot => _snapshot.HeadSlot;
@@ -447,6 +450,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (intervalInSlot == 0 && _syncService is not null)
         {
             _syncService.TrySyncFromBestPeer();
+        }
+
+        if (_dutyTarget is not null)
+        {
+            _ = _dutyTarget.OnIntervalAsync(slot, intervalInSlot);
         }
     }
 

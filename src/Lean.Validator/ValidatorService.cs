@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using Lean.Consensus;
+using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
@@ -43,10 +44,8 @@ public sealed class ValidatorService : IValidatorService
     private readonly ISyncService? _syncService;
     private readonly SignedBlockWithAttestationGossipDecoder _signedBlockDecoder = new();
     private readonly Dictionary<ulong, byte[]> _validatorPublicKeys = new();
-    private readonly object _lifecycleLock = new();
     private readonly object _dutyStateLock = new();
-    private CancellationTokenSource? _dutyLoopCts;
-    private Task? _dutyLoopTask;
+    private CancellationToken _shutdownToken;
     private int _started;
     private byte[] _validatorPublicKey = Array.Empty<byte>();
     private byte[] _validatorSecretKey = Array.Empty<byte>();
@@ -87,24 +86,9 @@ public sealed class ValidatorService : IValidatorService
 
         try
         {
+            _shutdownToken = cancellationToken;
             InitializeValidatorKeyMaterial();
             await SubscribeBlockTopicsAsync(cancellationToken);
-
-            lock (_lifecycleLock)
-            {
-                _dutyLoopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                // Capture CTS in local variable before lambda — StopAsync nulls the field,
-                // but the LongRunning thread may not have started the lambda yet.
-                // Same pattern as gossipsub ContinueWith TokenSource capture fix.
-                var cts = _dutyLoopCts;
-                // Use LongRunning so crypto FFI calls (XMSS sign ~10ms,
-                // aggregate ~700ms) don't block ThreadPool workers.
-                _dutyLoopTask = Task.Factory.StartNew(
-                    () => RunDutyLoopAsync(cts.Token),
-                    cts.Token,
-                    TaskCreationOptions.LongRunning,
-                    TaskScheduler.Default).Unwrap();
-            }
         }
         catch
         {
@@ -118,180 +102,68 @@ public sealed class ValidatorService : IValidatorService
             _consensusConfig.GenesisTimeUnix);
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
         if (Interlocked.Exchange(ref _started, 0) == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        _logger.LogInformation("Validator service stopped.");
+        return Task.CompletedTask;
+    }
+
+    public async Task OnIntervalAsync(ulong slot, int intervalInSlot)
+    {
+        if (_started == 0)
         {
             return;
         }
 
-        CancellationTokenSource? dutyLoopCts;
-        Task? dutyLoopTask;
-        lock (_lifecycleLock)
+        // Do not participate in consensus while syncing.
+        if (_syncService is not null && _syncService.State != SyncState.Synced)
         {
-            dutyLoopCts = _dutyLoopCts;
-            dutyLoopTask = _dutyLoopTask;
-            _dutyLoopCts = null;
-            _dutyLoopTask = null;
+            return;
         }
 
-        if (dutyLoopCts is not null)
-        {
-            dutyLoopCts.Cancel();
-        }
-
-        if (dutyLoopTask is not null)
-        {
-            try
-            {
-                await dutyLoopTask;
-            }
-            catch (OperationCanceledException)
-            {
-                // Shutdown path.
-            }
-        }
-
-        // Dispose CTS after the task completes — the LongRunning thread may not
-        // have started the lambda yet, and accessing cts.Token on a disposed CTS
-        // throws ObjectDisposedException.
-        dutyLoopCts?.Dispose();
-
-        _logger.LogInformation("Validator service stopped.");
-    }
-
-    private async Task RunDutyLoopAsync(CancellationToken cancellationToken)
-    {
-        if (_consensusConfig.GenesisTimeUnix > 0)
-        {
-            await WaitForGenesisAsync(cancellationToken);
-        }
-
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
-        ulong? lastCatchupProcessedSlot = null;
-        ulong? lastAttestedSlot = null;
-        ulong? lastProposerAttemptSlot = null;
-        ulong? lastPublishedProposerSlot = null;
-        ulong? lastAggregatedSlot = null;
+        var cancellationToken = _shutdownToken;
 
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            if (intervalInSlot == 0 && slot > 0 && IsProposerSlot(slot))
             {
-                // Do not participate in consensus while syncing — a syncing node lacks
-                // chain state and would produce invalid attestations / proposals.
-                if (_syncService is not null && _syncService.State != SyncState.Synced)
+                if (ShouldSuppressDutyForUnknownRoots(slot))
                 {
-                    continue;
+                    return;
                 }
 
-                var currentSlot = _consensusService.CurrentSlot;
-                if (!TryGetCurrentIntervalInSlot(out var intervalInSlot))
+                var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
+                if (publishedBlock)
                 {
-                    // Slot catch-up mode for harnesses without wall-clock genesis configuration.
-                    var nextSlot = lastCatchupProcessedSlot.HasValue
-                        ? lastCatchupProcessedSlot.Value + 1
-                        : currentSlot;
-                    if (currentSlot < nextSlot)
-                    {
-                        continue;
-                    }
+                    DutyRunsTotal.Add(1);
+                    return;
+                }
+            }
 
-                    for (var catchupSlot = nextSlot; catchupSlot <= currentSlot; catchupSlot++)
-                    {
-                        try
-                        {
-                            await ExecuteSlotDutyAsync(catchupSlot, cancellationToken);
-                            lastCatchupProcessedSlot = catchupSlot;
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Validator duty execution failed in slot catch-up mode.");
-                        }
-                    }
-
-                    continue;
+            if (ShouldAttemptStandaloneAttestation(
+                    intervalInSlot,
+                    null,
+                    slot,
+                    false,
+                    IsProposerSlot(slot)))
+            {
+                if (ShouldSuppressDutyForUnknownRoots(slot))
+                {
+                    return;
                 }
 
-                var slot = currentSlot;
+                await PublishStandaloneAttestationAsync(slot, cancellationToken);
+                DutyRunsTotal.Add(1);
+            }
 
-                if (intervalInSlot == 0 && lastProposerAttemptSlot != slot)
-                {
-                    lastProposerAttemptSlot = slot;
-
-                    // Match ream/zeam behavior: skip proposing at genesis slot 0.
-                    if (slot > 0 && IsProposerSlot(slot))
-                    {
-                        if (ShouldSuppressDutyForUnknownRoots(slot))
-                        {
-                            continue;
-                        }
-
-                        var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
-                        if (publishedBlock)
-                        {
-                            // Proposer attestation is bundled in the block wrapper.
-                            lastPublishedProposerSlot = slot;
-                            lastAttestedSlot = slot;
-                            DutyRunsTotal.Add(1);
-                            continue;
-                        }
-                    }
-                }
-
-                var proposerAttestedInBlock = lastPublishedProposerSlot == slot;
-                if (ShouldAttemptStandaloneAttestation(
-                        intervalInSlot,
-                        lastAttestedSlot,
-                        slot,
-                        proposerAttestedInBlock,
-                        IsProposerSlot(slot)))
-                {
-                    if (ShouldSuppressDutyForUnknownRoots(slot))
-                    {
-                        lastAttestedSlot = slot;
-                        continue;
-                    }
-
-                    try
-                    {
-                        await PublishStandaloneAttestationAsync(slot, cancellationToken);
-                        DutyRunsTotal.Add(1);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Validator attestation duty execution failed.");
-                    }
-
-                    lastAttestedSlot = slot;
-                }
-
-                if (_validatorDutyConfig.PublishAggregates &&
-                    intervalInSlot == 2 &&
-                    lastAggregatedSlot != slot)
-                {
-                    lastAggregatedSlot = slot;
-                    try
-                    {
-                        await ExecuteAggregationDutyAsync(slot, cancellationToken);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Validator aggregation duty execution failed.");
-                    }
-                }
+            if (_validatorDutyConfig.PublishAggregates && intervalInSlot == 2)
+            {
+                await ExecuteAggregationDutyAsync(slot, cancellationToken);
             }
         }
         catch (OperationCanceledException)
@@ -300,53 +172,8 @@ public sealed class ValidatorService : IValidatorService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Validator duty loop terminated unexpectedly.");
-            throw;
+            _logger.LogWarning(ex, "Validator duty execution failed. Slot: {Slot}, Interval: {Interval}", slot, intervalInSlot);
         }
-    }
-
-    private bool TryGetCurrentIntervalInSlot(out int intervalInSlot)
-    {
-        var genesisUnix = (long)_consensusConfig.GenesisTimeUnix;
-        if (genesisUnix <= 0)
-        {
-            intervalInSlot = 0;
-            return false;
-        }
-
-        var secondsPerSlot = Math.Max(1, _consensusConfig.SecondsPerSlot);
-        var slotDurationMs = checked(secondsPerSlot * 1000L);
-        var intervalDurationMs = Math.Max(1L, slotDurationMs / ProtoArrayForkChoiceStore.IntervalsPerSlot);
-
-        var nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var elapsedMs = nowUnixMs - checked(genesisUnix * 1000L);
-        if (elapsedMs < 0)
-        {
-            intervalInSlot = 0;
-            return true;
-        }
-
-        var elapsedInSlotMs = elapsedMs % slotDurationMs;
-        var interval = (int)(elapsedInSlotMs / intervalDurationMs);
-        intervalInSlot = Math.Clamp(interval, 0, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
-        return true;
-    }
-
-    private async Task WaitForGenesisAsync(CancellationToken cancellationToken)
-    {
-        var genesis = (long)_consensusConfig.GenesisTimeUnix;
-        if (genesis <= 0)
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        if (now >= genesis)
-        {
-            return;
-        }
-
-        await Task.Delay(TimeSpan.FromSeconds(genesis - now), cancellationToken);
     }
 
     internal static bool ShouldAttemptStandaloneAttestation(
@@ -464,26 +291,6 @@ public sealed class ValidatorService : IValidatorService
             slot,
             headSlot,
             _validatorId);
-    }
-
-    private async Task ExecuteSlotDutyAsync(ulong slot, CancellationToken cancellationToken)
-    {
-        if (ShouldSuppressDutyForUnknownRoots(slot))
-            return;
-
-        if (slot > 0 && IsProposerSlot(slot))
-        {
-            var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
-            if (publishedBlock)
-            {
-                DutyRunsTotal.Add(1);
-                return;
-            }
-            return;
-        }
-
-        await PublishStandaloneAttestationAsync(slot, cancellationToken);
-        DutyRunsTotal.Add(1);
     }
 
     private bool IsProposerSlot(ulong slot)
