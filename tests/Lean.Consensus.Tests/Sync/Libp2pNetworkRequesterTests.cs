@@ -88,17 +88,6 @@ public sealed class Libp2pNetworkRequesterTests
         public void SetResponse(Bytes32 root, byte[] payload) =>
             _responses[Convert.ToHexString(root.AsSpan())] = payload;
 
-        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<byte[]?>(null);
-
-        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot,
-            string preferredPeerKey, CancellationToken cancellationToken = default)
-        {
-            var key = Convert.ToHexString(blockRoot.Span);
-            return Task.FromResult(_responses.TryGetValue(key, out var data) ? data : null);
-        }
-
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
         public Task PublishAsync(string topic, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>

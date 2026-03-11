@@ -214,6 +214,7 @@ cat > "$node_config" <<EOF_CONFIG
 {
   "dataDir": "${data_dir}",
   "network": "${network_name}",
+  "apiPort": $((metrics_port + 100)),
   "metrics": {
     "enabled": ${enable_metrics},
     "host": "0.0.0.0",

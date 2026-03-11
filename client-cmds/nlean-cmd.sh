@@ -85,6 +85,7 @@ cat > "$node_config_host_path" <<EOF_CONFIG
   "dataDir": "/data",
   "network": "${nlean_network_name}",
 ${consensus_json}
+  "apiPort": $((metricsPort + 100)),
   "metrics": {
     "enabled": ${enable_metrics},
     "host": "0.0.0.0",

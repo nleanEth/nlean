@@ -19,6 +19,7 @@ public sealed class NodeOptions
     public StorageConfig Storage { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
     public ValidatorRuntimeConfig Validator { get; set; } = new();
+    public int ApiPort { get; set; } = 5052;
 
     public static NodeOptions Load(NodeOptionsOverrides overrides)
     {

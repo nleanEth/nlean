@@ -1085,19 +1085,6 @@ public sealed class ValidatorServiceTests
             }
         }
 
-        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<byte[]?>(null);
-        }
-
-        public Task<byte[]?> RequestBlockByRootAsync(
-            ReadOnlyMemory<byte> blockRoot,
-            string preferredPeerKey,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<byte[]?>(null);
-        }
-
         public Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;

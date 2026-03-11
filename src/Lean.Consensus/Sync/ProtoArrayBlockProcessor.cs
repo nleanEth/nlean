@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
+using Lean.Metrics;
 
 namespace Lean.Consensus.Sync;
 
@@ -49,6 +51,7 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
     public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
+        var forkChoiceTimer = Stopwatch.StartNew();
 
         var block = signedBlock.Message.Block;
         var blockRoot = new Bytes32(block.HashTreeRoot());
@@ -89,6 +92,8 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
             _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
         }
 
+        forkChoiceTimer.Stop();
+        LeanMetrics.RecordForkChoiceBlockProcessing(forkChoiceTimer.Elapsed);
         return result;
     }
 }

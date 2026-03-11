@@ -1,4 +1,5 @@
 using Lean.Consensus;
+using Lean.Consensus.Api;
 using Lean.Metrics;
 using Lean.Network;
 using Lean.Node.Configuration;
@@ -17,6 +18,7 @@ public sealed class NodeService : BackgroundService
     private readonly IConsensusService _consensusService;
     private readonly IValidatorService _validatorService;
     private readonly IMetricsService _metricsService;
+    private LeanApiServer? _apiServer;
 
     public NodeService(
         ILogger<NodeService> logger,
@@ -94,6 +96,21 @@ public sealed class NodeService : BackgroundService
 
         try
         {
+            var csv2ForApi = _consensusService as ConsensusServiceV2;
+            _apiServer = new LeanApiServer(
+                $"http://+:{_options.ApiPort}/",
+                () => csv2ForApi?.GetApiSnapshot() ?? new ApiSnapshot(0, "", 0, ""),
+                () => null);
+            await _apiServer.StartAsync(stoppingToken);
+            _logger.LogInformation("LeanApiServer listening on port {Port}.", _options.ApiPort);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "LeanApiServer failed to start; continuing without API.");
+        }
+
+        try
+        {
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
         catch (OperationCanceledException)
@@ -105,6 +122,11 @@ public sealed class NodeService : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         const int perServiceTimeoutMs = 10_000;
+        if (_apiServer is not null)
+        {
+            try { await _apiServer.StopAsync(); }
+            catch (Exception ex) { _logger.LogWarning(ex, "LeanApiServer stop failed."); }
+        }
         if (_consensusService is ConsensusServiceV2 csv2)
             csv2.SetDutyTarget(null);
         await StopServiceAsync(_validatorService.StopAsync, nameof(_validatorService), perServiceTimeoutMs);

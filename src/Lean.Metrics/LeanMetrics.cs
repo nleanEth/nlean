@@ -21,7 +21,7 @@ public static class LeanMetrics
         "Node start timestamp in unix seconds.");
 
     public static readonly Histogram PqSigAttestationSigningTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_sig_attestation_signing_time_seconds",
+        "lean_pq_signature_attestation_signing_time_seconds",
         "Time taken to sign an attestation.",
         new HistogramConfiguration
         {
@@ -29,7 +29,7 @@ public static class LeanMetrics
         });
 
     public static readonly Histogram PqSigAttestationVerificationTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_sig_attestation_verification_time_seconds",
+        "lean_pq_signature_attestation_verification_time_seconds",
         "Time taken to verify an attestation signature.",
         new HistogramConfiguration
         {

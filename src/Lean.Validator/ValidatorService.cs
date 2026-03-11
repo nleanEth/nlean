@@ -1086,11 +1086,6 @@ public sealed class ValidatorService : IValidatorService
         }
     }
 
-    private static int ComputeTwoThirdsThreshold(ulong validatorCount)
-    {
-        return checked((int)((validatorCount * 2 + 2) / 3));
-    }
-
     private static AggregationBits CloneAggregationBits(AggregationBits bits)
     {
         return new AggregationBits(bits.Bits.ToArray());

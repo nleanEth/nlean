@@ -58,7 +58,6 @@ public static class NodeApp
                 services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
                 services.AddSingleton<SignedAggregatedAttestationGossipDecoder>();
-                services.AddSingleton<IForkChoiceStateTransition, ForkChoiceStateTransition>();
                 services.AddSingleton(sp => new ProtoArrayForkChoiceStore(
                     sp.GetRequiredService<ConsensusConfig>(),
                     sp.GetRequiredService<IConsensusStateStore>(),

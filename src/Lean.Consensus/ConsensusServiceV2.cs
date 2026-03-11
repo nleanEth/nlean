@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
+using Lean.Consensus.Api;
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
@@ -112,6 +114,16 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public void SetDutyTarget(IIntervalDutyTarget? target) => _dutyTarget = target;
 
+    public ApiSnapshot GetApiSnapshot()
+    {
+        var snap = _snapshot;
+        return new ApiSnapshot(
+            snap.JustifiedSlot,
+            Convert.ToHexString(snap.JustifiedRoot.AsSpan()),
+            snap.FinalizedSlot,
+            Convert.ToHexString(snap.FinalizedRoot.AsSpan()));
+    }
+
     public ulong CurrentSlot => _clock.CurrentSlot;
     public ulong HeadSlot => _snapshot.HeadSlot;
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
@@ -165,6 +177,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
+        var forkChoiceTimer = Stopwatch.StartNew();
 
         var block = signedBlock.Message.Block;
         var blockRoot = new Bytes32(block.HashTreeRoot());
@@ -259,6 +272,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             }
         }
 
+        forkChoiceTimer.Stop();
+        LeanMetrics.RecordForkChoiceBlockProcessing(forkChoiceTimer.Elapsed);
         return result;
     }
 
@@ -305,28 +320,17 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public bool TryApplyLocalAttestation(SignedAttestation signedAttestation, out string reason)
     {
-        lock (_storeLock) { return _store.TryOnAttestation(signedAttestation, _config.IsAggregator, out reason); }
+        var timer = Stopwatch.StartNew();
+        bool valid;
+        lock (_storeLock) { valid = _store.TryOnAttestation(signedAttestation, _config.IsAggregator, out reason); }
+        timer.Stop();
+        LeanMetrics.RecordAttestationValidation("gossip", valid, timer.Elapsed);
+        return valid;
     }
 
     public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
     {
         lock (_storeLock) { return _store.TryOnGossipAggregatedAttestation(signed, out reason); }
-    }
-
-    public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, List<AggregatedSignatureProof>> PayloadPool)
-        GetAllAvailableAttestationsForBlock(ulong slot)
-    {
-        lock (_storeLock)
-        {
-            var attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
-            var pool = _store.GetKnownPayloadPool();
-            return (attestations, pool);
-        }
-    }
-
-    public IReadOnlySet<Bytes32> GetKnownBlockRoots()
-    {
-        lock (_storeLock) { return _store.GetAllBlockRoots(); }
     }
 
     public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
@@ -631,6 +635,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private void ProcessGossipBlockFromInbox(GossipBlockMessage msg)
     {
+        var forkChoiceTimer = Stopwatch.StartNew();
         var signedBlock = msg.Block;
         var block = signedBlock.Message.Block;
         // Compute blockRoot from the block itself — must match the key used by
@@ -715,6 +720,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             }
         }
 
+        forkChoiceTimer.Stop();
+        LeanMetrics.RecordForkChoiceBlockProcessing(forkChoiceTimer.Elapsed);
+
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
@@ -739,7 +747,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return;
         }
 
-        lock (_storeLock) { _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _); }
+        var timer = Stopwatch.StartNew();
+        bool valid;
+        lock (_storeLock) { valid = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _); }
+        timer.Stop();
+        LeanMetrics.RecordAttestationValidation("gossip", valid, timer.Elapsed);
     }
 
     private void ProcessGossipAggregatedAttestationFromInbox(GossipAggregatedAttestationMessage msg)
