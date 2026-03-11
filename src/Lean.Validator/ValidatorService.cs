@@ -243,30 +243,32 @@ public sealed class ValidatorService : IValidatorService
                     }
                 }
 
-                if (intervalInSlot >= 1 && lastAttestedSlot != slot)
+                var proposerAttestedInBlock = lastPublishedProposerSlot == slot;
+                if (ShouldAttemptStandaloneAttestation(
+                        intervalInSlot,
+                        lastAttestedSlot,
+                        slot,
+                        proposerAttestedInBlock,
+                        IsProposerSlot(slot)))
                 {
-                    var proposerAttestedInBlock = lastPublishedProposerSlot == slot;
-                    if (!proposerAttestedInBlock && !IsProposerSlot(slot))
+                    if (ShouldSuppressDutyForUnknownRoots(slot))
                     {
-                        if (ShouldSuppressDutyForUnknownRoots(slot))
-                        {
-                            lastAttestedSlot = slot;
-                            continue;
-                        }
+                        lastAttestedSlot = slot;
+                        continue;
+                    }
 
-                        try
-                        {
-                            await PublishStandaloneAttestationAsync(slot, cancellationToken);
-                            DutyRunsTotal.Add(1);
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Validator attestation duty execution failed.");
-                        }
+                    try
+                    {
+                        await PublishStandaloneAttestationAsync(slot, cancellationToken);
+                        DutyRunsTotal.Add(1);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Validator attestation duty execution failed.");
                     }
 
                     lastAttestedSlot = slot;
@@ -345,6 +347,31 @@ public sealed class ValidatorService : IValidatorService
         }
 
         await Task.Delay(TimeSpan.FromSeconds(genesis - now), cancellationToken);
+    }
+
+    internal static bool ShouldAttemptStandaloneAttestation(
+        int intervalInSlot,
+        ulong? lastAttestedSlot,
+        ulong slot,
+        bool proposerAttestedInBlock,
+        bool isProposerSlot)
+    {
+        if (intervalInSlot != 1)
+        {
+            return false;
+        }
+
+        if (lastAttestedSlot == slot)
+        {
+            return false;
+        }
+
+        if (proposerAttestedInBlock || isProposerSlot)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private async Task PublishStandaloneAttestationAsync(ulong slot, CancellationToken cancellationToken)

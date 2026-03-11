@@ -10,6 +10,30 @@ namespace Lean.Validator.Tests;
 
 public sealed class ValidatorServiceTests
 {
+    [TestCase(0, null, 5UL, false, false, false)]
+    [TestCase(1, null, 5UL, false, false, true)]
+    [TestCase(2, null, 5UL, false, false, false)]
+    [TestCase(1, 5UL, 5UL, false, false, false)]
+    [TestCase(1, null, 5UL, true, false, false)]
+    [TestCase(1, null, 5UL, false, true, false)]
+    public void ShouldAttemptStandaloneAttestation_AllowsOnlyIntervalOneNonProposerFirstAttempt(
+        int intervalInSlot,
+        ulong? lastAttestedSlot,
+        ulong slot,
+        bool proposerAttestedInBlock,
+        bool isProposerSlot,
+        bool expected)
+    {
+        var actual = ValidatorService.ShouldAttemptStandaloneAttestation(
+            intervalInSlot,
+            lastAttestedSlot,
+            slot,
+            proposerAttestedInBlock,
+            isProposerSlot);
+
+        Assert.That(actual, Is.EqualTo(expected));
+    }
+
     [Test]
     public async Task StartAsync_DoesNotInitializeLeanMultiSigContexts()
     {

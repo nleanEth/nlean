@@ -1,6 +1,7 @@
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
 using NUnit.Framework;
+using System.Reflection;
 
 namespace Lean.Consensus.Tests.ForkChoice;
 
@@ -333,13 +334,32 @@ public sealed class ProtoArrayForkChoiceStoreTests
             participantIds: new ulong[] { 0, 1, 2 });
         Assert.That(ApplyBlock(store, signed2, 4).Accepted, Is.True);
 
-        // No individual gossip attestations → latestNew is empty.
-        // UpdateSafeTarget now uses VoteSource.Merged (known + new), matching leanSpec.
-        // 3/4 known votes >= ceil(4*2/3)=3 → safe_target should advance past genesis.
+        // Latest zeam main (#651) keeps latestNew aligned with accepted latestKnown
+        // votes. With 3/4 known votes in the tracker, safe_target should advance
+        // even though no fresh gossip arrived after block processing.
         store.TickInterval(3, 3);
 
         Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,
-            "Safe target should advance when known votes meet the 2/3 threshold (merged pool).");
+            "Safe target should advance when accepted known votes satisfy the cutoff.");
+    }
+
+    [Test]
+    public void TickInterval_At3_ThrowsWhenSafeTargetWouldRegress()
+    {
+        var store = CreateStore(validatorCount: 1);
+        var genesisRoot = store.HeadRoot;
+
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        Assert.That(ApplyBlock(store, WrapBlock(block1), 1).Accepted, Is.True);
+        var block1Root = new Bytes32(block1.HashTreeRoot());
+
+        typeof(ProtoArrayForkChoiceStore)
+            .GetField("_safeTarget", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(store, block1Root);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => store.TickInterval(1, 3));
+        Assert.That(ex!.Message, Does.Contain("Invalid safe target regression"));
+        Assert.That(store.SafeTarget, Is.EqualTo(block1Root));
     }
 
     [Test]

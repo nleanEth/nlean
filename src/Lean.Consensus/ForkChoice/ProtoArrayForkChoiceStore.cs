@@ -560,10 +560,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _newAggregatedPayloads.Clear();
 
         // Step 3: Promote latestNew → latestKnown for all validators.
-        // This covers both the local validator's own gossip (set at interval 1) and
-        // aggregated proof participants (just unpacked in Step 1).
-        // Match zeam semantics: only promote when latestNew is fresher than latestKnown,
-        // and always clear latestNew after acceptance.
+        // Match latest zeam main (#651): once a vote has been accepted, latestNew
+        // continues to mirror latestKnown instead of being cleared. This keeps the
+        // tracker in a state where safe_target (which reads latestNew) still sees
+        // accepted votes until a newer gossip vote replaces them.
         var keys = new List<ulong>(_attestationTrackers.Keys);
         foreach (var vid in keys)
         {
@@ -574,13 +574,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             }
 
             var latestNew = tracker.LatestNew.Value;
-            var knownSlot = tracker.LatestKnown?.Slot ?? 0UL;
-            if (latestNew.Slot > knownSlot)
-            {
-                tracker.LatestKnown = latestNew;
-            }
-
-            tracker.LatestNew = null;
+            tracker.LatestKnown = latestNew;
             _attestationTrackers[vid] = tracker;
         }
 
@@ -611,18 +605,26 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Computes safe_target at interval 3 using the same proto-array mechanism
-    /// with cutoffWeight = ceil(2N/3). Merges both known and new attestation pools
-    /// to match leanSpec's update_safe_target which combines both pools.
-    /// This ensures proposer attestations (which enter known directly, bypassing
-    /// the new pipeline) and self-attestations are counted, preventing safe_target
-    /// from undercounting support.
+    /// with cutoffWeight = ceil(2N/3). Match latest zeam main by reading only
+    /// latestNew/new votes here; latestKnown continues to drive head/proposal.
     /// </summary>
     private void UpdateSafeTarget()
     {
         var numValidators = _validatorCount;
         var cutoffWeight = (long)((numValidators * 2 + 2) / 3);
 
-        var safeHead = ComputeForkChoiceHead(VoteSource.Merged, cutoffWeight: cutoffWeight);
+        var safeHead = ComputeForkChoiceHead(VoteSource.New, cutoffWeight: cutoffWeight);
+        var currentSafeSlot = _protoArray.GetSlot(_safeTarget) ?? 0UL;
+        if (safeHead.Slot < currentSafeSlot)
+        {
+            _logger.LogError(
+                "Invalid safe target regression. NewSafeTargetSlot: {NewSafeTargetSlot}, CurrentSafeTargetSlot: {CurrentSafeTargetSlot}",
+                safeHead.Slot,
+                currentSafeSlot);
+            throw new InvalidOperationException(
+                $"Invalid safe target regression: new={safeHead.Slot} current={currentSafeSlot}");
+        }
+
         _safeTarget = safeHead.Root;
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -722,7 +724,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Update attestation tracker from block attestation (is_from_block=true).
-    /// Sets latestKnown and clears latestNew if the block attestation is newer.
+    /// Match latest zeam main (#651): if a block vote is newer than latestKnown and
+    /// also newer than latestNew, latestNew is pulled up to latestKnown instead of cleared.
     /// </summary>
     private void UpdateTrackerFromBlock(ulong validatorId, int headIndex, ulong slot, AttestationData data)
     {
@@ -734,11 +737,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             tracker.LatestKnown = new ProtoAttestation { Index = headIndex, Slot = slot, Data = data };
         }
 
-        // Clear latestNew if block attestation is newer
+        // Keep latestNew aligned with latestKnown when the block attestation is newer
         var newSlot = tracker.LatestNew?.Slot ?? 0UL;
         if (slot > newSlot)
         {
-            tracker.LatestNew = null;
+            tracker.LatestNew = tracker.LatestKnown;
         }
 
         _attestationTrackers[validatorId] = tracker;
