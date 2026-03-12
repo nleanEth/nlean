@@ -136,22 +136,6 @@ public sealed class NewBlockCacheTests
     }
 
     [Test]
-    public void GetProcessable_ReturnsBlocksWhoseParentIsKnown()
-    {
-        var cache = new NewBlockCache(capacity: 10);
-        var knownParent = MakeRoot(0x01);
-        var unknownParent = MakeRoot(0x02);
-
-        cache.Add(MakePending(MakeRoot(0x10), knownParent, slot: 1));
-        cache.Add(MakePending(MakeRoot(0x11), unknownParent, slot: 2));
-
-        var processable = cache.GetProcessable(root => root.Equals(knownParent));
-
-        Assert.That(processable.Count, Is.EqualTo(1));
-        Assert.That(processable[0].ParentRoot, Is.EqualTo(knownParent));
-    }
-
-    [Test]
     public void Remove_CleansUpParentChildIndex()
     {
         var cache = new NewBlockCache(capacity: 10);

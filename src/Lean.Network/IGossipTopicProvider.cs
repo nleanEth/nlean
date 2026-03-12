@@ -6,8 +6,6 @@ public interface IGossipTopicProvider
 
     string BlockTopic { get; }
 
-    string AttestationTopic { get; }
-
     string AggregateTopic { get; }
 
     string AttestationSubnetTopic(int subnetId);

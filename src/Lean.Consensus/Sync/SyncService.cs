@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Lean.Consensus.Types;
+using Lean.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -55,6 +56,7 @@ public sealed class SyncService : ISyncService
     {
         _peerManager.AddPeer(peerId);
         RecomputeState();
+        LeanMetrics.SetSyncPeersConnected(_peerManager.PeerCount);
         _logger.LogInformation("SyncService: peer connected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
             peerId, _peerManager.PeerCount, _state);
     }
@@ -63,6 +65,7 @@ public sealed class SyncService : ISyncService
     {
         _peerManager.RemovePeer(peerId);
         RecomputeState();
+        LeanMetrics.SetSyncPeersConnected(_peerManager.PeerCount);
         _logger.LogInformation("SyncService: peer disconnected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
             peerId, _peerManager.PeerCount, _state);
     }
@@ -100,6 +103,8 @@ public sealed class SyncService : ISyncService
         _headSync.CascadeChildren(blockRoot);
         DrainPendingAttestations();
         RecomputeState();
+        LeanMetrics.SetSyncCacheSize(_cache.Count);
+        LeanMetrics.SetSyncOrphanCount(_cache.OrphanCount);
     }
 
     public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId)
@@ -107,6 +112,8 @@ public sealed class SyncService : ISyncService
         _headSync.OnGossipBlock(block, blockRoot, peerId);
         DrainPendingAttestations();
         RecomputeState();
+        LeanMetrics.SetSyncCacheSize(_cache.Count);
+        LeanMetrics.SetSyncOrphanCount(_cache.OrphanCount);
         return Task.CompletedTask;
     }
 
@@ -127,6 +134,7 @@ public sealed class SyncService : ISyncService
         if (_peerManager.PeerCount == 0)
         {
             _state = SyncState.Idle;
+            LeanMetrics.SetSyncState(0);
             return;
         }
 
@@ -140,9 +148,15 @@ public sealed class SyncService : ISyncService
         // keep the node stuck in Syncing — otherwise validator duties are
         // suppressed and the network loses quorum.
         if (localHead + 2 >= networkHead)
+        {
             _state = SyncState.Synced;
+            LeanMetrics.SetSyncState(2);
+        }
         else
+        {
             _state = SyncState.Syncing;
+            LeanMetrics.SetSyncState(1);
+        }
     }
 
     public Task StartAsync(CancellationToken ct)

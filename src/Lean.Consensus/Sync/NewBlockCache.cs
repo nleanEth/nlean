@@ -77,21 +77,6 @@ public sealed class NewBlockCache
         }
     }
 
-    public List<PendingBlock> GetProcessable(Func<Bytes32, bool> isBlockKnown)
-    {
-        lock (_lock)
-        {
-            var result = new List<PendingBlock>();
-            foreach (var block in _blocks.Values)
-            {
-                if (isBlockKnown(block.ParentRoot))
-                    result.Add(block);
-            }
-
-            return result;
-        }
-    }
-
     public void MarkOrphan(Bytes32 parentRoot) { lock (_lock) _orphanParents.Add(parentRoot); }
 
     public void UnmarkOrphan(Bytes32 parentRoot) { lock (_lock) _orphanParents.Remove(parentRoot); }

@@ -64,29 +64,6 @@ internal sealed class ChainStateTransition
         return true;
     }
 
-    public bool TryTransition(
-        State parentState,
-        Block block,
-        out State postState,
-        out string reason)
-    {
-        if (!TryComputePostState(parentState, block, out postState, out reason))
-        {
-            return false;
-        }
-
-        var expectedStateRoot = new Bytes32(postState.HashTreeRoot());
-        if (!expectedStateRoot.Equals(block.StateRoot))
-        {
-            postState = default!;
-            reason = $"Invalid block state root. expected={Convert.ToHexString(expectedStateRoot.AsSpan())} got={Convert.ToHexString(block.StateRoot.AsSpan())}";
-            return false;
-        }
-
-        reason = string.Empty;
-        return true;
-    }
-
     private bool TryComputePostState(
         State parentState,
         Block block,

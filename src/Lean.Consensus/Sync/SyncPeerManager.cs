@@ -133,23 +133,6 @@ public sealed class SyncPeerManager
         }
     }
 
-    public ulong? GetNetworkFinalizedSlot()
-    {
-        lock (_lock)
-        {
-            ulong? max = null;
-            foreach (var peer in _peers.Values)
-            {
-                if (!peer.StatusReceived)
-                    continue;
-                if (max is null || peer.FinalizedSlot > max)
-                    max = peer.FinalizedSlot;
-            }
-
-            return max;
-        }
-    }
-
     public (Bytes32 Root, ulong Slot)? GetBestPeerHead()
     {
         lock (_lock)

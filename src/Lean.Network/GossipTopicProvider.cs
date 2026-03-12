@@ -6,15 +6,12 @@ public sealed class GossipTopicProvider : IGossipTopicProvider
     {
         Network = NormalizeNetwork(network);
         BlockTopic = GossipTopics.Block(Network);
-        AttestationTopic = GossipTopics.Attestation(Network);
         AggregateTopic = GossipTopics.Aggregate(Network);
     }
 
     public string Network { get; }
 
     public string BlockTopic { get; }
-
-    public string AttestationTopic { get; }
 
     public string AggregateTopic { get; }
 

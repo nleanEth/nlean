@@ -280,6 +280,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
                 _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                LeanMetrics.IncSyncBlocksProcessed();
+                if (result.HeadChanged)
+                    LeanMetrics.RecordForkChoiceReorg(1);
                 _logger.LogInformation(
                     "V2 ProcessBlock accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, ParentRoot: {ParentRoot}, ResultHeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
                     block.Slot.Value,
@@ -417,6 +420,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         LeanMetrics.SetHeadSlot(snap.HeadSlot);
         LeanMetrics.SetJustifiedSlot(snap.JustifiedSlot);
         LeanMetrics.SetFinalizedSlot(snap.FinalizedSlot);
+        LeanMetrics.SetSafeTargetSlot(_store.ProtoArray.GetSlot(_store.SafeTarget) ?? 0UL);
+        LeanMetrics.SetProtoArrayNodes(_store.ProtoArray.NodeCount);
 
         if (snap.FinalizedSlot > (ulong)Interlocked.Read(ref _lastPrunedFinalizedSlot))
         {
@@ -774,6 +779,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
                 _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                LeanMetrics.IncSyncBlocksProcessed();
+                if (result.HeadChanged)
+                    LeanMetrics.RecordForkChoiceReorg(1);
             }
         }
 

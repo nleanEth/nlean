@@ -28,26 +28,12 @@ public sealed class ChainStateCache
         lock (_lock) return _states.TryGetValue(key, out state!);
     }
 
-    public State? Get(string key)
-    {
-        lock (_lock) return _states.GetValueOrDefault(key);
-    }
-
     public void Set(string key, State state)
     {
         lock (_lock)
         {
             _states[key] = state;
             EvictIfOverCapacity();
-        }
-    }
-
-    public void SetIfAbsent(string key, State state)
-    {
-        lock (_lock)
-        {
-            if (_states.TryAdd(key, state))
-                EvictIfOverCapacity();
         }
     }
 
