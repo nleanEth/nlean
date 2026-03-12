@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Lean.Consensus.Types;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -6,6 +7,8 @@ namespace Lean.Consensus.Sync;
 
 public sealed class SyncService : ISyncService
 {
+    private const int MaxPendingAttestations = 1024;
+
     private readonly IBlockProcessor _processor;
     private readonly SyncPeerManager _peerManager;
     private readonly NewBlockCache _cache;
@@ -13,6 +16,9 @@ public sealed class SyncService : ISyncService
     private readonly HeadSync _headSync;
     private readonly BackfillSync _backfillSync;
     private readonly ILogger<SyncService> _logger;
+
+    private readonly ConcurrentQueue<SignedAttestation> _pendingAttestations = new();
+    private int _pendingAttestationCount;
 
     private volatile SyncState _state = SyncState.Idle;
 
@@ -92,22 +98,27 @@ public sealed class SyncService : ISyncService
     public void CascadeAcceptedBlock(Bytes32 blockRoot)
     {
         _headSync.CascadeChildren(blockRoot);
+        DrainPendingAttestations();
         RecomputeState();
     }
 
     public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId)
     {
         _headSync.OnGossipBlock(block, blockRoot, peerId);
+        DrainPendingAttestations();
         RecomputeState();
         return Task.CompletedTask;
     }
 
     public Task OnGossipAttestationAsync(SignedAttestation attestation)
     {
-        // Always process attestations regardless of sync state.
-        // Fork-choice needs attestation data for justification/finalization
-        // even before peer status exchanges transition out of Idle.
-        _attestationSink.AddAttestation(attestation);
+        // Try to apply immediately; if the fork-choice store rejects it
+        // (e.g. unknown head/target/source root), buffer it for replay
+        // once the missing block arrives.
+        if (!_attestationSink.TryAddAttestation(attestation))
+        {
+            EnqueuePendingAttestation(attestation);
+        }
         return Task.CompletedTask;
     }
 
@@ -160,6 +171,48 @@ public sealed class SyncService : ISyncService
                 "Proactive sync: triggering backfill from peer head root. Source: {Source}, PeerHead: {PeerHeadSlot}, LocalHead: {LocalHead}, HeadRoot: {HeadRoot}",
                 source, peerHeadSlot, localHead, headRoot);
             _backfillSync.RequestBackfill(headRoot);
+        }
+    }
+
+    private void EnqueuePendingAttestation(SignedAttestation attestation)
+    {
+        _pendingAttestations.Enqueue(attestation);
+        var count = Interlocked.Increment(ref _pendingAttestationCount);
+
+        // Evict oldest if over capacity.
+        while (count > MaxPendingAttestations && _pendingAttestations.TryDequeue(out _))
+        {
+            count = Interlocked.Decrement(ref _pendingAttestationCount);
+        }
+    }
+
+    private void DrainPendingAttestations()
+    {
+        // Single pass: try to replay all pending attestations.
+        // Those that still fail are re-enqueued.
+        var remaining = Volatile.Read(ref _pendingAttestationCount);
+        if (remaining == 0)
+            return;
+
+        var retryCount = 0;
+        for (var i = 0; i < remaining; i++)
+        {
+            if (!_pendingAttestations.TryDequeue(out var att))
+                break;
+
+            Interlocked.Decrement(ref _pendingAttestationCount);
+
+            if (!_attestationSink.TryAddAttestation(att))
+            {
+                EnqueuePendingAttestation(att);
+                retryCount++;
+            }
+        }
+
+        if (retryCount > 0)
+        {
+            _logger.LogDebug("Drained pending attestations. Replayed: {Replayed}, StillPending: {Pending}",
+                remaining - retryCount, retryCount);
         }
     }
 }

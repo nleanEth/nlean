@@ -431,6 +431,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         TryOnAttestation(attestation, storeSignature: true, out _);
     }
 
+    bool IAttestationSink.TryAddAttestation(SignedAttestation attestation)
+    {
+        return TryOnAttestation(attestation, storeSignature: true, out _);
+    }
+
     /// <summary>
     /// Collects gossiped committee signatures grouped by attestation data root.
     /// </summary>

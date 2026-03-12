@@ -24,4 +24,12 @@ public sealed class ProtoArrayAttestationSink : IAttestationSink
             _ = _store.TryOnAttestation(attestation, _storeSignatures, out _);
         }
     }
+
+    public bool TryAddAttestation(SignedAttestation attestation)
+    {
+        lock (_store.SyncRoot)
+        {
+            return _store.TryOnAttestation(attestation, _storeSignatures, out _);
+        }
+    }
 }

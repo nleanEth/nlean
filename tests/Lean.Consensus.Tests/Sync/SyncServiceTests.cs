@@ -122,6 +122,35 @@ public sealed class SyncServiceTests
         await svc.StopAsync(CancellationToken.None);
     }
 
+    [Test]
+    public async Task PendingAttestations_ReplayedOnBlockArrival()
+    {
+        var attestationSink = new RejectThenAcceptAttestationStore();
+        var peerMgr = new SyncPeerManager();
+        var processor = new FakeSyncBlockProcessor();
+        var cache = new NewBlockCache(capacity: 100);
+        var network = new FakeNetworkRequester();
+        var svc = new SyncService(processor, peerMgr, cache, attestationSink, network);
+
+        var unknownRoot = MakeRoot(0xAA);
+        var att = MakeAttestation(0, 1, unknownRoot);
+
+        // First attempt: sink rejects (unknown root), attestation is buffered
+        await svc.OnGossipAttestationAsync(att);
+        Assert.That(attestationSink.AcceptedCount, Is.EqualTo(0));
+
+        // Now allow the sink to accept
+        attestationSink.ShouldAccept = true;
+
+        // Simulate a block arriving — triggers drain of pending attestations
+        processor.KnownRoots.Add(MakeRoot(0x00));
+        var block = MakeSignedBlock(MakeRoot(0x00), 1);
+        await svc.OnGossipBlockAsync(block, ComputeRoot(block), "peer-1");
+
+        // The pending attestation should now have been replayed and accepted
+        Assert.That(attestationSink.AcceptedCount, Is.EqualTo(1));
+    }
+
     // --- Helpers ---
 
     private static (SyncService svc, SyncPeerManager peerMgr, FakeSyncBlockProcessor processor,
@@ -187,6 +216,26 @@ public sealed class SyncServiceTests
         public List<SignedAttestation> Attestations { get; } = new();
         public int Count => Attestations.Count;
         public void AddAttestation(SignedAttestation attestation) => Attestations.Add(attestation);
+        public bool TryAddAttestation(SignedAttestation attestation)
+        {
+            Attestations.Add(attestation);
+            return true;
+        }
+    }
+
+    private sealed class RejectThenAcceptAttestationStore : IAttestationSink
+    {
+        public bool ShouldAccept { get; set; }
+        public int AcceptedCount { get; private set; }
+
+        public void AddAttestation(SignedAttestation attestation) => AcceptedCount++;
+        public bool TryAddAttestation(SignedAttestation attestation)
+        {
+            if (!ShouldAccept)
+                return false;
+            AcceptedCount++;
+            return true;
+        }
     }
 
     private sealed class FakeNetworkRequester : INetworkRequester

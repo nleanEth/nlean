@@ -125,6 +125,23 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             Convert.ToHexString(snap.FinalizedRoot.AsSpan()));
     }
 
+    public byte[]? GetFinalizedStateSsz()
+    {
+        var snap = _snapshot;
+        if (snap.FinalizedSlot == 0)
+            return null;
+
+        if (!_chainStateCache.TryGet(ChainStateCache.RootKey(snap.FinalizedRoot), out var state))
+        {
+            // Finalized root's state may have been pruned from cache; try head state
+            // and check if it matches the finalized checkpoint.
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(snap.HeadRoot), out state))
+                return null;
+        }
+
+        return SszEncoding.Encode(state);
+    }
+
     public ulong CurrentSlot => _clock.CurrentSlot;
     public ulong HeadSlot => _snapshot.HeadSlot;
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;

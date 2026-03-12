@@ -100,7 +100,7 @@ public sealed class NodeService : BackgroundService
             _apiServer = new LeanApiServer(
                 $"http://+:{_options.ApiPort}/",
                 () => csv2ForApi?.GetApiSnapshot() ?? new ApiSnapshot(0, "", 0, ""),
-                () => null);
+                () => csv2ForApi?.GetFinalizedStateSsz());
             await _apiServer.StartAsync(stoppingToken);
             _logger.LogInformation("LeanApiServer listening on port {Port}.", _options.ApiPort);
         }
