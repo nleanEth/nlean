@@ -332,7 +332,13 @@ public sealed class Libp2pNetworkService : INetworkService
             ISession? session = null;
             try
             {
-                session = await _peer.DialAsync(address, batchCts.Token);
+                // Reuse an existing session to avoid creating new QUIC connections
+                // that can hang when the underlying QuicStream is disposed
+                // asynchronously.  Fall back to a fresh dial only if no session
+                // exists (e.g. the peer was never bootstrapped).
+                session = TryFindBootstrapSession(peerKey);
+                if (session is null)
+                    session = await _peer.DialAsync(address, batchCts.Token);
                 _blocksByRootPeerSelector.MarkConnected(peerKey);
 
                 // Single protocol dial: send all roots, read streamed responses until EOF.

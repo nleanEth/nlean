@@ -101,7 +101,12 @@ public sealed class BackfillSync : IBackfillTrigger
             }
 
             if (batch.Count == 0)
+            {
+                _logger.LogInformation(
+                    "Backfill: empty batch after filtering known blocks. Pending: {Pending}, Depth: {Depth}",
+                    pending.Count, depth);
                 break;
+            }
 
             var fetched = await FetchWithRetryAsync(batch, ct);
             if (fetched is null || fetched.Count == 0)
@@ -173,6 +178,12 @@ public sealed class BackfillSync : IBackfillTrigger
                 "Backfill complete: accepted {Accepted}/{Fetched} blocks over {Depth} iterations.",
                 totalAccepted, totalFetched, depth);
         }
+        else
+        {
+            _logger.LogInformation(
+                "Backfill finished with 0 blocks fetched. Depth: {Depth}, Pending: {Pending}",
+                depth, pending.Count);
+        }
     }
 
     /// <summary>
@@ -208,6 +219,12 @@ public sealed class BackfillSync : IBackfillTrigger
                     accepted++;
                     _onBlockAccepted?.Invoke(blockRoot);
                     madeProgress = true;
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "Backfill: block rejected. Slot: {Slot}, Root: {Root}, Reason: {Reason}",
+                        block.Message.Block.Slot.Value, blockRoot, result.Reason);
                 }
 
                 // Remove whether accepted or rejected — no point retrying.
@@ -312,6 +329,9 @@ public sealed class BackfillSync : IBackfillTrigger
                 if (fetched.Count > 0)
                 {
                     _peerManager.OnRequestSuccess(peerId);
+                    _logger.LogInformation(
+                        "Backfill: fetched {Count} blocks from {PeerId} (attempt {Attempt}/{MaxRetries})",
+                        fetched.Count, peerId, attempt + 1, MaxRetries);
                     return fetched;
                 }
 

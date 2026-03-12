@@ -67,9 +67,9 @@ public sealed class SyncService : ISyncService
         RecomputeState();
         RetryOrphanBackfills();
 
-        // Proactive sync: if we're behind the network and the peer gave us their
-        // head root, trigger a backfill so we don't have to wait for gossip blocks.
-        if (headRoot is not null && _state == SyncState.Syncing)
+        // Proactive sync: if the peer gave us their head root and we don't
+        // have it, trigger a backfill regardless of sync state.
+        if (headRoot is not null)
         {
             TriggerProactiveBackfill(headRoot.Value, headSlot, peerId);
         }
@@ -79,19 +79,9 @@ public sealed class SyncService : ISyncService
 
     public void TrySyncFromBestPeer()
     {
-        if (_state != SyncState.Syncing)
-            return;
-
-        // Only trigger periodic backfill when meaningfully behind the network.
-        // During normal operation, transient Syncing states (e.g. one-slot lag)
-        // resolve via gossip without needing backfill.
-        var networkFinalized = _peerManager.GetNetworkFinalizedSlot();
-        if (networkFinalized is null)
-            return;
-        var localHead = _processor.HeadSlot;
-        if (localHead >= networkFinalized.Value)
-            return;
-
+        // Trigger backfill whenever we're behind the best known peer head,
+        // regardless of sync state. TriggerProactiveBackfill already checks
+        // localHead < peerHeadSlot so this is safe during normal operation.
         var best = _peerManager.GetBestPeerHead();
         if (best is null)
             return;
@@ -129,23 +119,16 @@ public sealed class SyncService : ISyncService
             return;
         }
 
-        var networkFinalized = _peerManager.GetNetworkFinalizedSlot();
-
-        // No peer has reported status yet — stay Idle until we have data.
-        if (networkFinalized is null)
-        {
-            _state = SyncState.Idle;
-            return;
-        }
+        var networkHead = _peerManager.GetNetworkHeadSlot();
 
         var localHead = _processor.HeadSlot;
 
-        // Sync is complete when the local head is at or past the network's
-        // finalized slot.  Orphan blocks in the cache are resolved via
-        // backfill in the background and must NOT keep the node stuck in
-        // Syncing — otherwise validator duties are suppressed and the
-        // network loses quorum.
-        if (localHead >= networkFinalized.Value)
+        // Synced when local head is within 2 slots of the network head.
+        // This tolerance avoids flip-flopping during normal gossip delay.
+        // Orphan blocks resolved via backfill in the background must NOT
+        // keep the node stuck in Syncing — otherwise validator duties are
+        // suppressed and the network loses quorum.
+        if (localHead + 2 >= networkHead)
             _state = SyncState.Synced;
         else
             _state = SyncState.Syncing;

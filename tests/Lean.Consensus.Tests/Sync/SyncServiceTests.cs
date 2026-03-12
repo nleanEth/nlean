@@ -29,9 +29,10 @@ public sealed class SyncServiceTests
     public async Task OnPeerConnected_AtSameHead_TransitionsToSynced()
     {
         var (svc, _, processor, _, _) = CreateSyncService();
-        // Processor's head is 0, peer is also at 0
+        // Both at head 5 — within tolerance, should be Synced.
+        processor.CurrentHeadSlot = 5;
         svc.OnPeerConnected("peer-1");
-        await svc.OnPeerStatusAsync("peer-1", headSlot: 0, finalizedSlot: 0);
+        await svc.OnPeerStatusAsync("peer-1", headSlot: 5, finalizedSlot: 0);
 
         Assert.That(svc.State, Is.EqualTo(SyncState.Synced));
     }
@@ -84,26 +85,27 @@ public sealed class SyncServiceTests
         var (svc, _, processor, _, _) = CreateSyncService();
 
         svc.OnPeerConnected("peer-1");
-        await svc.OnPeerStatusAsync("peer-1", headSlot: 2, finalizedSlot: 1);
+        await svc.OnPeerStatusAsync("peer-1", headSlot: 20, finalizedSlot: 10);
         Assert.That(svc.State, Is.EqualTo(SyncState.Syncing));
 
-        // Simulate catching up: processor reports head at slot 2
-        processor.CurrentHeadSlot = 2;
+        // Simulate catching up: processor reports head at slot 20
+        processor.CurrentHeadSlot = 20;
         svc.RecomputeState();
 
         Assert.That(svc.State, Is.EqualTo(SyncState.Synced));
     }
 
     [Test]
-    public async Task SyncedToSyncing_WhenNewPeerHasHigherFinalized()
+    public async Task SyncedToSyncing_WhenNewPeerHasHigherHead()
     {
         var (svc, _, processor, _, _) = CreateSyncService();
 
+        processor.CurrentHeadSlot = 5;
         svc.OnPeerConnected("peer-1");
-        await svc.OnPeerStatusAsync("peer-1", headSlot: 0, finalizedSlot: 0);
+        await svc.OnPeerStatusAsync("peer-1", headSlot: 5, finalizedSlot: 0);
         Assert.That(svc.State, Is.EqualTo(SyncState.Synced));
 
-        // New peer arrives with higher finalized slot
+        // New peer arrives with much higher head slot
         svc.OnPeerConnected("peer-2");
         await svc.OnPeerStatusAsync("peer-2", headSlot: 100, finalizedSlot: 50);
 

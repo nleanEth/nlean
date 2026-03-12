@@ -5,10 +5,14 @@ namespace Lean.Consensus.Sync;
 
 /// <summary>
 /// Adapts INetworkService to the INetworkRequester interface used by BackfillSync.
-/// Fetches blocks one-by-one via the existing blocks-by-root RPC and decodes SSZ payloads.
+/// Fetches blocks via the blocks-by-root RPC and decodes SSZ payloads.
+/// Includes a hard deadline to guard against QUIC transport hangs where the
+/// cancellation token is not respected by the underlying stream.
 /// </summary>
 public sealed class Libp2pNetworkRequester : INetworkRequester
 {
+    private const int HardDeadlineMs = 35_000;
+
     private readonly INetworkService _network;
     private readonly SignedBlockWithAttestationGossipDecoder _decoder = new();
 
@@ -21,7 +25,19 @@ public sealed class Libp2pNetworkRequester : INetworkRequester
         string peerId, List<Bytes32> roots, CancellationToken ct)
     {
         var rawRoots = roots.Select(r => r.AsSpan().ToArray()).ToList();
-        var batchResults = await _network.RequestBlocksByRootBatchAsync(rawRoots, peerId, ct);
+
+        // The QUIC transport may hang indefinitely when the underlying
+        // QuicStream is disposed asynchronously (ObjectDisposedException in
+        // a fire-and-forget task). CancellationToken propagation through
+        // the libp2p stack is unreliable in this failure mode, so we add a
+        // hard Task.WhenAny deadline to guarantee the call returns.
+        var networkTask = _network.RequestBlocksByRootBatchAsync(rawRoots, peerId, ct);
+        var completed = await Task.WhenAny(networkTask, Task.Delay(HardDeadlineMs, ct));
+
+        if (completed != networkTask)
+            throw new OperationCanceledException("blocks-by-root hard deadline exceeded", ct);
+
+        var batchResults = await networkTask; // propagate exceptions
 
         var results = new List<SignedBlockWithAttestation>();
         foreach (var payload in batchResults)

@@ -1,5 +1,4 @@
-# Quickstart validator template used by nlean interop scripts.
-# Keep node names and ports aligned with the target interop topology.
+# 4x nlean interop config for profiling/testing.
 shuffle: roundrobin
 deployment_mode: local
 config:
@@ -14,6 +13,7 @@ validators:
     metricsPort: 18081
     count: 1
     isAggregator: true
+
   - name: "nlean_1"
     privkey: "bdf953adc161873ba026330c56450453f582e3c4ee6cb713644794bcfdd85fe5"
     enrFields:
@@ -22,6 +22,7 @@ validators:
     metricsPort: 18082
     count: 1
     isAggregator: false
+
   - name: "nlean_2"
     privkey: "299550529a79bc2dce003747c52fb0639465c893e00b0440ac66144d625e066a"
     enrFields:
@@ -30,27 +31,12 @@ validators:
     metricsPort: 18083
     count: 1
     isAggregator: false
+
   - name: "nlean_3"
     privkey: "c4f5a6b7d8e9012345abcdef6789012345abcdef6789012345abcdef67890123"
     enrFields:
       ip: "127.0.0.1"
       quic: 9104
     metricsPort: 18084
-    count: 1
-    isAggregator: false
-  - name: "ethlambda_0"
-    privkey: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
-    enrFields:
-      ip: "127.0.0.1"
-      quic: 9105
-    metricsPort: 18085
-    count: 1
-    isAggregator: false
-  - name: "ethlambda_1"
-    privkey: "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3"
-    enrFields:
-      ip: "127.0.0.1"
-      quic: 9106
-    metricsPort: 18086
     count: 1
     isAggregator: false
