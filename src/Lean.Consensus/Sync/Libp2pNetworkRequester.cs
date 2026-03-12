@@ -11,14 +11,16 @@ namespace Lean.Consensus.Sync;
 /// </summary>
 public sealed class Libp2pNetworkRequester : INetworkRequester
 {
-    private const int HardDeadlineMs = 35_000;
+    internal const int DefaultHardDeadlineMs = 35_000;
 
     private readonly INetworkService _network;
+    private readonly int _hardDeadlineMs;
     private readonly SignedBlockWithAttestationGossipDecoder _decoder = new();
 
-    public Libp2pNetworkRequester(INetworkService network)
+    public Libp2pNetworkRequester(INetworkService network, int hardDeadlineMs = DefaultHardDeadlineMs)
     {
         _network = network;
+        _hardDeadlineMs = hardDeadlineMs;
     }
 
     public async Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
@@ -32,7 +34,7 @@ public sealed class Libp2pNetworkRequester : INetworkRequester
         // the libp2p stack is unreliable in this failure mode, so we add a
         // hard Task.WhenAny deadline to guarantee the call returns.
         var networkTask = _network.RequestBlocksByRootBatchAsync(rawRoots, peerId, ct);
-        var completed = await Task.WhenAny(networkTask, Task.Delay(HardDeadlineMs, ct));
+        var completed = await Task.WhenAny(networkTask, Task.Delay(_hardDeadlineMs, ct));
 
         if (completed != networkTask)
             throw new OperationCanceledException("blocks-by-root hard deadline exceeded", ct);

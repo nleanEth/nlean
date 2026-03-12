@@ -63,6 +63,18 @@ public sealed class Libp2pNetworkRequesterTests
             () => requester.RequestBlocksByRootAsync("peer1", [root], cts.Token));
     }
 
+    [Test]
+    public void RequestBlocksByRoot_ThrowsOnHardDeadline()
+    {
+        var network = new HangingNetworkService();
+        var requester = new Libp2pNetworkRequester(network, hardDeadlineMs: 100);
+
+        var root = new Bytes32(Enumerable.Repeat((byte)0xDD, 32).ToArray());
+        var ex = Assert.ThrowsAsync<OperationCanceledException>(
+            () => requester.RequestBlocksByRootAsync("peer1", [root], CancellationToken.None));
+        Assert.That(ex!.Message, Does.Contain("hard deadline"));
+    }
+
     private static SignedBlockWithAttestation CreateSignedBlock(ulong slot)
     {
         var attData = new AttestationData(
@@ -109,6 +121,26 @@ public sealed class Libp2pNetworkRequesterTests
                     results.Add(data);
             }
             return Task.FromResult(results);
+        }
+    }
+
+    private sealed class HangingNetworkService : INetworkService
+    {
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task PublishAsync(string topic, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
+            Task.CompletedTask;
+        public Task SubscribeAsync(string topic, Action<byte[]> handler, CancellationToken ct = default) =>
+            Task.CompletedTask;
+        public Task ProbePeerStatusesAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task ConnectToPeersAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+        public async Task<List<byte[]>> RequestBlocksByRootBatchAsync(
+            List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default)
+        {
+            // Simulate a hung QUIC connection that never completes
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return new List<byte[]>();
         }
     }
 }

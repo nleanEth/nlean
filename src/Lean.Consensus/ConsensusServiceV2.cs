@@ -36,11 +36,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private IIntervalDutyTarget? _dutyTarget;
     private object _storeLock => _store.SyncRoot;
 
-    private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateUnbounded<ConsensusInboxMessage>(
-        new UnboundedChannelOptions
+    private readonly Channel<ConsensusInboxMessage> _inbox = Channel.CreateBounded<ConsensusInboxMessage>(
+        new BoundedChannelOptions(4096)
         {
             SingleReader = true,
             SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest,
         });
 
     private volatile ConsensusSnapshot _snapshot = null!;
@@ -587,6 +588,45 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _runTask = null;
         _inboxTask = null;
         Interlocked.Exchange(ref _statusProbeInFlight, 0);
+
+        // Final state save — capture any progress since the last finalization checkpoint.
+        SaveFinalState();
+    }
+
+    private void SaveFinalState()
+    {
+        if (_stateStore is null)
+            return;
+
+        try
+        {
+            var snap = _snapshot;
+            if (snap is null)
+                return;
+
+            var headState = new ConsensusHeadState(
+                snap.HeadSlot,
+                snap.HeadRoot.AsSpan(),
+                snap.JustifiedSlot,
+                snap.JustifiedRoot.AsSpan(),
+                snap.FinalizedSlot,
+                snap.FinalizedRoot.AsSpan(),
+                _store.SafeTarget.AsSpan().Length == 32 ? snap.HeadSlot : 0UL,
+                _store.SafeTarget.AsSpan());
+
+            if (_chainStateCache.TryGet(ChainStateCache.RootKey(snap.HeadRoot), out var chainState))
+                _stateStore.Save(headState, chainState);
+            else
+                _stateStore.Save(headState);
+
+            _logger.LogInformation(
+                "Saved final state on shutdown. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}",
+                snap.HeadSlot, snap.FinalizedSlot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to save final state on shutdown.");
+        }
     }
 
     private void RefreshSnapshot()

@@ -60,22 +60,28 @@ public sealed class ConsensusStateStore : IConsensusStateStore
     public void Save(ConsensusHeadState state)
     {
         ArgumentNullException.ThrowIfNull(state);
-        _store.Put(StateKey, state.Serialize());
-        _store.Delete(HeadChainStateKey);
+        using var batch = _store.StartBatch();
+        batch.Put(StateKey, state.Serialize());
+        batch.Delete(HeadChainStateKey);
+        batch.Commit();
     }
 
     public void Save(ConsensusHeadState state, State headChainState)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(headChainState);
-        _store.Put(StateKey, state.Serialize());
-        _store.Put(HeadChainStateKey, JsonSerializer.SerializeToUtf8Bytes(StateSnapshotPayload.FromState(headChainState)));
+        using var batch = _store.StartBatch();
+        batch.Put(StateKey, state.Serialize());
+        batch.Put(HeadChainStateKey, JsonSerializer.SerializeToUtf8Bytes(StateSnapshotPayload.FromState(headChainState)));
+        batch.Commit();
     }
 
     public void Delete()
     {
-        _store.Delete(StateKey);
-        _store.Delete(HeadChainStateKey);
+        using var batch = _store.StartBatch();
+        batch.Delete(StateKey);
+        batch.Delete(HeadChainStateKey);
+        batch.Commit();
     }
 
     private static bool TryDeserializeHeadChainState(ReadOnlySpan<byte> payload, out State? headChainState)

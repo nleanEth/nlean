@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
@@ -97,6 +98,22 @@ public sealed class ConsensusServiceV2Tests
     }
 
     [Test]
+    public async Task StopAsync_SavesFinalState()
+    {
+        var stateStore = new FakeConsensusStateStore();
+        var (svc, _, _, _) = CreateService(stateStore: stateStore);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+        await svc.StartAsync(cts.Token);
+        await Task.Delay(100);
+        await svc.StopAsync(CancellationToken.None);
+
+        Assert.That(stateStore.SaveCount, Is.GreaterThanOrEqualTo(1));
+        Assert.That(stateStore.LastSavedState, Is.Not.Null);
+        Assert.That(stateStore.LastSavedState!.HeadSlot, Is.EqualTo(0UL));
+    }
+
+    [Test]
     public void HasUnknownBlockRootsInFlight_FalseWithoutSync()
     {
         var (svc, _, _, _) = CreateService();
@@ -167,7 +184,8 @@ public sealed class ConsensusServiceV2Tests
     }
 
     private static (ConsensusServiceV2 svc, FakeTimeSource time,
-        ProtoArrayForkChoiceStore store, SlotClock clock) CreateService(ISyncService? syncService = null)
+        ProtoArrayForkChoiceStore store, SlotClock clock) CreateService(
+        ISyncService? syncService = null, IConsensusStateStore? stateStore = null)
     {
         var config = new ConsensusConfig
         {
@@ -179,7 +197,7 @@ public sealed class ConsensusServiceV2Tests
         var time = new FakeTimeSource(GenesisTime);
         var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
             ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
-        var svc = new ConsensusServiceV2(store, clock, config, syncService);
+        var svc = new ConsensusServiceV2(store, clock, config, syncService, stateStore: stateStore);
         return (svc, time, store, clock);
     }
 
@@ -229,5 +247,38 @@ public sealed class ConsensusServiceV2Tests
         public void OnPeerDisconnected(string peerId) { }
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class FakeConsensusStateStore : IConsensusStateStore
+    {
+        public int SaveCount { get; private set; }
+        public ConsensusHeadState? LastSavedState { get; private set; }
+
+        public bool TryLoad([NotNullWhen(true)] out ConsensusHeadState? state)
+        {
+            state = null;
+            return false;
+        }
+
+        public bool TryLoad([NotNullWhen(true)] out ConsensusHeadState? state, out State? headChainState)
+        {
+            state = null;
+            headChainState = null;
+            return false;
+        }
+
+        public void Save(ConsensusHeadState state)
+        {
+            SaveCount++;
+            LastSavedState = state;
+        }
+
+        public void Save(ConsensusHeadState state, State headChainState)
+        {
+            SaveCount++;
+            LastSavedState = state;
+        }
+
+        public void Delete() { }
     }
 }
