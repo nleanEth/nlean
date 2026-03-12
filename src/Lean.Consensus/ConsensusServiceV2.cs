@@ -15,6 +15,9 @@ namespace Lean.Consensus;
 
 public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockProcessor
 {
+    private const ulong BlockRetentionSlots = 128;
+    private const ulong StateRetentionSlots = 64;
+
     private readonly ProtoArrayForkChoiceStore _store;
     private readonly ChainStateTransition _chainStateTransition;
     private readonly ChainStateCache _chainStateCache;
@@ -30,6 +33,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly IBlocksByRootRpcRouter? _blocksByRootRpcRouter;
     private readonly IBlockByRootStore _blockStore;
     private readonly IConsensusStateStore? _stateStore;
+    private readonly ISlotIndexStore? _slotIndexStore;
+    private readonly IStateRootIndexStore? _stateRootIndexStore;
+    private readonly IStateByRootStore? _stateByRootStore;
     private readonly IGossipTopicProvider _gossipTopics;
     private readonly ILogger<ConsensusServiceV2> _logger;
     private readonly string[] _attestationSubnetTopics;
@@ -52,6 +58,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private int _started;
     private int _statusProbeInFlight;
     private long _lastPrunedFinalizedSlot;
+    private int _pruneRunning;
 
     public ConsensusServiceV2(
         ProtoArrayForkChoiceStore store,
@@ -68,6 +75,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         IGossipTopicProvider? gossipTopics = null,
         ChainStateCache? chainStateCache = null,
         IConsensusStateStore? stateStore = null,
+        ISlotIndexStore? slotIndexStore = null,
+        IStateRootIndexStore? stateRootIndexStore = null,
+        IStateByRootStore? stateByRootStore = null,
         ILogger<ConsensusServiceV2>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -86,6 +96,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _blocksByRootRpcRouter = blocksByRootRpcRouter;
         _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
         _stateStore = stateStore;
+        _slotIndexStore = slotIndexStore;
+        _stateRootIndexStore = stateRootIndexStore;
+        _stateByRootStore = stateByRootStore;
         _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultNetwork);
         _logger = logger ?? NullLogger<ConsensusServiceV2>.Instance;
         _chainStateTransition = new ChainStateTransition(_config);
@@ -280,6 +293,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
                 _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                _slotIndexStore?.Save(block.Slot.Value, blockRoot);
+                _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
+                _stateByRootStore?.Save(blockRoot, postState);
                 LeanMetrics.IncSyncBlocksProcessed();
                 if (result.HeadChanged)
                     LeanMetrics.RecordForkChoiceReorg(1);
@@ -460,6 +476,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     _logger.LogWarning(ex, "Failed to save checkpoint state.");
                 }
             }
+
+            TriggerDbPrune(snap.FinalizedSlot);
         }
 
         if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
@@ -779,6 +797,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
                 _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                _slotIndexStore?.Save(block.Slot.Value, blockRoot);
+                _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
+                _stateByRootStore?.Save(blockRoot, postState);
                 LeanMetrics.IncSyncBlocksProcessed();
                 if (result.HeadChanged)
                     LeanMetrics.RecordForkChoiceReorg(1);
@@ -1020,6 +1041,60 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         return [gossipTopics.AttestationSubnetTopic(subnetId)];
     }
 
+    private void TriggerDbPrune(ulong finalizedSlot)
+    {
+        if (_slotIndexStore is null)
+            return;
+
+        if (Interlocked.CompareExchange(ref _pruneRunning, 1, 0) != 0)
+            return;
+
+        var slotIndex = _slotIndexStore;
+        var blockStore = _blockStore;
+        var stateByRoot = _stateByRootStore;
+        var logger = _logger;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var blockCutoff = finalizedSlot > BlockRetentionSlots
+                    ? finalizedSlot - BlockRetentionSlots
+                    : 0UL;
+                var stateCutoff = finalizedSlot > StateRetentionSlots
+                    ? finalizedSlot - StateRetentionSlots
+                    : 0UL;
+
+                var entries = slotIndex.GetEntriesBelow(blockCutoff);
+                if (entries.Count == 0)
+                {
+                    return;
+                }
+
+                foreach (var (slot, root) in entries)
+                {
+                    blockStore.Delete(root);
+                    if (slot < stateCutoff)
+                        stateByRoot?.Delete(root);
+                }
+
+                slotIndex.DeleteBelow(blockCutoff);
+
+                logger.LogInformation(
+                    "DB prune complete. FinalizedSlot={FinalizedSlot}, PrunedBlocks={Count}, BlockCutoff={Cutoff}",
+                    finalizedSlot, entries.Count, blockCutoff);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "DB prune failed.");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pruneRunning, 0);
+            }
+        });
+    }
+
     private abstract record ConsensusInboxMessage;
     private sealed record GossipBlockMessage(SignedBlockWithAttestation Block, Bytes32 BlockRoot) : ConsensusInboxMessage;
     private sealed record GossipAttestationMessage(SignedAttestation Attestation) : ConsensusInboxMessage;
@@ -1045,6 +1120,10 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         {
             payload = null;
             return false;
+        }
+
+        public void Delete(Bytes32 blockRoot)
+        {
         }
     }
 }

@@ -14,6 +14,9 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
 {
     private readonly ProtoArrayForkChoiceStore _store;
     private readonly IBlockByRootStore _blockStore;
+    private readonly ISlotIndexStore? _slotIndexStore;
+    private readonly IStateRootIndexStore? _stateRootIndexStore;
+    private readonly IStateByRootStore? _stateByRootStore;
     private readonly ChainStateTransition _chainStateTransition;
     private readonly ChainStateCache _chainStateCache;
 
@@ -21,12 +24,18 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         ProtoArrayForkChoiceStore store,
         IBlockByRootStore blockStore,
         ConsensusConfig config,
-        ChainStateCache chainStateCache)
+        ChainStateCache chainStateCache,
+        ISlotIndexStore? slotIndexStore = null,
+        IStateRootIndexStore? stateRootIndexStore = null,
+        IStateByRootStore? stateByRootStore = null)
     {
         _store = store;
         _blockStore = blockStore;
         _chainStateTransition = new ChainStateTransition(config);
         _chainStateCache = chainStateCache;
+        _slotIndexStore = slotIndexStore;
+        _stateRootIndexStore = stateRootIndexStore;
+        _stateByRootStore = stateByRootStore;
     }
 
     public ulong HeadSlot
@@ -89,6 +98,9 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         if (result.Accepted)
         {
             _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+            _slotIndexStore?.Save(block.Slot.Value, blockRoot);
+            _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
+            _stateByRootStore?.Save(blockRoot, postState);
             _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
         }
 

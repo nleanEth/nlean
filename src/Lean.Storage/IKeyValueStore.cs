@@ -13,4 +13,5 @@ public interface IKeyValueStore
     void Put(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value);
     void Delete(ReadOnlySpan<byte> key);
     IWriteBatch StartBatch();
+    IEnumerable<(byte[] Key, byte[] Value)> PrefixScan(byte[] prefix);
 }

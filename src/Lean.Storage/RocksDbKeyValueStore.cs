@@ -35,6 +35,21 @@ public sealed class RocksDbKeyValueStore : IKeyValueStore, IDisposable
 
     public IWriteBatch StartBatch() => new RocksDbWriteBatch(_db);
 
+    public IEnumerable<(byte[] Key, byte[] Value)> PrefixScan(byte[] prefix)
+    {
+        using var iterator = _db.NewIterator();
+        iterator.Seek(prefix);
+        while (iterator.Valid())
+        {
+            var key = iterator.Key();
+            if (key.Length < prefix.Length ||
+                !key.AsSpan(0, prefix.Length).SequenceEqual(prefix))
+                break;
+            yield return (key, iterator.Value());
+            iterator.Next();
+        }
+    }
+
     public void Dispose()
     {
         _db.Dispose();

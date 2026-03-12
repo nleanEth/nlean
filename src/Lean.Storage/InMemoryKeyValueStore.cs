@@ -23,6 +23,18 @@ public sealed class InMemoryKeyValueStore : IKeyValueStore
 
     public IWriteBatch StartBatch() => new InMemoryWriteBatch(this);
 
+    public IEnumerable<(byte[] Key, byte[] Value)> PrefixScan(byte[] prefix)
+    {
+        var prefixHex = Convert.ToHexString(prefix);
+        foreach (var kvp in _store)
+        {
+            if (kvp.Key.StartsWith(prefixHex, StringComparison.Ordinal))
+            {
+                yield return (Convert.FromHexString(kvp.Key), kvp.Value);
+            }
+        }
+    }
+
     private sealed class InMemoryWriteBatch : IWriteBatch
     {
         private readonly InMemoryKeyValueStore _store;

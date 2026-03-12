@@ -27,6 +27,11 @@ public sealed class BlockByRootStore : IBlockByRootStore
         return payload is not null;
     }
 
+    public void Delete(Bytes32 blockRoot)
+    {
+        _store.Delete(BuildKey(blockRoot));
+    }
+
     private static byte[] BuildKey(Bytes32 blockRoot)
     {
         var rootHex = Convert.ToHexString(blockRoot.AsSpan());

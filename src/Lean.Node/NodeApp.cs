@@ -53,6 +53,9 @@ public static class NodeApp
                 services.AddSingleton<IKeyValueStore>(_ => new RocksDbKeyValueStore(options.Storage, "consensus"));
                 services.AddSingleton<IConsensusStateStore, ConsensusStateStore>();
                 services.AddSingleton<IBlockByRootStore, BlockByRootStore>();
+                services.AddSingleton<ISlotIndexStore, SlotIndexStore>();
+                services.AddSingleton<IStateRootIndexStore, StateRootIndexStore>();
+                services.AddSingleton<IStateByRootStore, StateByRootStore>();
                 services.AddSingleton<IBlocksByRootRpcRouter, BlocksByRootRpcRouter>();
                 services.AddSingleton<IStatusRpcRouter, StatusRpcRouter>();
                 services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
