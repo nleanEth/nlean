@@ -68,8 +68,15 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _headSlot = loaded.HeadSlot;
             _latestJustified = new Checkpoint(justifiedRoot, new Slot(loaded.LatestJustifiedSlot));
             _latestFinalized = new Checkpoint(finalizedRoot, new Slot(loaded.LatestFinalizedSlot));
-            _safeTarget = new Bytes32(loaded.SafeTargetRoot);
             _currentSlot = loaded.HeadSlot;
+
+            // On cold restart, reset safe target to finalized root rather than
+            // restoring the persisted value. Attestation trackers are not persisted,
+            // so UpdateSafeTarget() (which uses VoteSource.New with 2/3 cutoff)
+            // would compute a lower slot than the saved safe target, triggering a
+            // spurious safe-target regression error. The safe target will naturally
+            // advance once new attestations arrive.
+            _safeTarget = finalizedRoot;
 
             _protoArray = new ProtoArray(finalizedRoot, loaded.LatestFinalizedSlot, loaded.LatestFinalizedSlot);
 
