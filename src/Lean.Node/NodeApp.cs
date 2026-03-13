@@ -597,7 +597,24 @@ public static class NodeApp
             var validatorConfig = ValidatorConfig.Load(options.ValidatorConfigPath);
             var chainConfig = ApplyChainTimingConfig(options);
             ApplyInitialValidatorCount(options, validatorConfig, chainConfig);
-            return (validatorConfig, validatorConfig.FindNode(options.NodeName), chainConfig);
+            var node = validatorConfig.FindNode(options.NodeName);
+
+            // Auto-derive ValidatorIndex from the node's position in the validators list
+            // when not explicitly set (default 0). This ensures each node loads the correct
+            // hash-sig key pair from --hash-sig-key-dir.
+            if (node is not null && options.Validator.ValidatorIndex == 0)
+            {
+                for (int i = 0; i < validatorConfig.Validators.Count; i++)
+                {
+                    if (string.Equals(validatorConfig.Validators[i].Name, node.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        options.Validator.ValidatorIndex = (ulong)i;
+                        break;
+                    }
+                }
+            }
+
+            return (validatorConfig, node, chainConfig);
         }
         catch
         {
@@ -674,8 +691,37 @@ public static class NodeApp
         ValidatorNodeConfig? validatorNodeConfig,
         LeanChainConfig? chainConfig)
     {
+        var publicKeyPath = options.Validator.PublicKeyPath;
+        var secretKeyPath = options.Validator.SecretKeyPath;
+
+        if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
+            string.IsNullOrWhiteSpace(publicKeyPath) &&
+            string.IsNullOrWhiteSpace(secretKeyPath))
+        {
+            var idx = options.Validator.ValidatorIndex;
+            var dir = options.HashSigKeyDir;
+            var sszPk = Path.Combine(dir, $"validator_{idx}_pk.ssz");
+            var sszSk = Path.Combine(dir, $"validator_{idx}_sk.ssz");
+            var jsonPk = Path.Combine(dir, $"validator_{idx}_pk.json");
+            var jsonSk = Path.Combine(dir, $"validator_{idx}_sk.json");
+
+            if (File.Exists(sszPk) && File.Exists(sszSk))
+            {
+                publicKeyPath = sszPk;
+                secretKeyPath = sszSk;
+            }
+            else if (File.Exists(jsonPk) && File.Exists(jsonSk))
+            {
+                publicKeyPath = jsonPk;
+                secretKeyPath = jsonSk;
+            }
+        }
+
+        // Only fall back to validatorNodeConfig.Privkey when no hash-sig key paths were resolved.
+        // The Privkey field is the libp2p identity key (secp256k1), not a hash-sig secret key.
         var secretKeyHex = options.Validator.SecretKeyHex;
-        if (string.IsNullOrWhiteSpace(secretKeyHex) && string.IsNullOrWhiteSpace(options.Validator.SecretKeyPath))
+        if (string.IsNullOrWhiteSpace(secretKeyHex) &&
+            string.IsNullOrWhiteSpace(secretKeyPath))
         {
             if (!string.IsNullOrWhiteSpace(validatorNodeConfig?.Privkey))
             {
@@ -687,8 +733,8 @@ public static class NodeApp
         {
             PublicKeyHex = options.Validator.PublicKeyHex,
             SecretKeyHex = secretKeyHex,
-            PublicKeyPath = options.Validator.PublicKeyPath,
-            SecretKeyPath = options.Validator.SecretKeyPath,
+            PublicKeyPath = publicKeyPath,
+            SecretKeyPath = secretKeyPath,
             ValidatorIndex = options.Validator.ValidatorIndex,
             ActivationEpoch = options.Validator.ActivationEpoch,
             NumActiveEpochs = options.Validator.NumActiveEpochs,

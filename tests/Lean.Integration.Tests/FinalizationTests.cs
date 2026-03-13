@@ -10,7 +10,7 @@ public class FinalizationTests
     [Test]
     public async Task FourNode_ReachesFinalization()
     {
-        using var cluster = new DevnetCluster(nodeCount: 4);
+        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19400);
         cluster.StartAll();
 
         await cluster.WaitForFinalization(

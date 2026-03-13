@@ -65,4 +65,18 @@ internal static partial class NativeMethods
 
     [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "lean_free")]
     internal static partial void LeanFree(IntPtr buffer, nuint bufferLen);
+
+    [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leansig_pk_json_to_bytes")]
+    internal static partial int LeanSigPkJsonToBytes(
+        IntPtr jsonPtr,
+        nuint jsonLen,
+        out IntPtr outPtr,
+        out nuint outLen);
+
+    [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leansig_sk_json_to_bytes")]
+    internal static partial int LeanSigSkJsonToBytes(
+        IntPtr jsonPtr,
+        nuint jsonLen,
+        out IntPtr outPtr,
+        out nuint outLen);
 }

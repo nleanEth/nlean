@@ -5,8 +5,15 @@ public sealed record NodeOptionsOverrides(
     string? DataDir,
     string? Network,
     bool? MetricsEnabled,
-    string? Libp2pConfig,
     string? LogLevel,
     string? ValidatorConfigPath,
     string? NodeName,
-    string? CheckpointSyncUrl = null);
+    string? CheckpointSyncUrl = null,
+    string? NodeKeyPath = null,
+    int? SocketPort = null,
+    int? MetricsPort = null,
+    string? MetricsAddress = null,
+    bool IsAggregator = false,
+    int? AttestationCommitteeCount = null,
+    int? ApiPort = null,
+    string? HashSigKeyDir = null);

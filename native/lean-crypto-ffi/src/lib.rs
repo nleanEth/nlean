@@ -212,6 +212,40 @@ pub extern "C" fn leanmultisig_verify_aggregate(
 
 
 #[no_mangle]
+pub extern "C" fn leansig_pk_json_to_bytes(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    wrap(|| {
+        ensure_out_ptrs(&[out_ptr.cast(), out_len.cast()])?;
+        let json_bytes = read_slice(json_ptr, json_len)?;
+        let pk: LeanSigHashsigPublicKey =
+            serde_json::from_slice(json_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+        write_output(pk.to_bytes(), out_ptr, out_len)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn leansig_sk_json_to_bytes(
+    json_ptr: *const u8,
+    json_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    wrap(|| {
+        ensure_out_ptrs(&[out_ptr.cast(), out_len.cast()])?;
+        let json_bytes = read_slice(json_ptr, json_len)?;
+        let sk: LeanSigHashsigSecretKey =
+            serde_json::from_slice(json_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+        write_output(sk.to_bytes(), out_ptr, out_len)?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn lean_free(ptr: *mut u8, len: usize) {
     if ptr.is_null() {
         return;

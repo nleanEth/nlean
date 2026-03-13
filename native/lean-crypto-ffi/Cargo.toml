@@ -12,6 +12,7 @@ leansig_hashsig = { package = "leansig", git = "https://github.com/leanEthereum/
 lean-multisig = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "e4474138487eeb1ed7c2e1013674fe80ac9f3165" }
 rand = "0.9.2"
 ssz = { package = "ethereum_ssz", version = "0.10.0" }
+serde_json = "1"
 
 [build-dependencies]
 cbindgen = "0.28.0"

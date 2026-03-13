@@ -772,23 +772,39 @@ public sealed class ValidatorService : IValidatorService
             return;
         }
 
-        foreach (var filePath in Directory.EnumerateFiles(directory, "validator_*_pk.ssz"))
+        var patterns = new[] { "validator_*_pk.ssz", "validator_*_pk.json" };
+        var seen = new HashSet<ulong>();
+
+        foreach (var pattern in patterns)
         {
-            var fileName = Path.GetFileNameWithoutExtension(filePath);
-            if (!TryParseValidatorIndexFromPublicKeyFileName(fileName, out var validatorId))
+            foreach (var filePath in Directory.EnumerateFiles(directory, pattern))
             {
-                continue;
-            }
+                var fileName = Path.GetFileNameWithoutExtension(filePath);
+                if (!TryParseValidatorIndexFromPublicKeyFileName(fileName, out var validatorId))
+                {
+                    continue;
+                }
 
-            var publicKeyBytes = File.ReadAllBytes(filePath);
-            if (publicKeyBytes.Length == 0)
-            {
-                continue;
-            }
+                if (!seen.Add(validatorId))
+                {
+                    continue;
+                }
 
-            lock (_dutyStateLock)
-            {
-                _validatorPublicKeys[validatorId] = publicKeyBytes;
+                var publicKeyBytes = File.ReadAllBytes(filePath);
+                if (publicKeyBytes.Length == 0)
+                {
+                    continue;
+                }
+
+                if (filePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                {
+                    publicKeyBytes = RustLeanSig.PublicKeyFromJson(publicKeyBytes);
+                }
+
+                lock (_dutyStateLock)
+                {
+                    _validatorPublicKeys[validatorId] = publicKeyBytes;
+                }
             }
         }
     }
@@ -849,7 +865,18 @@ public sealed class ValidatorService : IValidatorService
             throw new InvalidOperationException($"Configured {keyLabel} key file is empty: {resolvedPath}");
         }
 
-        _logger.LogInformation("Loaded validator {KeyLabel} key bytes from {Path}.", keyLabel, resolvedPath);
+        if (resolvedPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            bytes = keyLabel == "public"
+                ? RustLeanSig.PublicKeyFromJson(bytes)
+                : RustLeanSig.SecretKeyFromJson(bytes);
+            _logger.LogInformation("Converted JSON {KeyLabel} key to SSZ bytes from {Path}.", keyLabel, resolvedPath);
+        }
+        else
+        {
+            _logger.LogInformation("Loaded validator {KeyLabel} key bytes from {Path}.", keyLabel, resolvedPath);
+        }
+
         return bytes;
     }
 

@@ -60,11 +60,18 @@ internal static class Program
             cliOptions.DataDir,
             cliOptions.Network,
             cliOptions.Metrics,
-            cliOptions.Libp2pConfig,
             cliOptions.LogLevel,
             cliOptions.ValidatorConfig,
             cliOptions.NodeName,
-            cliOptions.CheckpointSyncUrl);
+            cliOptions.CheckpointSyncUrl,
+            cliOptions.NodeKeyPath,
+            cliOptions.SocketPort,
+            cliOptions.MetricsPort,
+            cliOptions.MetricsAddress,
+            cliOptions.IsAggregator,
+            cliOptions.AttestationCommitteeCount,
+            cliOptions.ApiPort,
+            cliOptions.HashSigKeyDir);
 
         var nodeOptions = NodeOptions.Load(overrides);
 
@@ -85,23 +92,28 @@ internal static class Program
 
     private static void PrintHelp()
     {
-        Console.WriteLine(@"Lean Client
-
-Usage:
-  lean-client [options]
-
-Options:
-  --config PATH             Path to node-config.json
-  --data-dir PATH           Data directory
-  --network NAME            Network name (e.g. devnet2)
-  --metrics                 Enable metrics
-  --libp2p PATH             Optional libp2p config path
-  --log LEVEL               Log level (Trace, Debug, Information, Warning, Error)
-  --validator-config PATH   Path to validator-config.yaml
-  --node NAME               Node name inside validator-config.yaml
-  --checkpoint-sync-url URL Bootstrap from a remote finalized state
-  --version, -v             Print version
-  --help, -h                Show help
-");
+        Console.WriteLine("Lean Client\n");
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  lean-client [options]\n");
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --config PATH             Path to node-config.json");
+        Console.WriteLine("  --data-dir PATH           Data directory");
+        Console.WriteLine("  --network NAME            Network name (e.g. devnet2)");
+        Console.WriteLine("  --metrics [true|false]     Enable/disable metrics");
+        Console.WriteLine("  --metrics-port PORT       Metrics endpoint port");
+        Console.WriteLine("  --metrics-address HOST    Metrics listen host");
+        Console.WriteLine("  --log LEVEL               Log level (Trace, Debug, Information, Warning, Error)");
+        Console.WriteLine("  --validator-config PATH   Path to validator-config.yaml");
+        Console.WriteLine("  --node, --node-id NAME    Node name inside validator-config.yaml");
+        Console.WriteLine("  --node-key PATH           Path to libp2p private key file");
+        Console.WriteLine("  --socket-port PORT        QUIC transport port");
+        Console.WriteLine("  --api-port PORT           HTTP API port");
+        Console.WriteLine("  --is-aggregator           Enable aggregate publishing");
+        Console.WriteLine("  --attestation-committee-count N");
+        Console.WriteLine("                            Committee count override");
+        Console.WriteLine("  --hash-sig-key-dir DIR    Hash-sig key directory (auto-resolves by validator index)");
+        Console.WriteLine("  --checkpoint-sync-url URL Bootstrap from a remote finalized state");
+        Console.WriteLine("  --version, -v             Print version");
+        Console.WriteLine("  --help, -h                Show help");
     }
 }

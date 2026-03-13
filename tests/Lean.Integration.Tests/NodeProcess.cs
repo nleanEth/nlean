@@ -11,11 +11,15 @@ public sealed class NodeProcess : IDisposable
     private readonly StringBuilder _stderr = new();
 
     private readonly string _binaryPath;
-    private readonly string _configPath;
     private readonly string _validatorConfigPath;
     private readonly string _nodeName;
     private readonly string _dataDir;
-    private readonly bool _metrics;
+    private readonly string _network;
+    private readonly string _nodeKeyPath;
+    private readonly int _socketPort;
+    private readonly int _metricsPort;
+    private readonly bool _isAggregator;
+    private readonly string _hashSigKeyDir;
     private readonly string? _checkpointSyncUrl;
 
     public string NodeName => _nodeName;
@@ -25,32 +29,51 @@ public sealed class NodeProcess : IDisposable
 
     public NodeProcess(
         string binaryPath,
-        string configPath,
         string validatorConfigPath,
         string nodeName,
         string dataDir,
+        string network,
+        string nodeKeyPath,
+        int socketPort,
         int apiPort,
-        bool metrics,
+        int metricsPort,
+        bool isAggregator,
+        string hashSigKeyDir,
         string? checkpointSyncUrl = null)
     {
         _binaryPath = binaryPath;
-        _configPath = configPath;
         _validatorConfigPath = validatorConfigPath;
         _nodeName = nodeName;
         _dataDir = dataDir;
+        _network = network;
+        _nodeKeyPath = nodeKeyPath;
+        _socketPort = socketPort;
         ApiPort = apiPort;
-        _metrics = metrics;
+        _metricsPort = metricsPort;
+        _isAggregator = isAggregator;
+        _hashSigKeyDir = hashSigKeyDir;
         _checkpointSyncUrl = checkpointSyncUrl;
     }
 
     public void Start()
     {
+        var configPath = Path.Combine(_dataDir, "node-config.json");
         var args = new StringBuilder();
-        args.Append($"--config \"{_configPath}\"");
+        args.Append($"--config \"{configPath}\"");
         args.Append($" --validator-config \"{_validatorConfigPath}\"");
         args.Append($" --node {_nodeName}");
         args.Append($" --data-dir \"{_dataDir}\"");
-        args.Append($" --metrics {_metrics.ToString().ToLowerInvariant()}");
+        args.Append($" --network {_network}");
+        args.Append($" --node-key \"{_nodeKeyPath}\"");
+        args.Append($" --socket-port {_socketPort}");
+        args.Append($" --api-port {ApiPort}");
+        args.Append($" --metrics-port {_metricsPort}");
+        args.Append($" --hash-sig-key-dir \"{_hashSigKeyDir}\"");
+
+        if (_isAggregator)
+        {
+            args.Append(" --is-aggregator");
+        }
 
         if (!string.IsNullOrWhiteSpace(_checkpointSyncUrl))
         {

@@ -21,6 +21,8 @@ public sealed class DevnetFixture : IDisposable
     public string BinaryPath { get; }
     public string[] PeerIds { get; }
 
+    public string HashSigKeyDir { get; }
+
     private const uint ActiveEpochExponent = 18;
     private const uint NumActiveEpochs = 1 << (int)ActiveEpochExponent;
 
@@ -33,6 +35,7 @@ public sealed class DevnetFixture : IDisposable
 
         var keyDir = Path.Combine(ConfigDir, "hash-sig-keys");
         Directory.CreateDirectory(keyDir);
+        HashSigKeyDir = keyDir;
 
         DataDirs = new string[nodeCount];
         NodeNames = new string[nodeCount];
@@ -58,21 +61,25 @@ public sealed class DevnetFixture : IDisposable
         GenerateLibp2pKeys();
         WriteConfigYaml(pubkeyHexList);
         WriteValidatorConfigYaml();
-        WriteNodeConfigs();
+        WriteBootstrapConfig();
     }
 
     public NodeProcess CreateNodeProcess(int index, string? checkpointSyncUrl = null)
     {
-        var configPath = Path.Combine(DataDirs[index], "node-config.json");
         var validatorConfigPath = Path.Combine(ConfigDir, "validator-config.yaml");
+        var nodeKeyPath = Path.Combine(ConfigDir, $"nlean_{index}.key");
         return new NodeProcess(
             BinaryPath,
-            configPath,
             validatorConfigPath,
             NodeNames[index],
             DataDirs[index],
+            network: "integ-test",
+            nodeKeyPath,
+            QuicPorts[index],
             ApiPorts[index],
-            metrics: false,
+            MetricsPorts[index],
+            isAggregator: index == 0,
+            HashSigKeyDir,
             checkpointSyncUrl: checkpointSyncUrl);
     }
 
@@ -167,7 +174,7 @@ public sealed class DevnetFixture : IDisposable
         File.WriteAllText(Path.Combine(ConfigDir, "validator-config.yaml"), sb.ToString());
     }
 
-    private void WriteNodeConfigs()
+    private void WriteBootstrapConfig()
     {
         var bootstrapPeers = new List<string>();
         for (int i = 0; i < NodeCount; i++)
@@ -179,26 +186,12 @@ public sealed class DevnetFixture : IDisposable
         {
             var config = new
             {
-                dataDir = DataDirs[i],
-                network = "integ-test",
-                apiPort = ApiPorts[i],
-                metrics = new { enabled = false, host = "0.0.0.0", port = MetricsPorts[i] },
                 libp2p = new
                 {
-                    listenAddresses = new[] { $"/ip4/127.0.0.1/udp/{QuicPorts[i]}/quic-v1" },
                     bootstrapPeers,
-                    privateKeyPath = Path.Combine(ConfigDir, $"nlean_{i}.key"),
                     enableMdns = false,
                     enablePubsub = true,
                     enableQuic = true
-                },
-                validator = new
-                {
-                    enabled = true,
-                    validatorIndex = i,
-                    publicKeyPath = Path.Combine(ConfigDir, $"hash-sig-keys/validator_{i}_pk.ssz"),
-                    secretKeyPath = Path.Combine(ConfigDir, $"hash-sig-keys/validator_{i}_sk.ssz"),
-                    publishAggregates = i == 0
                 }
             };
 

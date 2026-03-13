@@ -89,6 +89,44 @@ public sealed class RustLeanSig : ILeanSig
         }
     }
 
+    public static byte[] PublicKeyFromJson(ReadOnlySpan<byte> json)
+    {
+        NativeLibraryResolver.EnsureInitialized();
+        unsafe
+        {
+            fixed (byte* jsonPtr = json)
+            {
+                var error = (LeanCryptoError)NativeMethods.LeanSigPkJsonToBytes(
+                    (IntPtr)jsonPtr,
+                    (nuint)json.Length,
+                    out var outPtr,
+                    out var outLen);
+
+                ThrowIfError(error, "leansig_pk_json_to_bytes");
+                return CopyAndFree(outPtr, outLen);
+            }
+        }
+    }
+
+    public static byte[] SecretKeyFromJson(ReadOnlySpan<byte> json)
+    {
+        NativeLibraryResolver.EnsureInitialized();
+        unsafe
+        {
+            fixed (byte* jsonPtr = json)
+            {
+                var error = (LeanCryptoError)NativeMethods.LeanSigSkJsonToBytes(
+                    (IntPtr)jsonPtr,
+                    (nuint)json.Length,
+                    out var outPtr,
+                    out var outLen);
+
+                ThrowIfError(error, "leansig_sk_json_to_bytes");
+                return CopyAndFree(outPtr, outLen);
+            }
+        }
+    }
+
     private static void EnsureMessageLength(ReadOnlySpan<byte> message)
     {
         if (message.Length != MessageLength)
