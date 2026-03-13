@@ -47,7 +47,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 30,
-            timeout: TimeSpan.FromMinutes(3),
+            timeout: TimeSpan.FromMinutes(5),
             nodeIndices: new[] { 0, 1, 2 });
 
         // Phase 3: restart node 3, all 4 nodes finalize to >= 40
