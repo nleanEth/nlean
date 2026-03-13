@@ -134,6 +134,57 @@ public static class NodeApp
         return builder.Build();
     }
 
+    public static async Task TryRunCheckpointSyncAsync(
+        IHost host,
+        NodeOptions options,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(options.CheckpointSyncUrl))
+        {
+            return;
+        }
+
+        var stateStore = host.Services.GetRequiredService<IConsensusStateStore>();
+        if (stateStore.TryLoad(out _))
+        {
+            var log = host.Services.GetService<ILogger<CheckpointSync>>();
+            log?.LogInformation("State store already populated, skipping checkpoint sync.");
+            return;
+        }
+
+        var logger = host.Services.GetService<ILogger<CheckpointSync>>();
+        logger?.LogInformation("Running checkpoint sync from {Url}", options.CheckpointSyncUrl);
+
+        var provider = new HttpCheckpointProvider();
+        var sync = new CheckpointSync(provider);
+        var result = await sync.SyncFromCheckpointAsync(
+            options.CheckpointSyncUrl, options.Consensus, ct);
+
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Checkpoint sync failed: {result.Error}");
+        }
+
+        var state = result.State!;
+        var blockRoot = state.LatestBlockHeader.HashTreeRoot();
+        var headState = new ConsensusHeadState(
+            state.Slot.Value,
+            blockRoot,
+            state.LatestJustified.Slot.Value,
+            state.LatestJustified.Root.AsSpan(),
+            state.LatestFinalized.Slot.Value,
+            state.LatestFinalized.Root.AsSpan(),
+            state.LatestFinalized.Slot.Value,
+            state.LatestFinalized.Root.AsSpan());
+        stateStore.Save(headState, state);
+
+        logger?.LogInformation(
+            "Checkpoint sync complete. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}",
+            state.Slot.Value,
+            state.LatestFinalized.Slot.Value);
+    }
+
     private static void ApplyBootstrapPeersFromNodesYaml(NodeOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);

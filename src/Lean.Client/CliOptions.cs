@@ -10,6 +10,7 @@ internal sealed class CliOptions
     public string? LogLevel { get; set; }
     public string? ValidatorConfig { get; set; }
     public string? NodeName { get; set; }
+    public string? CheckpointSyncUrl { get; set; }
     public bool ShowHelp { get; set; }
     public bool ShowVersion { get; set; }
 
@@ -71,6 +72,9 @@ internal sealed class CliOptions
                     break;
                 case "node":
                     options.NodeName = value;
+                    break;
+                case "checkpoint-sync-url":
+                    options.CheckpointSyncUrl = value;
                     break;
             }
         }

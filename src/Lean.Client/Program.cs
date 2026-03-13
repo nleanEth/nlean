@@ -63,13 +63,15 @@ internal static class Program
             cliOptions.Libp2pConfig,
             cliOptions.LogLevel,
             cliOptions.ValidatorConfig,
-            cliOptions.NodeName);
+            cliOptions.NodeName,
+            cliOptions.CheckpointSyncUrl);
 
         var nodeOptions = NodeOptions.Load(overrides);
 
         try
         {
             using var host = NodeApp.Build(nodeOptions);
+            await NodeApp.TryRunCheckpointSyncAsync(host, nodeOptions, CancellationToken.None);
             await host.RunAsync();
             return 0;
         }
@@ -97,6 +99,7 @@ Options:
   --log LEVEL               Log level (Trace, Debug, Information, Warning, Error)
   --validator-config PATH   Path to validator-config.yaml
   --node NAME               Node name inside validator-config.yaml
+  --checkpoint-sync-url URL Bootstrap from a remote finalized state
   --version, -v             Print version
   --help, -h                Show help
 ");

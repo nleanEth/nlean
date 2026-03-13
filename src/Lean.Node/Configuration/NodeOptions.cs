@@ -20,6 +20,7 @@ public sealed class NodeOptions
     public LoggingConfig Logging { get; set; } = new();
     public ValidatorRuntimeConfig Validator { get; set; } = new();
     public int ApiPort { get; set; } = 5052;
+    public string? CheckpointSyncUrl { get; set; }
 
     public static NodeOptions Load(NodeOptionsOverrides overrides)
     {
@@ -85,6 +86,11 @@ public sealed class NodeOptions
         if (string.IsNullOrWhiteSpace(options.Storage.DataDir) || options.Storage.DataDir == "data")
         {
             options.Storage.DataDir = options.DataDir;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.CheckpointSyncUrl))
+        {
+            options.CheckpointSyncUrl = overrides.CheckpointSyncUrl;
         }
 
         return options;

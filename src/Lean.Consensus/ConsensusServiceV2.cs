@@ -152,6 +152,19 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 return null;
         }
 
+        // Fill in zeroed LatestBlockHeader.StateRoot before encoding.
+        // The state transition stores the header with StateRoot=0; the root
+        // is lazily filled during the next slot. Checkpoint consumers expect
+        // a non-zero state root for self-consistency verification.
+        if (state.LatestBlockHeader.StateRoot.Equals(Types.Bytes32.Zero()))
+        {
+            var stateRoot = new Types.Bytes32(state.HashTreeRoot());
+            state = state with
+            {
+                LatestBlockHeader = state.LatestBlockHeader with { StateRoot = stateRoot }
+            };
+        }
+
         return SszEncoding.Encode(state);
     }
 

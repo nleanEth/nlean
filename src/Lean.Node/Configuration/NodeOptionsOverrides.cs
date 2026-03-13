@@ -8,4 +8,5 @@ public sealed record NodeOptionsOverrides(
     string? Libp2pConfig,
     string? LogLevel,
     string? ValidatorConfigPath,
-    string? NodeName);
+    string? NodeName,
+    string? CheckpointSyncUrl = null);
