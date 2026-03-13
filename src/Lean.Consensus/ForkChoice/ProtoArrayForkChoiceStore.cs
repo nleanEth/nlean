@@ -30,8 +30,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Checkpoint _latestFinalized;
     private Bytes32 _safeTarget;
     private ulong _validatorCount;
-    private readonly ulong _localValidatorId;
-    private readonly int _localValidatorSubnetId;
+    private readonly IReadOnlySet<ulong> _localValidatorIds;
+    private readonly HashSet<int> _localValidatorSubnetIds;
     private readonly int _attestationCommitteeCount;
     private enum VoteSource
     {
@@ -48,9 +48,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         ArgumentNullException.ThrowIfNull(config);
 
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
-        _localValidatorId = config.LocalValidatorId;
+        _localValidatorIds = config.LocalValidatorIds;
         _attestationCommitteeCount = Math.Max(1, config.AttestationCommitteeCount);
-        _localValidatorSubnetId = new Types.ValidatorIndex(config.LocalValidatorId).ComputeSubnetId(_attestationCommitteeCount);
+        _localValidatorSubnetIds = new HashSet<int>(
+            _localValidatorIds.Select(vid =>
+                new Types.ValidatorIndex(vid).ComputeSubnetId(_attestationCommitteeCount)));
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
 
         ConsensusHeadState? loaded = null;
@@ -359,7 +361,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         var proposerSubnetId = new Types.ValidatorIndex(proposerAttestation.ValidatorId)
             .ComputeSubnetId(_attestationCommitteeCount);
-        if (proposerSubnetId == _localValidatorSubnetId)
+        if (_localValidatorSubnetIds.Contains(proposerSubnetId))
         {
             _gossipSignatures[(proposerAttestation.ValidatorId, proposerDataRootKey)] =
                 signedBlock.Signature.ProposerSignature;
@@ -409,7 +411,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         // collects them to build the proof (via storeSignature / gossipSignatures),
         // but the proof is published for other nodes to consume — not fed back into
         // the aggregator's own safeTarget computation (matching ethlambda behavior).
-        if (attestation.ValidatorId == _localValidatorId)
+        if (_localValidatorIds.Contains(attestation.ValidatorId))
         {
             var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
             if (headIndex.HasValue)

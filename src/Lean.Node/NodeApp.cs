@@ -43,6 +43,7 @@ public static class NodeApp
                 var validatorDutyConfig = BuildValidatorDutyConfig(options, validatorNodeConfig, chainConfig);
                 options.Consensus.IsAggregator = validatorDutyConfig.PublishAggregates;
                 options.Consensus.LocalValidatorId = validatorDutyConfig.ValidatorIndex;
+                options.Consensus.LocalValidatorIds = new HashSet<ulong>(validatorDutyConfig.ValidatorIndices);
                 services.AddSingleton(options);
                 services.AddSingleton(options.Libp2p);
                 services.AddSingleton(options.Consensus);
@@ -599,18 +600,21 @@ public static class NodeApp
             ApplyInitialValidatorCount(options, validatorConfig, chainConfig);
             var node = validatorConfig.FindNode(options.NodeName);
 
-            // Auto-derive ValidatorIndex from the node's position in the validators list
-            // when not explicitly set (default 0). This ensures each node loads the correct
-            // hash-sig key pair from --hash-sig-key-dir.
+            // Auto-derive ValidatorIndex from cumulative position in the validators list.
+            // Each node's base index accounts for preceding nodes' Count values.
+            // e.g. node0(count=2)→indices 0,1; node1(count=2)→indices 2,3.
             if (node is not null && options.Validator.ValidatorIndex == 0)
             {
+                ulong cumulativeIndex = 0;
                 for (int i = 0; i < validatorConfig.Validators.Count; i++)
                 {
                     if (string.Equals(validatorConfig.Validators[i].Name, node.Name, StringComparison.OrdinalIgnoreCase))
                     {
-                        options.Validator.ValidatorIndex = (ulong)i;
+                        options.Validator.ValidatorIndex = cumulativeIndex;
+                        options.Validator.ValidatorCount = (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
                         break;
                     }
+                    cumulativeIndex += (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
                 }
             }
 
@@ -691,30 +695,49 @@ public static class NodeApp
         ValidatorNodeConfig? validatorNodeConfig,
         LeanChainConfig? chainConfig)
     {
-        var publicKeyPath = options.Validator.PublicKeyPath;
-        var secretKeyPath = options.Validator.SecretKeyPath;
+        var baseIndex = options.Validator.ValidatorIndex;
+        var count = options.Validator.ValidatorCount;
 
+        var validatorIndices = new List<ulong>();
+        var allPublicKeyPaths = new List<string>();
+        var allSecretKeyPaths = new List<string>();
+
+        // Resolve key paths for each validator this node manages.
         if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
-            string.IsNullOrWhiteSpace(publicKeyPath) &&
-            string.IsNullOrWhiteSpace(secretKeyPath))
+            string.IsNullOrWhiteSpace(options.Validator.PublicKeyPath) &&
+            string.IsNullOrWhiteSpace(options.Validator.SecretKeyPath))
         {
-            var idx = options.Validator.ValidatorIndex;
             var dir = options.HashSigKeyDir;
-            var sszPk = Path.Combine(dir, $"validator_{idx}_pk.ssz");
-            var sszSk = Path.Combine(dir, $"validator_{idx}_sk.ssz");
-            var jsonPk = Path.Combine(dir, $"validator_{idx}_pk.json");
-            var jsonSk = Path.Combine(dir, $"validator_{idx}_sk.json");
+            for (ulong offset = 0; offset < count; offset++)
+            {
+                var idx = baseIndex + offset;
+                validatorIndices.Add(idx);
 
-            if (File.Exists(sszPk) && File.Exists(sszSk))
-            {
-                publicKeyPath = sszPk;
-                secretKeyPath = sszSk;
+                var sszPk = Path.Combine(dir, $"validator_{idx}_pk.ssz");
+                var sszSk = Path.Combine(dir, $"validator_{idx}_sk.ssz");
+                var jsonPk = Path.Combine(dir, $"validator_{idx}_pk.json");
+                var jsonSk = Path.Combine(dir, $"validator_{idx}_sk.json");
+
+                if (File.Exists(sszPk) && File.Exists(sszSk))
+                {
+                    allPublicKeyPaths.Add(sszPk);
+                    allSecretKeyPaths.Add(sszSk);
+                }
+                else if (File.Exists(jsonPk) && File.Exists(jsonSk))
+                {
+                    allPublicKeyPaths.Add(jsonPk);
+                    allSecretKeyPaths.Add(jsonSk);
+                }
             }
-            else if (File.Exists(jsonPk) && File.Exists(jsonSk))
-            {
-                publicKeyPath = jsonPk;
-                secretKeyPath = jsonSk;
-            }
+        }
+
+        // Backwards-compat: single-validator fields from the first resolved entry.
+        var publicKeyPath = allPublicKeyPaths.Count > 0 ? allPublicKeyPaths[0] : options.Validator.PublicKeyPath;
+        var secretKeyPath = allSecretKeyPaths.Count > 0 ? allSecretKeyPaths[0] : options.Validator.SecretKeyPath;
+
+        if (validatorIndices.Count == 0)
+        {
+            validatorIndices.Add(baseIndex);
         }
 
         // Only fall back to validatorNodeConfig.Privkey when no hash-sig key paths were resolved.
@@ -735,7 +758,10 @@ public static class NodeApp
             SecretKeyHex = secretKeyHex,
             PublicKeyPath = publicKeyPath,
             SecretKeyPath = secretKeyPath,
-            ValidatorIndex = options.Validator.ValidatorIndex,
+            ValidatorIndex = baseIndex,
+            ValidatorIndices = validatorIndices,
+            AllPublicKeyPaths = allPublicKeyPaths,
+            AllSecretKeyPaths = allSecretKeyPaths,
             ActivationEpoch = options.Validator.ActivationEpoch,
             NumActiveEpochs = options.Validator.NumActiveEpochs,
             GenesisValidatorPublicKeys = chainConfig?.GenesisValidators ?? (IReadOnlyList<string>)Array.Empty<string>(),

@@ -47,9 +47,7 @@ public sealed class ValidatorService : IValidatorService
     private readonly object _dutyStateLock = new();
     private CancellationToken _shutdownToken;
     private int _started;
-    private byte[] _validatorPublicKey = Array.Empty<byte>();
-    private byte[] _validatorSecretKey = Array.Empty<byte>();
-    private ulong _validatorId;
+    private readonly Dictionary<ulong, (byte[] PublicKey, byte[] SecretKey)> _localValidators = new();
     private ulong _validatorCount;
     private int _observedBlockDumpCounter;
     private ulong _lastUnknownRootSuppressedSlot = ulong.MaxValue;
@@ -130,14 +128,14 @@ public sealed class ValidatorService : IValidatorService
 
         try
         {
-            if (intervalInSlot == 0 && slot > 0 && IsProposerSlot(slot))
+            if (intervalInSlot == 0 && slot > 0 && TryGetProposerForSlot(slot, out var proposerVid))
             {
                 if (ShouldSuppressDutyForUnknownRoots(slot))
                 {
                     return;
                 }
 
-                var publishedBlock = await TryPublishProposerBlockAsync(slot, cancellationToken);
+                var publishedBlock = await TryPublishProposerBlockAsync(slot, proposerVid, cancellationToken);
                 if (publishedBlock)
                 {
                     DutyRunsTotal.Add(1);
@@ -150,15 +148,25 @@ public sealed class ValidatorService : IValidatorService
                     null,
                     slot,
                     false,
-                    IsProposerSlot(slot)))
+                    TryGetProposerForSlot(slot, out _)))
             {
                 if (ShouldSuppressDutyForUnknownRoots(slot))
                 {
                     return;
                 }
 
-                await PublishStandaloneAttestationAsync(slot, cancellationToken);
-                DutyRunsTotal.Add(1);
+                TryGetProposerForSlot(slot, out var slotProposer);
+                foreach (var vid in _localValidators.Keys)
+                {
+                    // Skip the proposer — it already attested in the block.
+                    if (vid == slotProposer && slotProposer != 0)
+                    {
+                        continue;
+                    }
+
+                    await PublishStandaloneAttestationAsync(slot, vid, cancellationToken);
+                    DutyRunsTotal.Add(1);
+                }
             }
 
             if (_validatorDutyConfig.PublishAggregates && intervalInSlot == 2)
@@ -201,8 +209,9 @@ public sealed class ValidatorService : IValidatorService
         return true;
     }
 
-    private async Task PublishStandaloneAttestationAsync(ulong slot, CancellationToken cancellationToken)
+    private async Task PublishStandaloneAttestationAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
+        var (validatorPublicKey, validatorSecretKey) = _localValidators[validatorId];
         var attestationData = _consensusService.CreateAttestationData(slot);
         var headSlot = attestationData.Head.Slot.Value;
         var justifiedSlot = _consensusService.JustifiedSlot;
@@ -214,7 +223,7 @@ public sealed class ValidatorService : IValidatorService
             _logger.LogDebug(
                 "Attestation checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
                 slot,
-                _validatorId,
+                validatorId,
                 attestationData.Source.Slot.Value,
                 attestationData.Target.Slot.Value,
                 justifiedSlot,
@@ -225,39 +234,39 @@ public sealed class ValidatorService : IValidatorService
 
         var messageRoot = attestationData.HashTreeRoot();
         var signingStopwatch = Stopwatch.StartNew();
-        var signatureBytes = _leanSig.Sign(_validatorSecretKey, epoch, messageRoot);
+        var signatureBytes = _leanSig.Sign(validatorSecretKey, epoch, messageRoot);
         signingStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(signingStopwatch.Elapsed);
 
         var selfVerificationOk = true;
-        if (_validatorPublicKey.Length > 0)
+        if (validatorPublicKey.Length > 0)
         {
             var verificationStopwatch = Stopwatch.StartNew();
-            selfVerificationOk = _leanSig.Verify(_validatorPublicKey, epoch, messageRoot, signatureBytes);
+            selfVerificationOk = _leanSig.Verify(validatorPublicKey, epoch, messageRoot, signatureBytes);
             verificationStopwatch.Stop();
             LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
         }
 
         var signature = XmssSignature.FromBytes(signatureBytes);
-        var signedAttestation = new SignedAttestation(_validatorId, attestationData, signature);
+        var signedAttestation = new SignedAttestation(validatorId, attestationData, signature);
         if (!_consensusService.TryApplyLocalAttestation(signedAttestation, out var localAttestationReason))
         {
             _logger.LogWarning(
                 "Local attestation rejected by consensus. Slot: {Slot}, ValidatorId: {ValidatorId}, Reason: {Reason}",
                 slot,
-                _validatorId,
+                validatorId,
                 localAttestationReason);
             return;
         }
 
         var attestationPayload = SszEncoding.Encode(signedAttestation);
-        var subnetId = new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
+        var subnetId = new ValidatorIndex(validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
         await PublishToTopicAsync(_gossipTopics.AttestationSubnetTopic(subnetId), attestationPayload, cancellationToken);
 
         _logger.LogInformation(
             "Published attestation. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}",
             slot,
-            _validatorId,
+            validatorId,
             attestationData.Head.Slot.Value,
             attestationData.Target.Slot.Value,
             attestationData.Source.Slot.Value);
@@ -267,13 +276,13 @@ public sealed class ValidatorService : IValidatorService
             _logger.LogWarning(
                 "Local attestation signature self-verification failed. Slot: {Slot}, ValidatorId: {ValidatorId}",
                 slot,
-                _validatorId);
+                validatorId);
         }
 
         _logger.LogDebug(
             "Attestation signed. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}, MessageRoot: {MessageRoot}, SignatureBytes: {SignatureBytes}, SelfVerified: {SelfVerified}",
             slot,
-            _validatorId,
+            validatorId,
             attestationData.Head.Slot.Value,
             attestationData.Target.Slot.Value,
             attestationData.Source.Slot.Value,
@@ -284,19 +293,28 @@ public sealed class ValidatorService : IValidatorService
             signatureBytes.Length,
             selfVerificationOk);
 
-        TryDumpAttestation(slot, attestationPayload, messageRoot, signatureBytes, selfVerificationOk);
+        TryDumpAttestation(slot, validatorId, attestationPayload, messageRoot, signatureBytes, selfVerificationOk);
 
         _logger.LogDebug(
             "Executed validator attestation duty for slot {Slot}. HeadSlot: {HeadSlot}, ValidatorId: {ValidatorId}",
             slot,
             headSlot,
-            _validatorId);
+            validatorId);
     }
 
-    private bool IsProposerSlot(ulong slot)
+    private bool TryGetProposerForSlot(ulong slot, out ulong proposerValidatorId)
     {
         var validatorCount = Math.Max(1UL, _validatorCount);
-        return slot % validatorCount == _validatorId;
+        foreach (var vid in _localValidators.Keys)
+        {
+            if (slot % validatorCount == vid)
+            {
+                proposerValidatorId = vid;
+                return true;
+            }
+        }
+        proposerValidatorId = 0;
+        return false;
     }
 
     private async Task ExecuteAggregationDutyAsync(ulong slot, CancellationToken cancellationToken)
@@ -393,15 +411,16 @@ public sealed class ValidatorService : IValidatorService
         _logger.LogInformation(
             "Skipping validator duty while unknown-root recovery is in flight. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
             slot,
-            _validatorId,
+            _validatorDutyConfig.ValidatorIndex,
             _consensusService.HeadSlot,
             _consensusService.JustifiedSlot,
             _consensusService.FinalizedSlot);
         return true;
     }
 
-    private async Task<bool> TryPublishProposerBlockAsync(ulong slot, CancellationToken cancellationToken)
+    private async Task<bool> TryPublishProposerBlockAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
+        var (validatorPublicKey, validatorSecretKey) = _localValidators[validatorId];
         var (parentRootBytes, baseAttestationData) = _consensusService.GetProposalContext(slot);
         if (parentRootBytes.Length != SszEncoding.Bytes32Length)
         {
@@ -416,18 +435,18 @@ public sealed class ValidatorService : IValidatorService
         _logger.LogInformation(
             "Proposer checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
             slot,
-            _validatorId,
+            validatorId,
             baseAttestationData.Source.Slot.Value,
             baseAttestationData.Target.Slot.Value,
             _consensusService.JustifiedSlot,
             _consensusService.FinalizedSlot,
             Convert.ToHexString(baseAttestationData.Source.Root.AsSpan()),
             Convert.ToHexString(baseAttestationData.Target.Root.AsSpan()));
-        var (aggregatedAttestations, aggregatedProofs) = BuildAggregatedAttestations(slot, parentRoot, baseAttestationData.Source);
+        var (aggregatedAttestations, aggregatedProofs) = BuildAggregatedAttestations(slot, validatorId, parentRoot, baseAttestationData.Source);
 
         var candidateBlock = new Block(
             new Slot(slot),
-            _validatorId,
+            validatorId,
             parentRoot,
             Bytes32.Zero(),
             new BlockBody(aggregatedAttestations));
@@ -451,12 +470,12 @@ public sealed class ValidatorService : IValidatorService
 
         var proposerMessageRoot = proposerAttestationData.HashTreeRoot();
         var proposerSigningStopwatch = Stopwatch.StartNew();
-        var proposerSignatureBytes = _leanSig.Sign(_validatorSecretKey, ToSignatureEpoch(slot), proposerMessageRoot);
+        var proposerSignatureBytes = _leanSig.Sign(validatorSecretKey, ToSignatureEpoch(slot), proposerMessageRoot);
         proposerSigningStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(proposerSigningStopwatch.Elapsed);
         var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
-        var proposerAttestation = new Attestation(_validatorId, proposerAttestationData);
-        var signedProposerAttestation = new SignedAttestation(_validatorId, proposerAttestationData, proposerSignature);
+        var proposerAttestation = new Attestation(validatorId, proposerAttestationData);
+        var signedProposerAttestation = new SignedAttestation(validatorId, proposerAttestationData, proposerSignature);
 
         var signedBlock = new SignedBlockWithAttestation(
             new BlockWithAttestation(block, proposerAttestation),
@@ -467,19 +486,19 @@ public sealed class ValidatorService : IValidatorService
             _logger.LogWarning(
                 "Proposer block rejected locally. Slot: {Slot}, ValidatorId: {ValidatorId}, Reason: {Reason}",
                 slot,
-                _validatorId,
+                validatorId,
                 applyReason);
             return false;
         }
 
         var payload = SszEncoding.Encode(signedBlock);
-        TryDumpProposerBlock(slot, payload, parentRoot, blockRoot, signedBlock);
+        TryDumpProposerBlock(slot, validatorId, payload, parentRoot, blockRoot, signedBlock);
         await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
 
         _logger.LogInformation(
             "Published proposer block. Slot: {Slot}, ValidatorId: {ValidatorId}, ParentRoot: {ParentRoot}, BlockRoot: {BlockRoot}, AggregatedAttestations: {AggregatedAttestations}, SignatureProofs: {SignatureProofs}",
             slot,
-            _validatorId,
+            validatorId,
             Convert.ToHexString(parentRoot.AsSpan()),
             Convert.ToHexString(blockRoot.AsSpan()),
             aggregatedAttestations.Count,
@@ -493,6 +512,7 @@ public sealed class ValidatorService : IValidatorService
     /// </summary>
     private (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) BuildAggregatedAttestations(
         ulong slot,
+        ulong validatorId,
         Bytes32 parentRoot,
         Checkpoint initialSource)
     {
@@ -518,7 +538,7 @@ public sealed class ValidatorService : IValidatorService
                 break;
 
             var candidateBlock = new Block(
-                new Slot(slot), _validatorId, parentRoot, Bytes32.Zero(),
+                new Slot(slot), validatorId, parentRoot, Bytes32.Zero(),
                 new BlockBody(tempAttestations));
 
             if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out _, out var postJustified, out _))
@@ -681,55 +701,72 @@ public sealed class ValidatorService : IValidatorService
 
     private void InitializeValidatorKeyMaterial()
     {
-        _validatorId = _validatorDutyConfig.ValidatorIndex;
-        _validatorCount = Math.Max(_consensusConfig.InitialValidatorCount, _validatorId + 1);
+        var indices = _validatorDutyConfig.ValidatorIndices;
+        if (indices.Count == 0)
+        {
+            indices = new[] { _validatorDutyConfig.ValidatorIndex };
+        }
+
+        _validatorCount = Math.Max(
+            _consensusConfig.InitialValidatorCount,
+            indices.Max() + 1);
         LeanMetrics.SetValidatorsCount(_validatorCount);
 
         LoadKnownValidatorPublicKeysFromGenesisConfig();
 
-        var configuredPublic = ParseHex(_validatorDutyConfig.PublicKeyHex)
-            ?? ReadKeyFile(_validatorDutyConfig.PublicKeyPath, "public");
-        var derivedPublic = configuredPublic;
-        if (derivedPublic is null)
+        for (int i = 0; i < indices.Count; i++)
         {
-            lock (_dutyStateLock)
+            var vid = indices[i];
+            var pkPath = i < _validatorDutyConfig.AllPublicKeyPaths.Count
+                ? _validatorDutyConfig.AllPublicKeyPaths[i] : null;
+            var skPath = i < _validatorDutyConfig.AllSecretKeyPaths.Count
+                ? _validatorDutyConfig.AllSecretKeyPaths[i] : null;
+
+            // For the first validator, also try hex-encoded keys (backwards compat).
+            var configuredPublic = (i == 0 ? ParseHex(_validatorDutyConfig.PublicKeyHex) : null)
+                ?? ReadKeyFile(pkPath, "public");
+            var derivedPublic = configuredPublic;
+            if (derivedPublic is null)
             {
-                if (_validatorPublicKeys.TryGetValue(_validatorId, out var knownPublic) && knownPublic.Length > 0)
+                lock (_dutyStateLock)
                 {
-                    derivedPublic = knownPublic.ToArray();
+                    if (_validatorPublicKeys.TryGetValue(vid, out var knownPublic) && knownPublic.Length > 0)
+                    {
+                        derivedPublic = knownPublic.ToArray();
+                    }
                 }
             }
-        }
 
-        var configuredSecret = ParseHex(_validatorDutyConfig.SecretKeyHex)
-            ?? ReadKeyFile(_validatorDutyConfig.SecretKeyPath, "secret");
-        if (derivedPublic is not null && configuredSecret is not null)
-        {
-            _validatorPublicKey = derivedPublic;
-            _validatorSecretKey = configuredSecret;
-        }
-        else if (configuredSecret is not null)
-        {
-            _validatorPublicKey = Array.Empty<byte>();
-            _validatorSecretKey = configuredSecret;
-            _logger.LogWarning(
-                "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
-                _validatorDutyConfig.ValidatorIndex);
-        }
-        else
-        {
-            var keyPair = _leanSig.GenerateKeyPair(
-                _validatorDutyConfig.ActivationEpoch,
-                _validatorDutyConfig.NumActiveEpochs);
-            _validatorPublicKey = keyPair.PublicKey;
-            _validatorSecretKey = keyPair.SecretKey;
-        }
+            var configuredSecret = (i == 0 ? ParseHex(_validatorDutyConfig.SecretKeyHex) : null)
+                ?? ReadKeyFile(skPath, "secret");
 
-        lock (_dutyStateLock)
-        {
-            if (_validatorPublicKey.Length > 0)
+            if (derivedPublic is not null && configuredSecret is not null)
             {
-                _validatorPublicKeys[_validatorId] = _validatorPublicKey.ToArray();
+                _localValidators[vid] = (derivedPublic, configuredSecret);
+            }
+            else if (configuredSecret is not null)
+            {
+                _localValidators[vid] = (Array.Empty<byte>(), configuredSecret);
+                _logger.LogWarning(
+                    "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
+                    vid);
+            }
+            else
+            {
+                var keyPair = _leanSig.GenerateKeyPair(
+                    _validatorDutyConfig.ActivationEpoch,
+                    _validatorDutyConfig.NumActiveEpochs);
+                _localValidators[vid] = (keyPair.PublicKey, keyPair.SecretKey);
+                derivedPublic = keyPair.PublicKey;
+            }
+
+            lock (_dutyStateLock)
+            {
+                var pk = _localValidators[vid].PublicKey;
+                if (pk.Length > 0)
+                {
+                    _validatorPublicKeys[vid] = pk.ToArray();
+                }
             }
         }
 
@@ -969,6 +1006,7 @@ public sealed class ValidatorService : IValidatorService
 
     private void TryDumpAttestation(
         ulong slot,
+        ulong validatorId,
         ReadOnlyMemory<byte> payload,
         byte[] messageRoot,
         byte[] signatureBytes,
@@ -982,7 +1020,7 @@ public sealed class ValidatorService : IValidatorService
         try
         {
             Directory.CreateDirectory(DumpAttestationsDirectory);
-            var prefix = $"validator-{_validatorId}-slot-{slot:D6}";
+            var prefix = $"validator-{validatorId}-slot-{slot:D6}";
             var payloadPath = Path.Combine(DumpAttestationsDirectory, $"{prefix}.ssz");
             var metaPath = Path.Combine(DumpAttestationsDirectory, $"{prefix}.txt");
 
@@ -994,7 +1032,7 @@ public sealed class ValidatorService : IValidatorService
                     new[]
                     {
                         $"slot={slot}",
-                        $"validator_id={_validatorId}",
+                        $"validator_id={validatorId}",
                         $"message_root={Convert.ToHexString(messageRoot)}",
                         $"signature_length={signatureBytes.Length}",
                         $"signature_prefix={Convert.ToHexString(signatureBytes.AsSpan(0, Math.Min(32, signatureBytes.Length)))}",
@@ -1009,6 +1047,7 @@ public sealed class ValidatorService : IValidatorService
 
     private void TryDumpProposerBlock(
         ulong slot,
+        ulong validatorId,
         ReadOnlyMemory<byte> payload,
         Bytes32 parentRoot,
         Bytes32 blockRoot,
@@ -1022,7 +1061,7 @@ public sealed class ValidatorService : IValidatorService
         try
         {
             Directory.CreateDirectory(DumpBlocksDirectory);
-            var prefix = $"validator-{_validatorId}-slot-{slot:D6}-block";
+            var prefix = $"validator-{validatorId}-slot-{slot:D6}-block";
             var payloadPath = Path.Combine(DumpBlocksDirectory, $"{prefix}.ssz");
             var metaPath = Path.Combine(DumpBlocksDirectory, $"{prefix}.txt");
 
@@ -1031,7 +1070,7 @@ public sealed class ValidatorService : IValidatorService
             var lines = new List<string>
             {
                 $"slot={slot}",
-                $"validator_id={_validatorId}",
+                $"validator_id={validatorId}",
                 $"parent_root={Convert.ToHexString(parentRoot.AsSpan())}",
                 $"block_root={Convert.ToHexString(blockRoot.AsSpan())}",
                 $"attestation_count={signedBlock.Message.Block.Body.Attestations.Count}",

@@ -13,4 +13,5 @@ public sealed class ConsensusConfig
     public int AttestationCommitteeCount { get; set; } = 1;
     public bool IsAggregator { get; set; } = false;
     public ulong LocalValidatorId { get; set; } = 0;
+    public IReadOnlySet<ulong> LocalValidatorIds { get; set; } = new HashSet<ulong> { 0 };
 }

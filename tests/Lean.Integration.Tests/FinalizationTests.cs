@@ -79,4 +79,28 @@ public class FinalizationTests
         await cluster.WaitForNodeFinalization(3, targetSlot,
             timeout: TimeSpan.FromMinutes(3));
     }
+
+    [Test]
+    public async Task TwoNode_TwoValidatorsEach_ReachesFinalization()
+    {
+        using var cluster = new DevnetCluster(nodeCount: 2, basePort: 19500, validatorsPerNode: 2);
+        cluster.StartAll();
+
+        await cluster.WaitForFinalization(
+            targetSlot: 20,
+            timeout: TimeSpan.FromMinutes(3));
+
+        var checkpoints = new List<(ulong slot, string root)>();
+        for (int i = 0; i < 2; i++)
+        {
+            var cp = await cluster.GetFinalizedCheckpoint(i);
+            Assert.That(cp, Is.Not.Null, $"Node {i} finalized checkpoint is null");
+            checkpoints.Add(cp!.Value);
+        }
+
+        Assert.That(
+            checkpoints.Select(c => c.root).Distinct().Count(),
+            Is.EqualTo(1),
+            "Nodes disagree on finalized root");
+    }
 }

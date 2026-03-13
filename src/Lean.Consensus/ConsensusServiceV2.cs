@@ -108,7 +108,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _gossipTopics,
             _config.AttestationCommitteeCount,
             _config.IsAggregator,
-            _config.LocalValidatorId);
+            _config.LocalValidatorIds);
         _chainService = new ChainService(_clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
 
         State? initialState = null;
@@ -437,9 +437,10 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         lock (_storeLock)
         {
             // leanSpec/ethlambda: interval 0 only promotes attestations when has_proposal.
+            var validatorCount = (int)Math.Max(1UL, _config.InitialValidatorCount);
             var hasProposal = intervalInSlot == 0 &&
-                new Types.ValidatorIndex(_config.LocalValidatorId)
-                    .IsProposerFor(slot, (int)Math.Max(1UL, _config.InitialValidatorCount));
+                _config.LocalValidatorIds.Any(vid =>
+                    new Types.ValidatorIndex(vid).IsProposerFor(slot, validatorCount));
             _store.TickInterval(slot, intervalInSlot, hasProposal);
             RefreshSnapshot();
         }
@@ -1045,13 +1046,17 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _statusRpcRouter?.SetPeerDisconnectedHandler(null);
     }
 
-    private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, ulong localValidatorId)
+    private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, IReadOnlySet<ulong> localValidatorIds)
     {
         // ethlambda/leanSpec: each validator subscribes only to its own subnet
         // (validator_id % committee_count). Non-validators subscribe to subnet 0.
         var committeeCount = Math.Max(1, attestationCommitteeCount);
-        var subnetId = (int)(localValidatorId % (ulong)committeeCount);
-        return [gossipTopics.AttestationSubnetTopic(subnetId)];
+        var subnets = new HashSet<int>();
+        foreach (var vid in localValidatorIds)
+        {
+            subnets.Add((int)(vid % (ulong)committeeCount));
+        }
+        return subnets.Select(s => gossipTopics.AttestationSubnetTopic(s)).ToArray();
     }
 
     private void TriggerDbPrune(ulong finalizedSlot)

@@ -149,6 +149,7 @@ public sealed class ValidatorRuntimeConfig
     public string? PublicKeyPath { get; set; }
     public string? SecretKeyPath { get; set; }
     public ulong ValidatorIndex { get; set; }
+    public ulong ValidatorCount { get; set; } = 1;
     public uint ActivationEpoch { get; set; }
     public uint NumActiveEpochs { get; set; } = 1024;
     public bool PublishAggregates { get; set; } = false;

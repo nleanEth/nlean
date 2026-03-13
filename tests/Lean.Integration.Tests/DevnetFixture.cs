@@ -22,13 +22,15 @@ public sealed class DevnetFixture : IDisposable
     public string[] PeerIds { get; }
 
     public string HashSigKeyDir { get; }
+    public int ValidatorsPerNode { get; }
 
     private const uint ActiveEpochExponent = 18;
     private const uint NumActiveEpochs = 1 << (int)ActiveEpochExponent;
 
-    public DevnetFixture(int nodeCount = 4, int basePort = 19100)
+    public DevnetFixture(int nodeCount = 4, int basePort = 19100, int validatorsPerNode = 1)
     {
         NodeCount = nodeCount;
+        ValidatorsPerNode = validatorsPerNode;
         RootDir = Path.Combine(Path.GetTempPath(), $"nlean-integ-{Guid.NewGuid():N}");
         ConfigDir = Path.Combine(RootDir, "config");
         Directory.CreateDirectory(ConfigDir);
@@ -87,8 +89,9 @@ public sealed class DevnetFixture : IDisposable
     {
         var sig = new RustLeanSig();
         var pubkeyHexList = new List<string>();
+        var totalValidators = NodeCount * ValidatorsPerNode;
 
-        for (int i = 0; i < NodeCount; i++)
+        for (int i = 0; i < totalValidators; i++)
         {
             var kp = sig.GenerateKeyPair(0, NumActiveEpochs);
             File.WriteAllBytes(Path.Combine(keyDir, $"validator_{i}_pk.ssz"), kp.PublicKey);
@@ -136,7 +139,7 @@ public sealed class DevnetFixture : IDisposable
         sb.AppendLine($"ACTIVE_EPOCH: {ActiveEpochExponent}");
         sb.AppendLine();
         sb.AppendLine("# Validator Settings");
-        sb.AppendLine($"VALIDATOR_COUNT: {NodeCount}");
+        sb.AppendLine($"VALIDATOR_COUNT: {NodeCount * ValidatorsPerNode}");
         sb.AppendLine();
         sb.AppendLine("# Genesis Validator Pubkeys");
         sb.AppendLine("GENESIS_VALIDATORS:");
@@ -167,7 +170,7 @@ public sealed class DevnetFixture : IDisposable
             sb.AppendLine("      ip: \"127.0.0.1\"");
             sb.AppendLine($"      quic: {QuicPorts[i]}");
             sb.AppendLine($"    metricsPort: {MetricsPorts[i]}");
-            sb.AppendLine("    count: 1");
+            sb.AppendLine($"    count: {ValidatorsPerNode}");
             sb.AppendLine($"    isAggregator: {(i == 0 ? "true" : "false")}");
         }
 

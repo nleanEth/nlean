@@ -11,9 +11,9 @@ public sealed class DevnetCluster : IDisposable
     public int NodeCount => _fixture.NodeCount;
     public int ApiPort(int nodeIndex) => _fixture.ApiPorts[nodeIndex];
 
-    public DevnetCluster(int nodeCount = 4, int basePort = 19100)
+    public DevnetCluster(int nodeCount = 4, int basePort = 19100, int validatorsPerNode = 1)
     {
-        _fixture = new DevnetFixture(nodeCount, basePort);
+        _fixture = new DevnetFixture(nodeCount, basePort, validatorsPerNode);
         _nodes = new NodeProcess?[nodeCount];
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
     }
