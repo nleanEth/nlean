@@ -33,11 +33,6 @@ public sealed class StatusRpcRouter : IStatusRpcRouter
         Interlocked.Exchange(ref _peerDisconnectedHandler, handler ?? EmptyPeerLifecycleHandler);
     }
 
-    public ValueTask HandlePeerStatusAsync(LeanStatusMessage status, CancellationToken cancellationToken)
-    {
-        return HandlePeerStatusAsync(status, null, cancellationToken);
-    }
-
     public ValueTask HandlePeerStatusAsync(LeanStatusMessage status, string? peerKey, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(status);

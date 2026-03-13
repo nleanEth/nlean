@@ -224,7 +224,7 @@ public sealed class ValidatorServiceTests
             NullLogger<ValidatorService>.Instance,
             consensus,
             network,
-            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, SlotsPerEpoch = 32, InitialValidatorCount = 2 },
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 2 },
             new ValidatorDutyConfig(),
             leanSig,
             new FakeLeanMultiSig());

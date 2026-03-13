@@ -44,15 +44,15 @@ dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
 
 # Run client (example)
 ./artifacts/lean-client/Lean.Client \
-  --validator-config config/validator-config.yaml \
+  --validator-config /path/to/validator-config.yaml \
   --node nlean_0 \
   --data-dir data/nlean_0 \
   --network devnet0 \
-  --node-key config/nlean_0.key \
+  --node-key /path/to/nlean_0.key \
   --socket-port 9101 \
   --api-port 5052 \
   --metrics-port 18081 \
-  --hash-sig-key-dir config/hash-sig-keys \
+  --hash-sig-key-dir /path/to/hash-sig-keys \
   --is-aggregator \
   --log Information
 

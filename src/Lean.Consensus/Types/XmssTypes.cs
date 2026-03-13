@@ -150,15 +150,6 @@ public sealed class XmssSignature
     }
 
     /// <summary>
-    /// Create an XMSS signature from wire bytes.
-    /// Lean peers encode signatures as SSZ containers.
-    /// </summary>
-    public static XmssSignature FromWireBytes(ReadOnlySpan<byte> bytes)
-    {
-        return FromBytes(bytes);
-    }
-
-    /// <summary>
     /// Returns an empty XMSS signature with empty siblings, zero rho, and empty hashes.
     /// </summary>
     public static XmssSignature Empty() => new(

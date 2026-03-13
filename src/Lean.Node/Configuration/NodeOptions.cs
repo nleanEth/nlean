@@ -25,7 +25,7 @@ public sealed class NodeOptions
     public static NodeOptions Load(NodeOptionsOverrides overrides)
     {
         var options = new NodeOptions();
-        var configPath = overrides.ConfigPath ?? "config/node-config.json";
+        var configPath = overrides.ConfigPath;
 
         if (!string.IsNullOrWhiteSpace(configPath) && File.Exists(configPath))
         {

@@ -12,7 +12,7 @@ This repo contains a .NET 10+ Lean consensus client scaffold with Rust FFI bindi
 ./scripts/libp2p/build-patched-pubsub-package.sh
 
 # Run the client
-./src/Lean.Client/bin/Debug/net10.0/Lean.Client --config config/node-config.json --validator-config config/validator-config.yaml --node lean_client_0
+./src/Lean.Client/bin/Debug/net10.0/Lean.Client --validator-config validator-config.yaml --node lean_client_0
 ```
 
 ## lean-quickstart interop
@@ -63,7 +63,7 @@ Notes:
 
 What this does:
 - installs `client-cmds/nlean-cmd.sh` into your lean-quickstart checkout
-- uses `config/validator-config.quickstart.yaml` as the devnet validator layout
+- uses a quickstart-generated `validator-config.yaml` as the devnet validator layout
 - builds patched pubsub package, publishes `Lean.Client`, builds Rust FFI native library, and starts quickstart via `spin-node.sh`
 - maps consensus scenarios to interop checks on nlean metrics:
   - from-genesis progress: `lean_head_slot` reaches target (`--min-head-slot`, default `3`)

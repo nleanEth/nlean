@@ -8,13 +8,9 @@ public static class GossipTopics
 
     public static string Blocks => Block(DefaultNetwork);
 
-    public static string Attestations => Attestation(DefaultNetwork);
-
     public static string Aggregates => Aggregate(DefaultNetwork);
 
     public static string Block(string network) => Format(network, "block");
-
-    public static string Attestation(string network) => Format(network, "attestation");
 
     public static string Aggregate(string network) => Format(network, "aggregation");
 

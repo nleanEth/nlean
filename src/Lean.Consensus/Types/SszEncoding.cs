@@ -21,27 +21,6 @@ public static class SszEncoding
     public const int AttestationLength = UInt64Length + AttestationDataLength;
     public const int BlockHeaderLength = (UInt64Length * 2) + (Bytes32Length * 3);
 
-    public static byte[] Encode(Bytes32 value)
-    {
-        var buffer = new byte[Bytes32Length];
-        Ssz.Encode(buffer, value.AsSpan());
-        return buffer;
-    }
-
-    public static byte[] Encode(Slot value)
-    {
-        var buffer = new byte[UInt64Length];
-        Ssz.Encode(buffer, value.Value);
-        return buffer;
-    }
-
-    public static byte[] Encode(Checkpoint value)
-    {
-        var buffer = new byte[CheckpointLength];
-        WriteCheckpoint(buffer, 0, value);
-        return buffer;
-    }
-
     public static byte[] Encode(AttestationData value)
     {
         var buffer = new byte[AttestationDataLength];
@@ -212,20 +191,6 @@ public static class SszEncoding
             offset += HashDigestVectorLength;
         }
 
-        return buffer;
-    }
-
-    public static byte[] Encode(HashDigestVector value)
-    {
-        var buffer = new byte[HashDigestVectorLength];
-        EncodeInto(buffer.AsSpan(), 0, value);
-        return buffer;
-    }
-
-    public static byte[] Encode(Randomness value)
-    {
-        var buffer = new byte[RandomnessLength];
-        EncodeInto(buffer.AsSpan(), 0, value);
         return buffer;
     }
 

@@ -42,7 +42,6 @@ public static class NodeApp
                 ApplyLibp2pIdentityDefaults(options, validatorNodeConfig);
                 var validatorDutyConfig = BuildValidatorDutyConfig(options, validatorNodeConfig, chainConfig);
                 options.Consensus.IsAggregator = validatorDutyConfig.PublishAggregates;
-                options.Consensus.LocalValidatorId = validatorDutyConfig.ValidatorIndex;
                 options.Consensus.LocalValidatorIds = new HashSet<ulong>(validatorDutyConfig.ValidatorIndices);
                 services.AddSingleton(options);
                 services.AddSingleton(options.Libp2p);

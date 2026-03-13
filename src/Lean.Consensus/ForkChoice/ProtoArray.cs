@@ -130,13 +130,6 @@ public sealed class ProtoArray
         return null;
     }
 
-    public ulong? GetSlotByKey(string rootKey)
-    {
-        if (_indices.TryGetValue(rootKey, out var idx))
-            return _nodes[idx].Slot;
-        return null;
-    }
-
     public Bytes32? GetParentRoot(Bytes32 root)
     {
         if (_indices.TryGetValue(RootKey(root), out var idx))
