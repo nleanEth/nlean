@@ -82,7 +82,7 @@ jobs:
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Test
-        run: dotnet test Lean.sln -c Release
+        run: dotnet test Lean.sln -c Release --filter "FullyQualifiedName!~Integration"
       - name: Publish
         run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o ${{ github.workspace }}/artifacts/lean-client-${{ matrix.rid }} /p:ContinuousIntegrationBuild=true
       - name: Upload publish artifact
@@ -157,4 +157,4 @@ jobs:
         run: >
           dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
           -c Release
-          --timeout 600000
+          -- NUnit.DefaultTimeout=600000
