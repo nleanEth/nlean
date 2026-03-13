@@ -160,7 +160,7 @@ jobs:
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Publish binary
-        run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
+        run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r linux-x64 -o artifacts/lean-client --self-contained false
       - name: Run integration tests
         run: >
           dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
