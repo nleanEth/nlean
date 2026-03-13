@@ -138,6 +138,13 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
+      - name: Install libmsquic
+        run: |
+          wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb
+          rm packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo apt-get install -y libmsquic
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache NuGet
