@@ -125,7 +125,7 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       CI: true
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
@@ -160,9 +160,9 @@ jobs:
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Publish binary
-        run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r linux-x64 -o artifacts/lean-client --self-contained false
+        run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
       - name: Run integration tests
         run: >
           dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
           -c Release
-          -- NUnit.DefaultTimeout=900000
+          -- NUnit.DefaultTimeout=300000
