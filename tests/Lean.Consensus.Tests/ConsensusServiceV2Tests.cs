@@ -114,24 +114,16 @@ public sealed class ConsensusServiceV2Tests
     }
 
     [Test]
-    public void HasUnknownBlockRootsInFlight_FalseWithoutSync()
+    public void HasUnknownBlockRootsInFlight_AlwaysFalse()
     {
-        var (svc, _, _, _) = CreateService();
-        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.False);
-    }
+        var (svc1, _, _, _) = CreateService();
+        Assert.That(svc1.HasUnknownBlockRootsInFlight, Is.False);
 
-    [Test]
-    public void HasUnknownBlockRootsInFlight_TrueWhenSyncing()
-    {
-        var (svc, _, _, _) = CreateServiceWithSync(SyncState.Syncing);
-        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.True);
-    }
+        var (svc2, _, _, _) = CreateServiceWithSync(SyncState.Syncing);
+        Assert.That(svc2.HasUnknownBlockRootsInFlight, Is.False);
 
-    [Test]
-    public void HasUnknownBlockRootsInFlight_FalseWhenSynced()
-    {
-        var (svc, _, _, _) = CreateServiceWithSync(SyncState.Synced);
-        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.False);
+        var (svc3, _, _, _) = CreateServiceWithSync(SyncState.Synced);
+        Assert.That(svc3.HasUnknownBlockRootsInFlight, Is.False);
     }
 
     [Test]

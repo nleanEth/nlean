@@ -48,7 +48,6 @@ public sealed class ValidatorService : IValidatorService
     private readonly Dictionary<ulong, (byte[] PublicKey, byte[] SecretKey)> _localValidators = new();
     private ulong _validatorCount;
     private int _observedBlockDumpCounter;
-    private ulong _lastUnknownRootSuppressedSlot = ulong.MaxValue;
 
     public ValidatorService(
         ILogger<ValidatorService> logger,
@@ -120,11 +119,6 @@ public sealed class ValidatorService : IValidatorService
         {
             if (intervalInSlot == 0 && slot > 0 && TryGetProposerForSlot(slot, out var proposerVid))
             {
-                if (ShouldSuppressDutyForUnknownRoots(slot))
-                {
-                    return;
-                }
-
                 var publishedBlock = await TryPublishProposerBlockAsync(slot, proposerVid, cancellationToken);
                 if (publishedBlock)
                 {
@@ -140,11 +134,6 @@ public sealed class ValidatorService : IValidatorService
                     false,
                     TryGetProposerForSlot(slot, out _)))
             {
-                if (ShouldSuppressDutyForUnknownRoots(slot))
-                {
-                    return;
-                }
-
                 TryGetProposerForSlot(slot, out var slotProposer);
                 foreach (var vid in _localValidators.Keys)
                 {
@@ -383,29 +372,6 @@ public sealed class ValidatorService : IValidatorService
                 string.Join(",", participantIds),
                 proofData.Length);
         }
-    }
-
-    private bool ShouldSuppressDutyForUnknownRoots(ulong slot)
-    {
-        if (!_consensusService.HasUnknownBlockRootsInFlight)
-        {
-            return false;
-        }
-
-        if (_lastUnknownRootSuppressedSlot == slot)
-        {
-            return true;
-        }
-
-        _lastUnknownRootSuppressedSlot = slot;
-        _logger.LogInformation(
-            "Skipping validator duty while unknown-root recovery is in flight. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
-            slot,
-            _validatorDutyConfig.ValidatorIndex,
-            _consensusService.HeadSlot,
-            _consensusService.JustifiedSlot,
-            _consensusService.FinalizedSlot);
-        return true;
     }
 
     private async Task<bool> TryPublishProposerBlockAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
