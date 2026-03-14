@@ -135,7 +135,6 @@ public static class NodeApp
     }
 
     public static async Task TryRunCheckpointSyncAsync(
-        IHost host,
         NodeOptions options,
         CancellationToken ct)
     {
@@ -144,16 +143,16 @@ public static class NodeApp
             return;
         }
 
-        var stateStore = host.Services.GetRequiredService<IConsensusStateStore>();
+        using var kvStore = new RocksDbKeyValueStore(options.Storage, "consensus");
+        var stateStore = new ConsensusStateStore(kvStore);
+
         if (stateStore.TryLoad(out _))
         {
-            var log = host.Services.GetService<ILogger<CheckpointSync>>();
-            log?.LogInformation("State store already populated, skipping checkpoint sync.");
+            Console.WriteLine("State store already populated, skipping checkpoint sync.");
             return;
         }
 
-        var logger = host.Services.GetService<ILogger<CheckpointSync>>();
-        logger?.LogInformation("Running checkpoint sync from {Url}", options.CheckpointSyncUrl);
+        Console.WriteLine($"Running checkpoint sync from {options.CheckpointSyncUrl}");
 
         var provider = new HttpCheckpointProvider();
         var sync = new CheckpointSync(provider);
@@ -179,10 +178,8 @@ public static class NodeApp
             state.LatestFinalized.Root.AsSpan());
         stateStore.Save(headState, state);
 
-        logger?.LogInformation(
-            "Checkpoint sync complete. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}",
-            state.Slot.Value,
-            state.LatestFinalized.Slot.Value);
+        Console.WriteLine(
+            $"Checkpoint sync complete. HeadSlot={state.Slot.Value}, FinalizedSlot={state.LatestFinalized.Slot.Value}");
     }
 
     private static void ApplyBootstrapPeersFromNodesYaml(NodeOptions options)

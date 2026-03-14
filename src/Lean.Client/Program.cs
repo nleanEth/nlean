@@ -77,8 +77,8 @@ internal static class Program
 
         try
         {
+            await NodeApp.TryRunCheckpointSyncAsync(nodeOptions, CancellationToken.None);
             using var host = NodeApp.Build(nodeOptions);
-            await NodeApp.TryRunCheckpointSyncAsync(host, nodeOptions, CancellationToken.None);
             await host.RunAsync();
             return 0;
         }
