@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
+// ReSharper disable InconsistentNaming
+
 namespace Lean.Integration.Tests;
 
 public sealed class NodeProcess : IDisposable
@@ -122,6 +124,22 @@ public sealed class NodeProcess : IDisposable
 
         try
         {
+            // Send SIGTERM first to allow graceful shutdown (RocksDB flush).
+            // Process.Kill() sends SIGKILL which skips cleanup.
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                try
+                {
+                    kill(_process.Id, SIGTERM);
+                    if (_process.WaitForExit(5000))
+                        return;
+                }
+                catch
+                {
+                    // Fall through to SIGKILL.
+                }
+            }
+
             _process.Kill(entireProcessTree: true);
             _process.WaitForExit(5000);
         }
@@ -130,6 +148,11 @@ public sealed class NodeProcess : IDisposable
             // Best-effort.
         }
     }
+
+    private const int SIGTERM = 15;
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int pid, int sig);
 
     public void CleanConsensusData()
     {

@@ -110,10 +110,10 @@ public sealed class DevnetCluster : IDisposable
             var stdout = node?.GetStdout() ?? "";
             var stderr = node?.GetStderr() ?? "";
             var lastStdout = string.Join('\n',
-                stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(20));
+                stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(50));
             var lastStderr = string.Join('\n',
-                stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(10));
-            lines.Add($"--- Node {i} ({status}) ---\nSTDOUT (last 20):\n{lastStdout}\nSTDERR (last 10):\n{lastStderr}");
+                stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(20));
+            lines.Add($"--- Node {i} ({status}) ---\nSTDOUT (last 50):\n{lastStdout}\nSTDERR (last 20):\n{lastStderr}");
         }
         return string.Join('\n', lines);
     }
