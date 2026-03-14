@@ -173,8 +173,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
     public ulong FinalizedSlot => _snapshot.FinalizedSlot;
 
-    // Unknown roots should suppress duties only while actively syncing.
-    public bool HasUnknownBlockRootsInFlight => _syncService is not null && _syncService.State == SyncState.Syncing;
+    // leanSpec does not gate validator duties on sync state.
+    // Backfill runs independently; validators should always produce.
+    public bool HasUnknownBlockRootsInFlight => false;
 
     public byte[] HeadRoot => _snapshot.HeadRoot.AsSpan().ToArray();
 

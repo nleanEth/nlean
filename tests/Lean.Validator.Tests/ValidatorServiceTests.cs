@@ -401,35 +401,6 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
-    public async Task DutyLoop_WhenUnknownRootRecoveryInFlight_SkipsVotingAndProposing()
-    {
-        var consensus = new FakeConsensusService
-        {
-            CurrentSlotValue = 1,
-            HasUnknownBlockRootsInFlightValue = true
-        };
-        var network = new FakeNetworkService();
-        var service = new ValidatorService(
-            NullLogger<ValidatorService>.Instance,
-            consensus,
-            network,
-            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
-            new ValidatorDutyConfig { ValidatorIndex = 1 },
-            new FakeLeanSig(),
-            new FakeLeanMultiSig());
-
-        await service.StartAsync(CancellationToken.None);
-        await service.OnIntervalAsync(1, 0);
-        await service.OnIntervalAsync(1, 1);
-        await service.StopAsync(CancellationToken.None);
-
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
-        Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
-        Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
-    }
-
-    [Test]
     public async Task DutyLoop_WhenSlotJumps_ProcessesIntermediateSlotsAndPublishesProposerBlock()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
