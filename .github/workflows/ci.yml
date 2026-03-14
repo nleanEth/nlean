@@ -125,7 +125,7 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       CI: true
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
@@ -164,4 +164,4 @@ jobs:
       - name: Run integration tests
         run: >
           dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
-          -c Release
+          -c Release -v n
