@@ -7,10 +7,13 @@ namespace Lean.Integration.Tests;
 [NonParallelizable]
 public class FinalizationTests
 {
+    // Port ranges: each 4-node test needs base..base+203 (QUIC +0, Metrics +100, API +200).
+    // Space base ports 300 apart to avoid overlap between tests.
+
     [Test]
     public async Task FourNode_ReachesFinalization()
     {
-        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19400);
+        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19000);
         cluster.StartAll();
 
         await cluster.WaitForFinalization(
@@ -34,7 +37,7 @@ public class FinalizationTests
     [Test]
     public async Task FourNode_CatchupAfterRestart_Finalizes()
     {
-        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19200);
+        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19300);
         cluster.StartAll();
 
         // Phase 1: 4 nodes finalize to >= 20
@@ -61,7 +64,7 @@ public class FinalizationTests
     [Test]
     public async Task FourNode_CheckpointSync_JoinsAndFinalizes()
     {
-        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19300);
+        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 19600);
         cluster.StartAll();
 
         await cluster.WaitForFinalization(
@@ -83,7 +86,7 @@ public class FinalizationTests
     [Test]
     public async Task TwoNode_TwoValidatorsEach_ReachesFinalization()
     {
-        using var cluster = new DevnetCluster(nodeCount: 2, basePort: 19500, validatorsPerNode: 2);
+        using var cluster = new DevnetCluster(nodeCount: 2, basePort: 19900, validatorsPerNode: 2);
         cluster.StartAll();
 
         await cluster.WaitForFinalization(
