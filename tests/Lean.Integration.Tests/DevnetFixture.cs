@@ -133,7 +133,7 @@ public sealed class DevnetFixture : IDisposable
         sb.AppendLine($"GENESIS_TIME: {GenesisTime}");
         sb.AppendLine();
         sb.AppendLine("# Timing");
-        var secondsPerSlot = Environment.GetEnvironmentVariable("CI") == "true" ? 2 : 1;
+        var secondsPerSlot = 1;
         sb.AppendLine($"SECONDS_PER_SLOT: {secondsPerSlot}");
         sb.AppendLine();
         sb.AppendLine("# Key Settings");
