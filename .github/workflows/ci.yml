@@ -165,4 +165,3 @@ jobs:
         run: >
           dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
           -c Release
-          -- NUnit.DefaultTimeout=300000
