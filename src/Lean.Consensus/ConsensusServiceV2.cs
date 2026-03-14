@@ -112,7 +112,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _chainService = new ChainService(_clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
 
         State? initialState = null;
-        if (_stateStore is not null && _store.FinalizedSlot > 0)
+        if (_stateStore is not null && _store.HeadSlot > 0)
         {
             _stateStore.TryLoad(out _, out initialState);
         }

@@ -171,20 +171,26 @@ public static class NodeApp
         }
 
         var state = result.State!;
-        var blockRoot = state.LatestBlockHeader.HashTreeRoot();
+        var anchorRoot = state.LatestBlockHeader.HashTreeRoot();
+
+        // Match leanSpec Store.from_anchor(): keep original justified/finalized
+        // slots from state, but replace all roots with the anchor block root.
+        // The anchor block IS the justified/finalized point for fork choice.
         var headState = new ConsensusHeadState(
             state.Slot.Value,
-            blockRoot,
+            anchorRoot,
             state.LatestJustified.Slot.Value,
-            state.LatestJustified.Root.AsSpan(),
+            anchorRoot,
             state.LatestFinalized.Slot.Value,
-            state.LatestFinalized.Root.AsSpan(),
+            anchorRoot,
             state.LatestFinalized.Slot.Value,
-            state.LatestFinalized.Root.AsSpan());
+            anchorRoot);
         stateStore.Save(headState, state);
 
         Console.WriteLine(
-            $"Checkpoint sync complete. HeadSlot={state.Slot.Value}, FinalizedSlot={state.LatestFinalized.Slot.Value}");
+            $"Checkpoint sync complete. HeadSlot={state.Slot.Value}, " +
+            $"JustifiedSlot={state.LatestJustified.Slot.Value}, " +
+            $"FinalizedSlot={state.LatestFinalized.Slot.Value}");
     }
 
     private static void ApplyBootstrapPeersFromNodesYaml(NodeOptions options)

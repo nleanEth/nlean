@@ -60,7 +60,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         if (loaded is not null
             && loaded.HeadRoot.Length == 32
-            && loaded.LatestFinalizedSlot > 0)
+            && loaded.HeadSlot > 0)
         {
             var headRoot = new Bytes32(loaded.HeadRoot);
             var justifiedRoot = new Bytes32(loaded.LatestJustifiedRoot);
