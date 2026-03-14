@@ -4,7 +4,6 @@ using System.Security.Cryptography;
 using Lean.Consensus;
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
-using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
 using Lean.Crypto;
 using Lean.Metrics;
@@ -41,7 +40,6 @@ public sealed class ValidatorService : IValidatorService
     private readonly ValidatorDutyConfig _validatorDutyConfig;
     private readonly ILeanSig _leanSig;
     private readonly ILeanMultiSig _leanMultiSig;
-    private readonly ISyncService? _syncService;
     private readonly SignedBlockWithAttestationGossipDecoder _signedBlockDecoder = new();
     private readonly Dictionary<ulong, byte[]> _validatorPublicKeys = new();
     private readonly object _dutyStateLock = new();
@@ -60,8 +58,7 @@ public sealed class ValidatorService : IValidatorService
         ValidatorDutyConfig validatorDutyConfig,
         ILeanSig leanSig,
         ILeanMultiSig leanMultiSig,
-        IGossipTopicProvider? gossipTopics = null,
-        ISyncService? syncService = null)
+        IGossipTopicProvider? gossipTopics = null)
     {
         _logger = logger;
         _consensusService = consensusService;
@@ -71,7 +68,6 @@ public sealed class ValidatorService : IValidatorService
         _validatorDutyConfig = validatorDutyConfig;
         _leanSig = leanSig;
         _leanMultiSig = leanMultiSig;
-        _syncService = syncService;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -114,12 +110,6 @@ public sealed class ValidatorService : IValidatorService
     public async Task OnIntervalAsync(ulong slot, int intervalInSlot)
     {
         if (_started == 0)
-        {
-            return;
-        }
-
-        // Do not participate in consensus while syncing.
-        if (_syncService is not null && _syncService.State != SyncState.Synced)
         {
             return;
         }
