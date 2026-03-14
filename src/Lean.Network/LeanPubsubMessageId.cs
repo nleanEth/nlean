@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
@@ -17,13 +18,13 @@ public static class LeanPubsubMessageId
         ArgumentNullException.ThrowIfNull(message);
 
         var topic = message.Topic ?? string.Empty;
-        var topicBytes = Encoding.ASCII.GetBytes(topic);
-        var dataBytes = message.Data.ToByteArray();
-        var domain = MessageDomainInvalidSnappy;
+        var rawData = message.Data.Span;
+        ReadOnlySpan<byte> domain = MessageDomainInvalidSnappy;
 
+        byte[]? decompressed = null;
         try
         {
-            dataBytes = Snappy.DecompressToArray(dataBytes);
+            decompressed = Snappy.DecompressToArray(rawData);
             domain = MessageDomainValidSnappy;
         }
         catch
@@ -31,21 +32,37 @@ public static class LeanPubsubMessageId
             // Keep raw bytes when payload is not snappy-encoded.
         }
 
-        var digestInput = new byte[domain.Length + sizeof(ulong) + topicBytes.Length + dataBytes.Length];
-        var offset = 0;
+        ReadOnlySpan<byte> dataSpan = decompressed != null ? decompressed.AsSpan() : rawData;
+        int topicByteCount = Encoding.ASCII.GetByteCount(topic);
+        int totalLen = domain.Length + sizeof(ulong) + topicByteCount + dataSpan.Length;
 
-        domain.CopyTo(digestInput, offset);
-        offset += domain.Length;
+        byte[]? rented = null;
+        Span<byte> digestInput = totalLen <= 1024
+            ? stackalloc byte[totalLen]
+            : (rented = ArrayPool<byte>.Shared.Rent(totalLen)).AsSpan(0, totalLen);
+        try
+        {
+            var offset = 0;
 
-        BinaryPrimitives.WriteUInt64LittleEndian(digestInput.AsSpan(offset, sizeof(ulong)), (ulong)topicBytes.Length);
-        offset += sizeof(ulong);
+            domain.CopyTo(digestInput.Slice(offset));
+            offset += domain.Length;
 
-        topicBytes.CopyTo(digestInput.AsSpan(offset, topicBytes.Length));
-        offset += topicBytes.Length;
+            BinaryPrimitives.WriteUInt64LittleEndian(digestInput.Slice(offset, sizeof(ulong)), (ulong)topicByteCount);
+            offset += sizeof(ulong);
 
-        dataBytes.CopyTo(digestInput.AsSpan(offset, dataBytes.Length));
+            Encoding.ASCII.GetBytes(topic, digestInput.Slice(offset, topicByteCount));
+            offset += topicByteCount;
 
-        var digest = SHA256.HashData(digestInput);
-        return new MessageId(digest.AsSpan(0, 20).ToArray());
+            dataSpan.CopyTo(digestInput.Slice(offset));
+
+            Span<byte> hash = stackalloc byte[32];
+            SHA256.HashData(digestInput, hash);
+            return new MessageId(hash[..20].ToArray());
+        }
+        finally
+        {
+            if (rented != null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 }

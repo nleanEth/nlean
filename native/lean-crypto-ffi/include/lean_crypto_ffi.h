@@ -58,6 +58,16 @@ int32_t leanmultisig_verify_aggregate(const struct LeanBuffer *pub_keys_ptr,
                                       uint32_t epoch,
                                       uint8_t *out_is_valid);
 
+int32_t leansig_pk_json_to_bytes(const uint8_t *json_ptr,
+                                 uintptr_t json_len,
+                                 uint8_t **out_ptr,
+                                 uintptr_t *out_len);
+
+int32_t leansig_sk_json_to_bytes(const uint8_t *json_ptr,
+                                 uintptr_t json_len,
+                                 uint8_t **out_ptr,
+                                 uintptr_t *out_len);
+
 void lean_free(uint8_t *ptr, uintptr_t len);
 
 #endif  /* LEAN_CRYPTO_FFI_H */

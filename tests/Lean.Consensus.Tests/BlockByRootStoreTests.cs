@@ -33,4 +33,17 @@ public sealed class BlockByRootStoreTests
         Assert.That(loaded, Is.False);
         Assert.That(payload, Is.Null);
     }
+
+    [Test]
+    public void Delete_RemovesBlock()
+    {
+        var store = new BlockByRootStore(new InMemoryKeyValueStore());
+        var root = new Bytes32(Enumerable.Range(0, 32).Select(index => (byte)index).ToArray());
+        var payload = new byte[] { 0x01, 0x02, 0x03 };
+
+        store.Save(root, payload);
+        store.Delete(root);
+
+        Assert.That(store.TryLoad(root, out _), Is.False);
+    }
 }

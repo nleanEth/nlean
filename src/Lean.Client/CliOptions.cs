@@ -6,10 +6,18 @@ internal sealed class CliOptions
     public string? DataDir { get; set; }
     public string? Network { get; set; }
     public bool? Metrics { get; set; }
-    public string? Libp2pConfig { get; set; }
     public string? LogLevel { get; set; }
     public string? ValidatorConfig { get; set; }
     public string? NodeName { get; set; }
+    public string? CheckpointSyncUrl { get; set; }
+    public string? NodeKeyPath { get; set; }
+    public int? SocketPort { get; set; }
+    public int? MetricsPort { get; set; }
+    public string? MetricsAddress { get; set; }
+    public bool IsAggregator { get; set; }
+    public int? AttestationCommitteeCount { get; set; }
+    public int? ApiPort { get; set; }
+    public string? HashSigKeyDir { get; set; }
     public bool ShowHelp { get; set; }
     public bool ShowVersion { get; set; }
 
@@ -41,6 +49,13 @@ internal sealed class CliOptions
             var key = parts[0];
             string? value = parts.Length > 1 ? parts[1] : null;
 
+            // --is-aggregator is a pure flag (no value), so don't consume the next arg.
+            if (key == "is-aggregator")
+            {
+                options.IsAggregator = true;
+                continue;
+            }
+
             if (value is null && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
             {
                 value = args[++i];
@@ -60,9 +75,6 @@ internal sealed class CliOptions
                 case "metrics":
                     options.Metrics = value is null || value.Equals("true", StringComparison.OrdinalIgnoreCase);
                     break;
-                case "libp2p":
-                    options.Libp2pConfig = value;
-                    break;
                 case "log":
                     options.LogLevel = value;
                     break;
@@ -70,7 +82,36 @@ internal sealed class CliOptions
                     options.ValidatorConfig = value;
                     break;
                 case "node":
+                case "node-id":
                     options.NodeName = value;
+                    break;
+                case "checkpoint-sync-url":
+                    options.CheckpointSyncUrl = value;
+                    break;
+                case "node-key":
+                    options.NodeKeyPath = value;
+                    break;
+                case "socket-port":
+                    if (value is not null && int.TryParse(value, out var sp))
+                        options.SocketPort = sp;
+                    break;
+                case "metrics-port":
+                    if (value is not null && int.TryParse(value, out var mp))
+                        options.MetricsPort = mp;
+                    break;
+                case "metrics-address":
+                    options.MetricsAddress = value;
+                    break;
+                case "attestation-committee-count":
+                    if (value is not null && int.TryParse(value, out var acc))
+                        options.AttestationCommitteeCount = acc;
+                    break;
+                case "api-port":
+                    if (value is not null && int.TryParse(value, out var ap))
+                        options.ApiPort = ap;
+                    break;
+                case "hash-sig-key-dir":
+                    options.HashSigKeyDir = value;
                     break;
             }
         }

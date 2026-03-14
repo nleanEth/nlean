@@ -1,0 +1,193 @@
+diff --git a/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs b/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
+index 025fca6..422ad74 100644
+--- a/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
++++ b/src/libp2p/Libp2p.Protocols.Quic/QuicProtocol.cs
+@@ -100,8 +100,28 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+                 QuicConnection connection = await listener.AcceptConnectionAsync(token);
+                 INewConnectionContext clientContext = context.CreateConnection();
+ 
+-                _ = ProcessStreams(clientContext, connection, token).ContinueWith(t =>
+-                clientContext.Dispose());
++                ObserveBackgroundTask(
++                    ProcessStreams(clientContext, connection, token).ContinueWith(async t =>
++                    {
++                        try
++                        {
++                            await t;
++                        }
++                        catch (Exception ex) when (IsExpectedStreamShutdown(ex))
++                        {
++                            _logger?.LogDebug("Ignoring expected QUIC shutdown during stream processing: {Message}", ex.Message);
++                        }
++                        catch (Exception ex)
++                        {
++                            _logger?.LogDebug("QUIC stream processing faulted: {Message}", ex.Message);
++                        }
++                        finally
++                        {
++                            clientContext.Dispose();
++                            await connection.DisposeAsync();
++                        }
++                    }, TaskScheduler.Default).Unwrap(),
++                    "process-streams");
+             }
+             catch (Exception ex)
+             {
+@@ -150,8 +170,16 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+         _logger?.Connected(connection.LocalEndPoint, connection.RemoteEndPoint);
+         INewConnectionContext connectionContext = context.CreateConnection();
+ 
+-        token.Register(() => _ = connection.CloseAsync(0));
+-        await ProcessStreams(connectionContext, connection, token);
++        CancellationTokenRegistration reg = token.Register(() => _ = connection.CloseAsync(0));
++        try
++        {
++            await ProcessStreams(connectionContext, connection, token);
++        }
++        finally
++        {
++            await reg.DisposeAsync();
++            await connection.DisposeAsync();
++        }
+     }
+ 
+     private static void CheckProtocol()
+@@ -208,47 +236,126 @@ public class QuicProtocol(ILoggerFactory? loggerFactory = null) : ITransportProt
+     {
+         upChannel.GetAwaiter().OnCompleted(() =>
+         {
+-            stream.Close();
+-            _logger?.LogDebug("Stream {stream id}: Closed", stream.Id);
++            ObserveBackgroundTask(stream.DisposeAsync().AsTask(), $"dispose-stream-{stream.Id}");
++            _logger?.LogDebug("Stream {stream id}: Disposed", stream.Id);
+         });
+ 
+-        _ = Task.Run(async () =>
++        ObserveBackgroundTask(Task.Run(async () =>
+         {
+             try
+             {
+                 await foreach (ReadOnlySequence<byte> data in upChannel.ReadAllAsync())
+                 {
+-                    await stream.WriteAsync(data.ToArray());
++                    // Avoid ToArray() copy for single-segment sequences (common case)
++                    if (data.IsSingleSegment)
++                    {
++                        await stream.WriteAsync(data.First);
++                    }
++                    else
++                    {
++                        await stream.WriteAsync(data.ToArray());
++                    }
+                 }
+                 stream.CompleteWrites();
+             }
++            catch (Exception ex) when (IsExpectedStreamShutdown(ex))
++            {
++                _logger?.LogDebug("Ignoring expected QUIC write shutdown: {Message}", ex.Message);
++                await TryCloseChannelAsync(upChannel);
++            }
+             catch (SocketException ex)
+             {
+                 _logger?.SocketException(ex, ex.Message);
+-                await upChannel.CloseAsync();
++                await TryCloseChannelAsync(upChannel);
+             }
+-        });
++            catch (Exception ex)
++            {
++                _logger?.LogDebug("Unexpected QUIC write-side failure: {Message}", ex.Message);
++                await TryCloseChannelAsync(upChannel);
++            }
++        }), $"write-loop-{stream.Id}");
+ 
+-        _ = Task.Run(async () =>
++        ObserveBackgroundTask(Task.Run(async () =>
+         {
+             try
+             {
++                // Hoist I/O buffer outside loop; 4 KiB reduces syscall frequency vs 1 KiB.
++                // Channel consumer holds a reference to passed data, so we must copy to
++                // an exact-sized array before writing to the channel.
++                byte[] ioBuf = new byte[4096];
+                 while (stream.CanRead)
+                 {
+-                    byte[] buf = new byte[1024];
+-                    int len = await stream.ReadAtLeastAsync(buf, 1, false);
++                    int len = await stream.ReadAtLeastAsync(ioBuf, 1, false);
++                    if (len == 0)
++                        break; // EOF — remote closed write side
+                     if (len != 0)
+                     {
+-                        await upChannel.WriteAsync(new ReadOnlySequence<byte>(buf.AsMemory()[..len]));
++                        byte[] data = GC.AllocateUninitializedArray<byte>(len);
++                        ioBuf.AsSpan(0, len).CopyTo(data);
++                        await upChannel.WriteAsync(new ReadOnlySequence<byte>(data));
+                     }
+                 }
+                 await upChannel.WriteEofAsync();
+             }
++            catch (Exception ex) when (IsExpectedStreamShutdown(ex))
++            {
++                _logger?.LogDebug("Ignoring expected QUIC read shutdown: {Message}", ex.Message);
++                await TryCloseChannelAsync(upChannel);
++            }
+             catch (SocketException ex)
+             {
+                 _logger?.SocketException(ex, ex.Message);
+-                await upChannel.CloseAsync();
++                await TryCloseChannelAsync(upChannel);
+             }
+-        });
++            catch (Exception ex)
++            {
++                _logger?.LogDebug("Unexpected QUIC read-side failure: {Message}", ex.Message);
++                await TryCloseChannelAsync(upChannel);
++            }
++        }), $"read-loop-{stream.Id}");
++    }
++
++    private void ObserveBackgroundTask(Task task, string operation)
++    {
++        task.ContinueWith(
++            t =>
++            {
++                if (t.Exception is AggregateException aggregate)
++                {
++                    foreach (var ex in aggregate.Flatten().InnerExceptions)
++                    {
++                        if (IsExpectedStreamShutdown(ex))
++                        {
++                            _logger?.LogDebug("Ignoring expected background QUIC shutdown in {Operation}: {Message}", operation, ex.Message);
++                        }
++                        else
++                        {
++                            _logger?.LogDebug("Background QUIC task faulted in {Operation}: {Message}", operation, ex.Message);
++                        }
++                    }
++                }
++            },
++            CancellationToken.None,
++            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
++            TaskScheduler.Default);
++    }
++
++    private static bool IsExpectedStreamShutdown(Exception ex) =>
++        ex is OperationCanceledException
++        || ex is ObjectDisposedException
++        || ex is QuicException
++        || ex is SocketException
++        || ex is IOException;
++
++    private static async Task TryCloseChannelAsync(IChannel upChannel)
++    {
++        try
++        {
++            await upChannel.CloseAsync();
++        }
++        catch
++        {
++            // Best-effort close only.
++        }
+     }
+ }

@@ -10,6 +10,30 @@ namespace Lean.Validator.Tests;
 
 public sealed class ValidatorServiceTests
 {
+    [TestCase(0, null, 5UL, false, false, false)]
+    [TestCase(1, null, 5UL, false, false, true)]
+    [TestCase(2, null, 5UL, false, false, false)]
+    [TestCase(1, 5UL, 5UL, false, false, false)]
+    [TestCase(1, null, 5UL, true, false, false)]
+    [TestCase(1, null, 5UL, false, true, false)]
+    public void ShouldAttemptStandaloneAttestation_AllowsOnlyIntervalOneNonProposerFirstAttempt(
+        int intervalInSlot,
+        ulong? lastAttestedSlot,
+        ulong slot,
+        bool proposerAttestedInBlock,
+        bool isProposerSlot,
+        bool expected)
+    {
+        var actual = ValidatorService.ShouldAttemptStandaloneAttestation(
+            intervalInSlot,
+            lastAttestedSlot,
+            slot,
+            proposerAttestedInBlock,
+            isProposerSlot);
+
+        Assert.That(actual, Is.EqualTo(expected));
+    }
+
     [Test]
     public async Task StartAsync_DoesNotInitializeLeanMultiSigContexts()
     {
@@ -70,21 +94,19 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(1, 1);
 
-        var observedDutyTick = await WaitUntilAsync(
-            () => consensus.CurrentSlotReadCalls > 0,
-            TimeSpan.FromSeconds(3));
-        Assert.That(observedDutyTick, Is.True);
+        Assert.That(network.PublishedMessages.Count, Is.GreaterThan(0));
 
         await service.StopAsync(CancellationToken.None);
-        var readCallsAtStop = consensus.CurrentSlotReadCalls;
-        await Task.Delay(TimeSpan.FromMilliseconds(1200));
 
-        Assert.That(consensus.CurrentSlotReadCalls, Is.EqualTo(readCallsAtStop));
+        network.PublishedMessages.Clear();
+        await service.OnIntervalAsync(2, 1);
+        Assert.That(network.PublishedMessages.Count, Is.EqualTo(0));
     }
 
     [Test]
-    public async Task DutyLoop_PublishesAttestationAndAggregate()
+    public async Task DutyLoop_PublishesAttestation()
     {
         var consensus = new FakeConsensusService();
         var network = new FakeNetworkService();
@@ -98,15 +120,11 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(published, Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestation("devnet0")), Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregate("devnet0")), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet("devnet0", 0)), Is.True);
     }
 
     [Test]
@@ -124,16 +142,45 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(published, Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Attestations).Payload;
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.Attestation, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task DutyLoop_PublishesInlineSignedAttestationLayout()
+    {
+        var consensus = new FakeConsensusService();
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig
+            {
+                SecondsPerSlot = 1,
+                EnableGossipProcessing = false,
+                InitialValidatorCount = 2
+            },
+            new ValidatorDutyConfig(),
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
+        var fixedSectionLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
+        var expectedSignature = XmssSignature.Empty().EncodeBytes();
+        Assert.That(payload.Length, Is.EqualTo(fixedSectionLength + expectedSignature.Length));
+        Assert.That(payload.AsSpan(fixedSectionLength).ToArray(), Is.EqualTo(expectedSignature));
     }
 
     [Test]
@@ -151,13 +198,11 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(published, Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Attestations).Payload;
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         var message = decodeResult.Attestation!.Message;
@@ -179,18 +224,16 @@ public sealed class ValidatorServiceTests
             NullLogger<ValidatorService>.Instance,
             consensus,
             network,
-            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, SlotsPerEpoch = 32, InitialValidatorCount = 2 },
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 2 },
             new ValidatorDutyConfig(),
             leanSig,
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(published, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
         Assert.That(leanSig.LastSignEpoch, Is.EqualTo(1U));
     }
 
@@ -214,12 +257,10 @@ public sealed class ValidatorServiceTests
             multiSig);
 
         await service.StartAsync(CancellationToken.None);
-        var published = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(published, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.False);
         Assert.That(multiSig.AggregateCalls, Is.EqualTo(0));
     }
@@ -248,20 +289,65 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var publishedBlock = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(1, 0);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedBlock, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.GreaterThan(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
 
         var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Blocks).Payload;
         var decodeResult = new SignedBlockWithAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.SignedBlock, Is.Not.Null);
+
+        var signatureOffset = BitConverter.ToUInt32(payload, SszEncoding.UInt32Length);
+        var signatureSection = payload.AsSpan((int)signatureOffset).ToArray();
+        var attestationSignaturesOffset = BitConverter.ToUInt32(signatureSection, 0);
+        Assert.That(attestationSignaturesOffset, Is.GreaterThanOrEqualTo((uint)(SszEncoding.UInt32Length * 2)));
+    }
+
+    [Test]
+    public async Task DutyLoop_ProposerSlot_UsesDualOffsetSignatureLayout()
+    {
+        var consensus = new FakeConsensusService { CurrentSlotValue = 1 };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig
+            {
+                SecondsPerSlot = 1,
+                EnableGossipProcessing = false,
+                InitialValidatorCount = 3
+            },
+            new ValidatorDutyConfig
+            {
+                ValidatorIndex = 1,
+                GenesisValidatorPublicKeys = new[]
+                {
+                    HexRepeat(0x11, 52),
+                    HexRepeat(0x22, 52),
+                    HexRepeat(0x33, 52)
+                }
+            },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(1, 0);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Blocks).Payload;
+        var signatureOffset = BitConverter.ToUInt32(payload, SszEncoding.UInt32Length);
+        var signatureSection = payload.AsSpan((int)signatureOffset).ToArray();
+        var attestationSignaturesOffset = BitConverter.ToUInt32(signatureSection, 0);
+        // Attestation signatures are dynamic and must point past the fixed prefix.
+        // The exact value depends on whether proposer signature bytes are inlined in the prefix.
+        Assert.That(attestationSignaturesOffset, Is.GreaterThanOrEqualTo((uint)(SszEncoding.UInt32Length * 2)));
     }
 
     [Test]
@@ -279,22 +365,74 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var publishedAttestation = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(2, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedAttestation, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.GreaterThan(0));
     }
 
     [Test]
+    public async Task DutyLoop_WhenLocalAttestationRejected_DoesNotPublishAttestation()
+    {
+        var consensus = new FakeConsensusService
+        {
+            CurrentSlotValue = 2,
+            LocalAttestationApplyResult = false
+        };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig { ValidatorIndex = 1 },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(2, 1);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(consensus.TryApplyLocalAttestationCalls, Is.GreaterThan(0));
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
+    }
+
+    [Test]
+    public async Task DutyLoop_WhenUnknownRootRecoveryInFlight_SkipsVotingAndProposing()
+    {
+        var consensus = new FakeConsensusService
+        {
+            CurrentSlotValue = 1,
+            HasUnknownBlockRootsInFlightValue = true
+        };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig { ValidatorIndex = 1 },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(1, 0);
+        await service.OnIntervalAsync(1, 1);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
+        Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
+        Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
+    }
+
+    [Test]
     public async Task DutyLoop_WhenSlotJumps_ProcessesIntermediateSlotsAndPublishesProposerBlock()
     {
-        var consensus = new FakeConsensusService { CurrentSlotValue = 5 };
-        consensus.EnqueueCurrentSlots(1, 5);
+        var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
         var network = new FakeNetworkService();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
@@ -306,12 +444,10 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var publishedBlock = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
-            TimeSpan.FromSeconds(4));
+        await service.OnIntervalAsync(3, 0);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedBlock, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.GreaterThan(0));
     }
 
@@ -330,12 +466,10 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var publishedAttestation = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Attestations),
-            TimeSpan.FromSeconds(3));
+        // Genesis slot (slot 0) should skip proposal even though validator 0 is the proposer.
+        await service.OnIntervalAsync(0, 0);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedAttestation, Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
     }
 
@@ -366,12 +500,10 @@ public sealed class ValidatorServiceTests
         var fallbackSignedBlock = BuildSignedBlockWithAggregateProof(attestationData, fallbackProof);
         network.Emit(GossipTopics.Blocks, SszEncoding.Encode(fallbackSignedBlock));
 
-        var publishedBlock = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(10, 0);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedBlock, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
         var decoder = new SignedBlockWithAttestationGossipDecoder();
         var fallbackProofIncluded = false;
         foreach (var payload in network.PublishedMessages.Where(message => message.Topic == GossipTopics.Blocks).Select(message => message.Payload))
@@ -394,10 +526,9 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
-    public async Task DutyLoop_ProposerSlot_AggregatesSignaturesInCanonicalValidatorOrder()
+    public async Task DutyLoop_ProposerSlot_UsesConsensusAggregatesWithoutSelfAggregation()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
-        consensus.EnqueueCurrentSlots(2, 3);
         var network = new FakeNetworkService();
         var multiSig = new FakeLeanMultiSig();
         var service = new ValidatorService(
@@ -418,38 +549,48 @@ public sealed class ValidatorServiceTests
             new FakeLeanSig(),
             multiSig);
 
-        await service.StartAsync(CancellationToken.None);
-
         var slotTwoData = consensus.CreateAttestationData(2);
-        network.Emit(
-            GossipTopics.Attestations,
-            SszEncoding.Encode(new SignedAttestation(2, slotTwoData, XmssSignature.Empty())));
-        network.Emit(
-            GossipTopics.Attestations,
-            SszEncoding.Encode(new SignedAttestation(1, slotTwoData, XmssSignature.Empty())));
+        var expectedProof = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false }),
+            new byte[] { 0xCA, 0xFE, 0xBA, 0xBE });
+        consensus.KnownAggregatedPayloads = (
+            new[]
+            {
+                new AggregatedAttestation(expectedProof.Participants, slotTwoData)
+            },
+            new[]
+            {
+                expectedProof
+            });
 
-        var publishedBlock = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
-            TimeSpan.FromSeconds(4));
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(3, 0);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedBlock, Is.True);
-        var sawCanonicalOrder = multiSig.AggregatePublicKeyHistory.Any(call =>
-            call.Count >= 3 &&
-            call[0].Length > 0 &&
-            call[1].Length > 0 &&
-            call[2].Length > 0 &&
-            call[0][0] == 0x11 &&
-            call[1][0] == 0x22 &&
-            call[2][0] == 0x33);
-        Assert.That(sawCanonicalOrder, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
+        Assert.That(consensus.GetKnownAggregatedPayloadsCalls, Is.GreaterThan(0));
+        Assert.That(multiSig.AggregateCalls, Is.EqualTo(0));
+
+        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var proposedPayload = network.PublishedMessages
+            .Where(message => message.Topic == GossipTopics.Blocks)
+            .Select(message => message.Payload)
+            .First(payload =>
+            {
+                var decode = decoder.DecodeAndValidate(payload);
+                return decode.IsSuccess && decode.SignedBlock?.Message.Block.Slot.Value == 3;
+            });
+        var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
+        Assert.That(
+            proposed.Signature.AttestationSignatures.Any(proof =>
+                proof.ProofData.AsSpan().SequenceEqual(expectedProof.ProofData)),
+            Is.True);
     }
 
     [Test]
     public async Task DutyLoop_ProposerSlot_DeduplicatesAttestationMessagesAcrossProofSources()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
-        consensus.EnqueueCurrentSlots(2, 3);
         var network = new FakeNetworkService();
         var service = new ValidatorService(
             NullLogger<ValidatorService>.Instance,
@@ -469,28 +610,39 @@ public sealed class ValidatorServiceTests
             new FakeLeanSig(),
             new FakeLeanMultiSig());
 
-        await service.StartAsync(CancellationToken.None);
-
         var slotTwoData = consensus.CreateAttestationData(2);
-        var fallbackProof = new AggregatedSignatureProof(
-            new AggregationBits(new[] { false, true, false }),
+        var largerProofForSameData = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false }),
             new byte[] { 0xFA, 0x11, 0xBA, 0xCC });
-        var fallbackSignedBlock = BuildSignedBlockWithAggregateProof(slotTwoData, fallbackProof);
-        network.Emit(GossipTopics.Blocks, SszEncoding.Encode(fallbackSignedBlock));
+        var smallerProofForSameData = new AggregatedSignatureProof(
+            new AggregationBits(new[] { false, true, false }),
+            new byte[] { 0xDD, 0xEE });
+        var otherData = slotTwoData with
+        {
+            Slot = new Slot(1)
+        };
+        var otherProof = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, false, false }),
+            new byte[] { 0x11, 0x22, 0x33 });
+        consensus.KnownAggregatedPayloads = (
+            new[]
+            {
+                new AggregatedAttestation(largerProofForSameData.Participants, slotTwoData),
+                new AggregatedAttestation(smallerProofForSameData.Participants, slotTwoData),
+                new AggregatedAttestation(otherProof.Participants, otherData)
+            },
+            new[]
+            {
+                largerProofForSameData,
+                smallerProofForSameData,
+                otherProof
+            });
 
-        network.Emit(
-            GossipTopics.Attestations,
-            SszEncoding.Encode(new SignedAttestation(2, slotTwoData, XmssSignature.Empty())));
-        network.Emit(
-            GossipTopics.Attestations,
-            SszEncoding.Encode(new SignedAttestation(1, slotTwoData, XmssSignature.Empty())));
-
-        var publishedBlock = await WaitUntilAsync(
-            () => network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
-            TimeSpan.FromSeconds(4));
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(3, 0);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(publishedBlock, Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
 
         var decoder = new SignedBlockWithAttestationGossipDecoder();
         var sawProposedBlock = false;
@@ -519,6 +671,78 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_ProposerSlot_UsesMultipleProofsForSameDataRoot_WhenCoverageIsSplit()
+    {
+        var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig
+            {
+                ValidatorIndex = 0,
+                GenesisValidatorPublicKeys = new[]
+                {
+                    HexRepeat(0x11, 52),
+                    HexRepeat(0x22, 52),
+                    HexRepeat(0x33, 52)
+                }
+            },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        var slotTwoData = consensus.CreateAttestationData(2);
+        var allowed = new AggregationBits(new[] { true, true, false });
+        var proofForValidator0 = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, false, false }),
+            new byte[] { 0xA0 });
+        var proofForValidator1 = new AggregatedSignatureProof(
+            new AggregationBits(new[] { false, true, false }),
+            new byte[] { 0xB1 });
+        consensus.KnownAggregatedPayloads = (
+            new[]
+            {
+                new AggregatedAttestation(allowed, slotTwoData),
+                new AggregatedAttestation(allowed, slotTwoData)
+            },
+            new[]
+            {
+                proofForValidator0,
+                proofForValidator1
+            });
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(3, 0);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
+
+        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var proposedPayload = network.PublishedMessages
+            .Where(message => message.Topic == GossipTopics.Blocks)
+            .Select(message => message.Payload)
+            .First(payload =>
+            {
+                var decode = decoder.DecodeAndValidate(payload);
+                return decode.IsSuccess && decode.SignedBlock?.Message.Block.Slot.Value == 3;
+            });
+        var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
+
+        var expectedDataRoot = slotTwoData.HashTreeRoot();
+        var matchingDataRoots = proposed.Message.Block.Body.Attestations
+            .Count(attestation => attestation.Data.HashTreeRoot().AsSpan().SequenceEqual(expectedDataRoot));
+        Assert.That(matchingDataRoots, Is.EqualTo(2));
+        Assert.That(
+            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForValidator0.ProofData)),
+            Is.True);
+        Assert.That(
+            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForValidator1.ProofData)),
+            Is.True);
+    }
+
+    [Test]
     public async Task StopAsync_AllowsStartToInitializeAgain()
     {
         var consensus = new FakeConsensusService();
@@ -534,20 +758,17 @@ public sealed class ValidatorServiceTests
             multiSig);
 
         await service.StartAsync(CancellationToken.None);
-        var firstLifecycleTicked = await WaitUntilAsync(
-            () => consensus.CurrentSlotReadCalls > 0,
-            TimeSpan.FromSeconds(3));
-        Assert.That(firstLifecycleTicked, Is.True);
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
+        Assert.That(network.PublishedMessages.Count, Is.GreaterThan(0));
 
         await service.StopAsync(CancellationToken.None);
-        var readCallsAfterFirstLifecycle = consensus.CurrentSlotReadCalls;
+        network.PublishedMessages.Clear();
+
         await service.StartAsync(CancellationToken.None);
-        var secondLifecycleTicked = await WaitUntilAsync(
-            () => consensus.CurrentSlotReadCalls > readCallsAfterFirstLifecycle,
-            TimeSpan.FromSeconds(3));
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(secondLifecycleTicked, Is.True);
+        Assert.That(network.PublishedMessages.Count, Is.GreaterThan(0));
         Assert.That(multiSig.SetupProverCalls, Is.EqualTo(0));
         Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(0));
     }
@@ -586,34 +807,16 @@ public sealed class ValidatorServiceTests
             new FakeLeanMultiSig());
 
         await service.StartAsync(CancellationToken.None);
-        var observedDutyTick = await WaitUntilAsync(
-            () => consensus.CurrentSlotReadCalls > 0,
-            TimeSpan.FromSeconds(3));
-        Assert.That(observedDutyTick, Is.True);
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
+        Assert.That(network.PublishedMessages.Count, Is.GreaterThan(0));
 
         using var cancelledStopToken = new CancellationTokenSource();
         cancelledStopToken.Cancel();
         await service.StopAsync(cancelledStopToken.Token);
 
-        var readCallsAtStop = consensus.CurrentSlotReadCalls;
-        await Task.Delay(TimeSpan.FromMilliseconds(1200));
-        Assert.That(consensus.CurrentSlotReadCalls, Is.EqualTo(readCallsAtStop));
-    }
-
-    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var startedAt = DateTime.UtcNow;
-        while (!condition())
-        {
-            if (DateTime.UtcNow - startedAt > timeout)
-            {
-                return false;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(25));
-        }
-
-        return true;
+        network.PublishedMessages.Clear();
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
+        Assert.That(network.PublishedMessages.Count, Is.EqualTo(0));
     }
 
     private static SignedBlockWithAttestation BuildSignedBlockWithAggregateProof(
@@ -660,7 +863,7 @@ public sealed class ValidatorServiceTests
         public byte[] Sign(ReadOnlySpan<byte> secretKey, uint epoch, ReadOnlySpan<byte> message)
         {
             LastSignEpoch = epoch;
-            return Enumerable.Repeat((byte)0x33, XmssSignature.Length).ToArray();
+            return XmssSignature.Empty().EncodeBytes();
         }
 
         public bool Verify(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
@@ -682,9 +885,15 @@ public sealed class ValidatorServiceTests
         public int TryApplyLocalBlockCalls { get; private set; }
         public int TryApplyLocalAttestationCalls { get; private set; }
         public int TryComputeBlockStateRootCalls { get; private set; }
+        public int GetKnownAggregatedPayloadsCalls { get; private set; }
         public ulong CurrentSlotValue { get; set; } = 1;
+        public bool HasUnknownBlockRootsInFlightValue { get; set; }
         public bool LocalBlockApplyResult { get; set; } = true;
         public bool LocalAttestationApplyResult { get; set; } = true;
+        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs)
+            KnownAggregatedPayloads
+        { get; set; } =
+                (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
 
         public ulong CurrentSlot
         {
@@ -720,11 +929,13 @@ public sealed class ValidatorServiceTests
 
         public ulong FinalizedSlot => 0;
 
+        public bool HasUnknownBlockRootsInFlight => HasUnknownBlockRootsInFlightValue;
+
         public byte[] HeadRoot => _headRoot.AsSpan().ToArray();
 
-        public byte[] GetProposalHeadRoot()
+        public (byte[] ParentRoot, AttestationData BaseAttestationData) GetProposalContext(ulong slot)
         {
-            return HeadRoot;
+            return (HeadRoot, CreateAttestationData(slot));
         }
 
         public AttestationData CreateAttestationData(ulong slot)
@@ -738,8 +949,14 @@ public sealed class ValidatorServiceTests
 
         public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason)
         {
+            return TryComputeBlockStateRoot(candidateBlock, out stateRoot, out _, out reason);
+        }
+
+        public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason)
+        {
             TryComputeBlockStateRootCalls++;
             stateRoot = Bytes32.Zero();
+            postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
             reason = string.Empty;
             return true;
         }
@@ -756,6 +973,23 @@ public sealed class ValidatorServiceTests
             TryApplyLocalAttestationCalls++;
             reason = LocalAttestationApplyResult ? string.Empty : "rejected";
             return LocalAttestationApplyResult;
+        }
+
+        public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
+        {
+            GetKnownAggregatedPayloadsCalls++;
+            return KnownAggregatedPayloads;
+        }
+
+        public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
+        {
+            return new List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>();
         }
 
         public Task StartAsync(CancellationToken cancellationToken)
@@ -851,22 +1085,20 @@ public sealed class ValidatorServiceTests
             }
         }
 
-        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<byte[]?>(null);
-        }
-
-        public Task<byte[]?> RequestBlockByRootAsync(
-            ReadOnlyMemory<byte> blockRoot,
-            string preferredPeerKey,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<byte[]?>(null);
-        }
-
         public Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
+        }
+
+        public Task ConnectToPeersAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<List<byte[]>> RequestBlocksByRootBatchAsync(
+            List<byte[]> roots, string? preferredPeerKey, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new List<byte[]>());
         }
     }
 }

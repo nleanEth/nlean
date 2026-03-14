@@ -4,7 +4,7 @@ using Nethermind.Libp2p.Core;
 
 namespace Lean.Network;
 
-public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
+public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[][]>
 {
     private readonly IBlocksByRootRpcRouter _router;
     private readonly ILogger<LeanBlocksByRootProtocol> _logger;
@@ -17,30 +17,43 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
 
     public string Id => RpcProtocols.BlocksByRoot;
 
-    public async Task<byte[]?> DialAsync(IChannel channel, ISessionContext context, byte[] request)
+    public async Task<byte[][]> DialAsync(IChannel channel, ISessionContext context, byte[][] roots)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        if (request.Length != LeanReqRespCodec.RootLength)
+        try
         {
-            throw new ArgumentException($"block root must be {LeanReqRespCodec.RootLength} bytes.", nameof(request));
+            ArgumentNullException.ThrowIfNull(roots);
+            if (roots.Length == 0)
+                return [];
+
+            foreach (var root in roots)
+            {
+                if (root is null || root.Length != LeanReqRespCodec.RootLength)
+                    throw new ArgumentException($"Each root must be {LeanReqRespCodec.RootLength} bytes.", nameof(roots));
+            }
+
+            var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(roots);
+            await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
+            await TryWriteEofAsync(channel);
+
+            // Read streamed response chunks until EOF.
+            // Each chunk: [response_code: 1 byte][varint: uncompressed_length][snappy_framed_payload]
+            var results = new List<byte[]>();
+            while (true)
+            {
+                var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
+                if (response is null)
+                    break; // EOF — no more responses
+
+                if (response.Value.Code == LeanRpcResponseCodes.Success)
+                    results.Add(response.Value.Payload);
+            }
+
+            return results.ToArray();
         }
-
-        var requestPayload = LeanReqRespCodec.EncodeBlocksByRootRequest(new[] { request });
-        await LeanReqRespCodec.WriteRequestAsync(channel, requestPayload, channel.CancellationToken);
-
-        var response = await LeanReqRespCodec.TryReadResponseAsync(channel, channel.CancellationToken);
-        if (response is null)
+        finally
         {
-            return null;
+            await TryCloseAsync(channel);
         }
-
-        if (response.Value.Code != LeanRpcResponseCodes.Success)
-        {
-            throw new InvalidOperationException(
-                $"blocks_by_root request failed with code {response.Value.Code}: {Encoding.UTF8.GetString(response.Value.Payload)}");
-        }
-
-        return response.Value.Payload;
     }
 
     public async Task ListenAsync(IChannel channel, ISessionContext context)
@@ -81,6 +94,8 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
                     payload.Length);
             }
 
+            await TryWriteEofAsync(channel);
+
             _logger.LogInformation(
                 "blocks_by_root request completed. RequestedRoots: {RequestedRoots}, ResponsesSent: {ResponsesSent}",
                 requestedRoots.Length,
@@ -97,7 +112,7 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
         }
         finally
         {
-            await channel.CloseAsync();
+            await TryCloseAsync(channel);
         }
     }
 
@@ -110,6 +125,30 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[], byte[]?>
         catch
         {
             // Ignore best-effort error response failures.
+        }
+    }
+
+    private async Task TryWriteEofAsync(IChannel channel)
+    {
+        try
+        {
+            await channel.WriteEofAsync(channel.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "blocks_by_root EOF write ignored during stream shutdown.");
+        }
+    }
+
+    private async Task TryCloseAsync(IChannel channel)
+    {
+        try
+        {
+            await channel.CloseAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "blocks_by_root channel close ignored during stream shutdown.");
         }
     }
 }

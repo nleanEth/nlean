@@ -21,7 +21,7 @@ public static class LeanMetrics
         "Node start timestamp in unix seconds.");
 
     public static readonly Histogram PqSigAttestationSigningTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_sig_attestation_signing_time_seconds",
+        "lean_pq_signature_attestation_signing_time_seconds",
         "Time taken to sign an attestation.",
         new HistogramConfiguration
         {
@@ -29,7 +29,7 @@ public static class LeanMetrics
         });
 
     public static readonly Histogram PqSigAttestationVerificationTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_sig_attestation_verification_time_seconds",
+        "lean_pq_signature_attestation_verification_time_seconds",
         "Time taken to verify an attestation signature.",
         new HistogramConfiguration
         {
@@ -203,6 +203,64 @@ public static class LeanMetrics
         {
             LabelNames = new[] { "direction", "reason" }
         });
+
+    // --- Sync metrics ---
+
+    public static readonly Gauge SyncState = Prometheus.Metrics.CreateGauge(
+        "lean_sync_state",
+        "Current sync state (0=Idle, 1=Syncing, 2=Synced).");
+
+    public static readonly Counter SyncBlocksProcessedTotal = Prometheus.Metrics.CreateCounter(
+        "lean_sync_blocks_processed_total",
+        "Total number of blocks processed by sync.");
+
+    public static readonly Gauge SyncPeersConnected = Prometheus.Metrics.CreateGauge(
+        "lean_sync_peers_connected",
+        "Number of peers tracked by sync peer manager.");
+
+    public static readonly Gauge SyncCacheSize = Prometheus.Metrics.CreateGauge(
+        "lean_sync_cache_size",
+        "Number of pending blocks in the sync block cache.");
+
+    public static readonly Gauge SyncOrphanCount = Prometheus.Metrics.CreateGauge(
+        "lean_sync_orphan_count",
+        "Number of orphan blocks in the sync block cache.");
+
+    // --- Proto-array metrics ---
+
+    public static readonly Gauge ProtoArrayNodes = Prometheus.Metrics.CreateGauge(
+        "lean_proto_array_nodes",
+        "Number of nodes in the proto-array fork choice.");
+
+    public static void SetSyncState(int state)
+    {
+        SyncState.Set(state);
+    }
+
+    public static void IncSyncBlocksProcessed()
+    {
+        SyncBlocksProcessedTotal.Inc();
+    }
+
+    public static void SetSyncPeersConnected(int count)
+    {
+        SyncPeersConnected.Set(Math.Max(0, count));
+    }
+
+    public static void SetSyncCacheSize(int size)
+    {
+        SyncCacheSize.Set(Math.Max(0, size));
+    }
+
+    public static void SetSyncOrphanCount(int count)
+    {
+        SyncOrphanCount.Set(Math.Max(0, count));
+    }
+
+    public static void SetProtoArrayNodes(int count)
+    {
+        ProtoArrayNodes.Set(Math.Max(0, count));
+    }
 
     public static void SetNodeInfo(string nodeName, string nodeVersion)
     {

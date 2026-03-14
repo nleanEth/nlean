@@ -3,6 +3,14 @@
     <AssemblyName>Lean.Consensus</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="ConsensusService.cs" />
+    <Compile Remove="ForkChoiceStore.cs" />
+    <Compile Remove="AttestationDependencyPolicy.cs" />
+    <Compile Remove="Sync\BlockDependencyCache.cs" />
+    <Compile Remove="Sync\PendingGossipAttestationPool.cs" />
+    <Compile Remove="Sync\RecoveryBackoffTracker.cs" />
+    <Compile Remove="Sync\RecoveryOrchestrator.cs" />
+
     <ProjectReference Include="..\Lean.Crypto\Lean.Crypto.csproj" />
     <ProjectReference Include="..\Lean.Metrics\Lean.Metrics.csproj" />
     <ProjectReference Include="..\Lean.Network\Lean.Network.csproj" />

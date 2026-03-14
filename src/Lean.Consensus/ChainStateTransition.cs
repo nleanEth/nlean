@@ -29,7 +29,7 @@ internal sealed class ChainStateTransition
             emptyBodyRoot);
 
         var genesisCheckpoint = Checkpoint.Default();
-        return new State(
+        var state = new State(
             new Config(_config.GenesisTimeUnix),
             new Slot(0),
             genesisHeader,
@@ -40,6 +40,11 @@ internal sealed class ChainStateTransition
             validators,
             Array.Empty<Bytes32>(),
             Array.Empty<bool>());
+
+        // Compute state root with zeroed header state_root, then fill it in.
+        // This matches ethlambda's init_store() and leanSpec's generate_genesis().
+        var stateRoot = new Bytes32(state.HashTreeRoot());
+        return state with { LatestBlockHeader = genesisHeader with { StateRoot = stateRoot } };
     }
 
     public bool TryComputeStateRoot(
@@ -59,29 +64,6 @@ internal sealed class ChainStateTransition
         return true;
     }
 
-    public bool TryTransition(
-        State parentState,
-        Block block,
-        out State postState,
-        out string reason)
-    {
-        if (!TryComputePostState(parentState, block, out postState, out reason))
-        {
-            return false;
-        }
-
-        var expectedStateRoot = new Bytes32(postState.HashTreeRoot());
-        if (!expectedStateRoot.Equals(block.StateRoot))
-        {
-            postState = default!;
-            reason = $"Invalid block state root. expected={Convert.ToHexString(expectedStateRoot.AsSpan())} got={Convert.ToHexString(block.StateRoot.AsSpan())}";
-            return false;
-        }
-
-        reason = string.Empty;
-        return true;
-    }
-
     private bool TryComputePostState(
         State parentState,
         Block block,
@@ -94,7 +76,7 @@ internal sealed class ChainStateTransition
         var latestFinalized = parentState.LatestFinalized;
         var historicalBlockHashes = parentState.HistoricalBlockHashes.ToList();
         var justifiedSlots = parentState.JustifiedSlots.ToList();
-        var validators = parentState.Validators.ToList();
+        var validators = parentState.Validators;
         var justificationsRoots = parentState.JustificationsRoots.ToList();
         var justificationsValidators = parentState.JustificationsValidators.ToList();
         var transitionStopwatch = Stopwatch.StartNew();
@@ -163,9 +145,22 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
-            // Parent linkage is already enforced by ForkChoiceStore before this transition runs.
-            // Re-deriving the parent root from latestBlockHeader can reject imported branches when
-            // this simplified transition computes different intermediate state roots than peers.
+            // Verify the block proposer matches round-robin selection (leanSpec/ethlambda).
+            if (!block.ProposerIndex.IsProposerFor(block.Slot.Value, validators.Count))
+            {
+                postState = default!;
+                reason = $"Block proposer {block.ProposerIndex} is not the expected proposer for slot {block.Slot.Value} (expected {block.Slot.Value % (ulong)validators.Count}).";
+                return false;
+            }
+
+            // Verify block.parent_root matches hash_tree_root(latest_block_header) (leanSpec/ethlambda).
+            var expectedParentRoot = new Bytes32(latestBlockHeader.HashTreeRoot());
+            if (!block.ParentRoot.Equals(expectedParentRoot))
+            {
+                postState = default!;
+                reason = $"Block parent root mismatch at slot {block.Slot.Value}: block has {block.ParentRoot}, expected {expectedParentRoot}.";
+                return false;
+            }
 
             if (latestBlockHeader.Slot.Value == 0)
             {
@@ -197,15 +192,10 @@ internal sealed class ChainStateTransition
                 Bytes32.Zero(),
                 new Bytes32(block.Body.HashTreeRoot()));
 
-            if (block.Body.Attestations
-                .Select(attestation => Convert.ToHexString(attestation.Data.HashTreeRoot()))
-                .Distinct(StringComparer.Ordinal)
-                .Count() != block.Body.Attestations.Count)
-            {
-                postState = default!;
-                reason = "Block contains duplicate AttestationData.";
-                return false;
-            }
+            // NOTE: Multiple aggregated attestations with the same AttestationData are
+            // allowed. Different validator subsets may attest to the same checkpoint and
+            // arrive as separate aggregates. The vote accumulation uses bool[] per
+            // validator, so overlapping attestations are harmless (no double-counting).
 
             if (justificationsRoots.Any(root => root.Equals(Bytes32.Zero())))
             {
@@ -232,7 +222,6 @@ internal sealed class ChainStateTransition
                 rootToSlot[ToKey(historicalBlockHashes[(int)slot])] = slot;
             }
 
-            var originalFinalizedSlot = latestFinalized.Slot.Value;
             attestationsProcessingStopwatch.Start();
             foreach (var aggregated in block.Body.Attestations)
             {
@@ -289,7 +278,7 @@ internal sealed class ChainStateTransition
                     continue;
                 }
 
-                if (!new Slot(targetSlot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                if (!new Slot(targetSlot).IsJustifiableAfter(latestFinalized.Slot))
                 {
                     continue;
                 }
@@ -320,7 +309,9 @@ internal sealed class ChainStateTransition
                     votes.Votes[validatorIndex] = true;
                 }
 
-                var voteCount = votes.Votes.Count(vote => vote);
+                var voteCount = 0;
+                for (var vi = 0; vi < votes.Votes.Length; vi++)
+                    if (votes.Votes[vi]) voteCount++;
                 if (checked(3 * voteCount) < checked(2 * validators.Count))
                 {
                     continue;
@@ -336,10 +327,13 @@ internal sealed class ChainStateTransition
 
                 justificationsMap.Remove(targetKey);
 
+                // leanSpec finalization rule: finalize source only when NO justifiable
+                // slots exist between source and target.  Any justifiable gap blocks
+                // finalization regardless of whether those slots are already justified.
                 var canFinalize = true;
                 for (var slot = sourceSlot + 1; slot < targetSlot; slot++)
                 {
-                    if (new Slot(slot).IsJustifiableAfter(new Slot(originalFinalizedSlot)))
+                    if (new Slot(slot).IsJustifiableAfter(latestFinalized.Slot))
                     {
                         canFinalize = false;
                         break;
@@ -364,14 +358,9 @@ internal sealed class ChainStateTransition
                 var obsoleteTargets = new List<string>();
                 foreach (var (key, value) in justificationsMap)
                 {
-                    if (!rootToSlot.TryGetValue(key, out var slot))
-                    {
-                        postState = default!;
-                        reason = "Justification root missing from historical root-to-slot index.";
-                        return false;
-                    }
-
-                    if (slot <= latestFinalized.Slot.Value)
+                    // leanSpec: root_to_slots.get(root, []) — missing root yields [],
+                    // any(...) is False, so the entry is pruned. Match that behavior.
+                    if (!rootToSlot.TryGetValue(key, out var slot) || slot <= latestFinalized.Slot.Value)
                     {
                         obsoleteTargets.Add(key);
                     }

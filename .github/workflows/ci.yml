@@ -82,7 +82,7 @@ jobs:
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Test
-        run: dotnet test Lean.sln -c Release
+        run: dotnet test Lean.sln -c Release --filter "FullyQualifiedName!~Integration"
       - name: Publish
         run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o ${{ github.workspace }}/artifacts/lean-client-${{ matrix.rid }} /p:ContinuousIntegrationBuild=true
       - name: Upload publish artifact
@@ -121,3 +121,47 @@ jobs:
           --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests"
           /m:1
           /nodeReuse:false
+
+  integration-tests:
+    name: integration-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Install libmsquic
+        run: |
+          wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb
+          rm packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo apt-get install -y libmsquic
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json', 'NuGet.config', 'scripts/libp2p/build-patched-pubsub-package.sh', 'scripts/libp2p/patches/pubsub-anonymous.patch') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/lean-crypto-ffi
+      - name: Build patched pubsub package
+        run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+      - name: Publish binary
+        run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
+      - name: Run integration tests
+        run: >
+          dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
+          -c Release -v n

@@ -10,7 +10,6 @@ public sealed class NodeOptions
 {
     public string DataDir { get; set; } = "data";
     public string Network { get; set; } = "devnet0";
-    public string? Libp2pConfigPath { get; set; }
     public string? ValidatorConfigPath { get; set; }
     public string? NodeName { get; set; }
     public Libp2pConfig Libp2p { get; set; } = new();
@@ -19,11 +18,14 @@ public sealed class NodeOptions
     public StorageConfig Storage { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
     public ValidatorRuntimeConfig Validator { get; set; } = new();
+    public int ApiPort { get; set; } = 5052;
+    public string? CheckpointSyncUrl { get; set; }
+    public string? HashSigKeyDir { get; set; }
 
     public static NodeOptions Load(NodeOptionsOverrides overrides)
     {
         var options = new NodeOptions();
-        var configPath = overrides.ConfigPath ?? "config/node-config.json";
+        var configPath = overrides.ConfigPath;
 
         if (!string.IsNullOrWhiteSpace(configPath) && File.Exists(configPath))
         {
@@ -76,14 +78,57 @@ public sealed class NodeOptions
             options.NodeName = overrides.NodeName;
         }
 
-        if (!string.IsNullOrWhiteSpace(overrides.Libp2pConfig))
-        {
-            options.Libp2pConfigPath = overrides.Libp2pConfig;
-        }
-
         if (string.IsNullOrWhiteSpace(options.Storage.DataDir) || options.Storage.DataDir == "data")
         {
             options.Storage.DataDir = options.DataDir;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.CheckpointSyncUrl))
+        {
+            options.CheckpointSyncUrl = overrides.CheckpointSyncUrl;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.NodeKeyPath))
+        {
+            options.Libp2p.PrivateKeyPath = overrides.NodeKeyPath;
+        }
+
+        if (overrides.SocketPort.HasValue)
+        {
+            options.Libp2p.ListenAddresses = new List<string>
+            {
+                $"/ip4/0.0.0.0/udp/{overrides.SocketPort.Value}/quic-v1"
+            };
+        }
+
+        if (overrides.MetricsPort.HasValue)
+        {
+            options.Metrics.Port = overrides.MetricsPort.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.MetricsAddress))
+        {
+            options.Metrics.Host = overrides.MetricsAddress;
+        }
+
+        if (overrides.IsAggregator)
+        {
+            options.Validator.PublishAggregates = true;
+        }
+
+        if (overrides.AttestationCommitteeCount.HasValue)
+        {
+            options.Consensus.AttestationCommitteeCount = overrides.AttestationCommitteeCount.Value;
+        }
+
+        if (overrides.ApiPort.HasValue)
+        {
+            options.ApiPort = overrides.ApiPort.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.HashSigKeyDir))
+        {
+            options.HashSigKeyDir = overrides.HashSigKeyDir;
         }
 
         return options;
@@ -104,6 +149,7 @@ public sealed class ValidatorRuntimeConfig
     public string? PublicKeyPath { get; set; }
     public string? SecretKeyPath { get; set; }
     public ulong ValidatorIndex { get; set; }
+    public ulong ValidatorCount { get; set; } = 1;
     public uint ActivationEpoch { get; set; }
     public uint NumActiveEpochs { get; set; } = 1024;
     public bool PublishAggregates { get; set; } = false;

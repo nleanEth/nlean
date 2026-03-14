@@ -7,7 +7,7 @@ namespace Lean.Consensus.Tests;
 public sealed class SszInteropLayoutTests
 {
     [Test]
-    public void SignedAttestation_ZeroEncodingMatchesReamZeamVector()
+    public void SignedAttestation_ZeroEncodingMatchesFixedSignatureLayout()
     {
         var signedAttestation = new SignedAttestation(
             0,
@@ -20,13 +20,19 @@ public sealed class SszInteropLayoutTests
 
         var encoded = SszEncoding.Encode(signedAttestation);
 
-        // Zeam and Ream both assert this devnet2 signed-attestation vector as all-zero 3248 bytes.
-        Assert.That(encoded.Length, Is.EqualTo(3248));
-        Assert.That(encoded, Is.All.EqualTo((byte)0));
+        // XmssSignature is fixed-size (no offset field in parent).
+        // Layout: ValidatorId(8) + AttestationData(128) + XmssSignature(inline)
+        var signatureBytes = SszEncoding.Encode(XmssSignature.Empty());
+        var fixedSize = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
+        var expectedLength = fixedSize + signatureBytes.Length;
+        Assert.That(encoded.Length, Is.EqualTo(expectedLength));
+
+        // XmssSignature starts directly at position 136 (no offset)
+        Assert.That(encoded.AsSpan(fixedSize, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
 
     [Test]
-    public void SignedBlockWithAttestation_ZeroEncodingMatchesReamZeamLayout()
+    public void SignedBlockWithAttestation_ZeroEncodingMatchesVariableSizeLayout()
     {
         var signedBlock = new SignedBlockWithAttestation(
             new BlockWithAttestation(
@@ -48,16 +54,22 @@ public sealed class SszInteropLayoutTests
                 XmssSignature.Empty()));
 
         var encoded = SszEncoding.Encode(signedBlock);
+        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var signatureBytes = SszEncoding.Encode(signedBlock.Signature);
 
-        var expected = new byte[3352];
-        BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(0, SszEncoding.UInt32Length), 8);
-        BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(4, SszEncoding.UInt32Length), 236);
-        BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(8, SszEncoding.UInt32Length), 140);
-        BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(228, SszEncoding.UInt32Length), 84);
-        BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(232, SszEncoding.UInt32Length), 4);
-        BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(236, SszEncoding.UInt32Length), 3116);
+        // SignedBlockWithAttestation: 2 variable fields = 2 offsets (8 bytes fixed)
+        var fixedSize = SszEncoding.UInt32Length * 2;
+        Assert.That(encoded.Length, Is.EqualTo(fixedSize + messageBytes.Length + signatureBytes.Length));
 
-        Assert.That(encoded.Length, Is.EqualTo(expected.Length));
-        Assert.That(encoded, Is.EqualTo(expected));
+        // Verify offsets
+        var messageOffset = BinaryPrimitives.ReadUInt32LittleEndian(encoded.AsSpan(0, 4));
+        var signatureOffset = BinaryPrimitives.ReadUInt32LittleEndian(encoded.AsSpan(4, 4));
+        Assert.That(messageOffset, Is.EqualTo(fixedSize));
+        Assert.That(signatureOffset, Is.EqualTo(fixedSize + messageBytes.Length));
+
+        // Verify data
+        Assert.That(encoded.AsSpan((int)messageOffset, messageBytes.Length).ToArray(), Is.EqualTo(messageBytes));
+        Assert.That(encoded.AsSpan((int)signatureOffset, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
+
 }

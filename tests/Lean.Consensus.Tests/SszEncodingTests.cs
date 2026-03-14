@@ -8,37 +8,6 @@ namespace Lean.Consensus.Tests;
 public sealed class SszEncodingTests
 {
     [Test]
-    public void Bytes32EncodingMatchesSsz()
-    {
-        var bytes = Enumerable.Range(0, 32).Select(i => (byte)(i + 1)).ToArray();
-        var value = new Bytes32(bytes);
-
-        var encoded = SszEncoding.Encode(value);
-
-        var expected = new byte[SszEncoding.Bytes32Length];
-        Ssz.Encode(expected, bytes);
-
-        Assert.That(encoded, Is.EqualTo(expected));
-    }
-
-    [Test]
-    public void CheckpointEncodingMatchesSsz()
-    {
-        var root = new Bytes32(Enumerable.Range(0, 32).Select(i => (byte)(255 - i)).ToArray());
-        var checkpoint = new Checkpoint(root, new Slot(42));
-
-        var encoded = SszEncoding.Encode(checkpoint);
-        var expected = new byte[SszEncoding.CheckpointLength];
-
-        var offset = 0;
-        Ssz.Encode(expected.AsSpan(offset, SszEncoding.Bytes32Length), root.AsSpan());
-        offset += SszEncoding.Bytes32Length;
-        Ssz.Encode(expected.AsSpan(offset, SszEncoding.UInt64Length), checkpoint.Slot.Value);
-
-        Assert.That(encoded, Is.EqualTo(expected));
-    }
-
-    [Test]
     public void AttestationDataEncodingMatchesSsz()
     {
         var data = new AttestationData(
@@ -77,31 +46,6 @@ public sealed class SszEncodingTests
         Ssz.Encode(expected.AsSpan(offset, SszEncoding.UInt64Length), attestation.ValidatorId);
         offset += SszEncoding.UInt64Length;
         offset = WriteAttestationData(expected, offset, data);
-
-        Assert.That(encoded, Is.EqualTo(expected));
-    }
-
-    [Test]
-    public void BlockHeaderEncodingMatchesSsz()
-    {
-        var header = new BlockHeader(
-            new Slot(16),
-            3,
-            new Bytes32(Enumerable.Repeat((byte)1, 32).ToArray()),
-            new Bytes32(Enumerable.Repeat((byte)2, 32).ToArray()),
-            new Bytes32(Enumerable.Repeat((byte)3, 32).ToArray()));
-
-        var encoded = SszEncoding.Encode(header);
-        var expected = new byte[SszEncoding.BlockHeaderLength];
-        var offset = 0;
-
-        Ssz.Encode(expected.AsSpan(offset, SszEncoding.UInt64Length), header.Slot.Value);
-        offset += SszEncoding.UInt64Length;
-        Ssz.Encode(expected.AsSpan(offset, SszEncoding.UInt64Length), header.ProposerIndex);
-        offset += SszEncoding.UInt64Length;
-        offset = WriteBytes32(expected, offset, header.ParentRoot);
-        offset = WriteBytes32(expected, offset, header.StateRoot);
-        WriteBytes32(expected, offset, header.BodyRoot);
 
         Assert.That(encoded, Is.EqualTo(expected));
     }

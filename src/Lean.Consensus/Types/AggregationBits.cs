@@ -39,16 +39,6 @@ public sealed class AggregationBits
         return new AggregationBits(bits);
     }
 
-    public IReadOnlyList<ulong> ToValidatorIndices()
-    {
-        if (!TryToValidatorIndices(out var indices))
-        {
-            throw new InvalidOperationException("Aggregated attestation must reference at least one validator.");
-        }
-
-        return indices;
-    }
-
     public bool TryToValidatorIndices([NotNullWhen(true)] out IReadOnlyList<ulong>? indices)
     {
         var values = new List<ulong>();

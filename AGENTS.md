@@ -43,24 +43,38 @@ dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   /nodeReuse:false
 
 # Run client (example)
-./src/Lean.Client/bin/Debug/net10.0/Lean.Client \
-  --config config/node-config.json \
-  --validator-config config/validator-config.yaml \
-  --node lean_client_0
+./artifacts/lean-client/Lean.Client \
+  --validator-config /path/to/validator-config.yaml \
+  --node nlean_0 \
+  --data-dir data/nlean_0 \
+  --network devnet0 \
+  --node-key /path/to/nlean_0.key \
+  --socket-port 9101 \
+  --api-port 5052 \
+  --metrics-port 18081 \
+  --hash-sig-key-dir /path/to/hash-sig-keys \
+  --is-aggregator \
+  --log Information
+
+# Run integration tests (requires published binary)
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
+dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release
 ```
 
-## Interop / Quickstart
+## Devnet via lean-quickstart
 
-- Initialize submodule once:
+Initialize submodule once:
 
 ```bash
 git submodule update --init --recursive vendor/lean-quickstart
 ```
 
-- Main interop wrapper:
+The `client-cmds/nlean-cmd.sh` script follows lean-quickstart's client-cmd contract,
+passing CLI flags directly (no JSON config generation). To run a local devnet:
 
 ```bash
-./scripts/interop/run-lean-quickstart-devnet2.sh
+cd vendor/lean-quickstart
+NETWORK_DIR=local-devnet-nlean ./spin-node.sh --node all
 ```
 
 ## PR / CI Checklist

@@ -5,7 +5,9 @@ namespace Lean.Consensus;
 
 public sealed class SignedAttestationGossipDecoder
 {
-    private const int SignedAttestationLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + XmssSignature.Length;
+    // Fixed part: ValidatorId + AttestationData (XmssSignature is fixed-size, no offset).
+    private const int SignedAttestationFixedLength =
+        SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
 
     public AttestationGossipDecodeResult DecodeAndValidate(byte[] payload)
     {
@@ -40,24 +42,11 @@ public sealed class SignedAttestationGossipDecoder
         value = null!;
         reason = string.Empty;
 
-        if (payload.Length == SignedAttestationLength &&
-            TryDecodeSignedAttestationFixed(payload, out value, out reason))
+        if (payload.Length < SignedAttestationFixedLength)
         {
-            return true;
+            reason = $"SignedAttestation payload is too short: {payload.Length} bytes (minimum {SignedAttestationFixedLength}).";
+            return false;
         }
-
-        reason =
-            $"SignedAttestation must be exactly {SignedAttestationLength} bytes, got {payload.Length}.";
-        return false;
-    }
-
-    private static bool TryDecodeSignedAttestationFixed(
-        ReadOnlySpan<byte> payload,
-        out SignedAttestation value,
-        out string reason)
-    {
-        value = null!;
-        reason = string.Empty;
 
         var validatorId = BinaryPrimitives.ReadUInt64LittleEndian(payload[..SszEncoding.UInt64Length]);
         var dataBytes = payload.Slice(SszEncoding.UInt64Length, SszEncoding.AttestationDataLength);
@@ -67,15 +56,31 @@ public sealed class SignedAttestationGossipDecoder
             return false;
         }
 
+        // XmssSignature is fixed-size — starts immediately after AttestationData (no offset).
+        var signatureBytes = payload[SignedAttestationFixedLength..];
+        if (!TryDecodeXmssSignature(signatureBytes, out var signature, out reason))
+        {
+            reason = $"Invalid XMSS signature: {reason}";
+            return false;
+        }
+
+        value = new SignedAttestation(validatorId, data, signature);
+        return true;
+    }
+
+    private static bool TryDecodeXmssSignature(ReadOnlySpan<byte> signatureBytes, out XmssSignature signature, out string reason)
+    {
+        signature = null!;
+        reason = string.Empty;
+
         try
         {
-            var signature = XmssSignature.FromBytes(payload[^XmssSignature.Length..]);
-            value = new SignedAttestation(validatorId, data, signature);
+            signature = SszDecoding.DecodeXmssSignature(signatureBytes);
             return true;
         }
         catch (Exception ex)
         {
-            reason = $"Invalid XMSS signature bytes: {ex.Message}";
+            reason = $"container decode failed ({ex.Message}).";
             return false;
         }
     }

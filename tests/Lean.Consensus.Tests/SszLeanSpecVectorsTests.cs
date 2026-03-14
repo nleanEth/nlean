@@ -59,11 +59,14 @@ public sealed class SszLeanSpecVectorsTests
             emptySignature);
 
         var encoded = SszEncoding.Encode(signedAttestation);
-        var expectedLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength + XmssSignature.Length;
+        var signatureBytes = SszEncoding.Encode(emptySignature);
+        // XmssSignature is fixed-size (no offset field).
+        // Fixed: ValidatorId(8) + AttestationData(128) = 136
+        var fixedSize = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
+        var expectedLength = fixedSize + signatureBytes.Length;
 
         Assert.That(encoded.Length, Is.EqualTo(expectedLength));
-        Assert.That(encoded.AsSpan(expectedLength - XmssSignature.Length, XmssSignature.Length)
-            .ToArray(), Is.EqualTo(emptySignature.Bytes.ToArray()));
+        Assert.That(encoded.AsSpan(fixedSize, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
 
     [Test]
