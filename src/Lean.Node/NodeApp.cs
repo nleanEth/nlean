@@ -134,6 +134,11 @@ public static class NodeApp
         return builder.Build();
     }
 
+    public static void LoadChainConfig(NodeOptions options)
+    {
+        TryLoadValidatorNodeConfig(options);
+    }
+
     public static async Task TryRunCheckpointSyncAsync(
         NodeOptions options,
         CancellationToken ct)
