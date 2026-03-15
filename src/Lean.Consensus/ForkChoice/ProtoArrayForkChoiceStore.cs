@@ -72,7 +72,17 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
             _headRoot = headRoot;
             _headSlot = loaded.HeadSlot;
-            _latestJustified = new Checkpoint(justifiedRoot, new Slot(loaded.LatestJustifiedSlot));
+
+            // When all roots converge on a single anchor (leanSpec checkpoint sync
+            // from_anchor()), the proto-array registers anchorRoot at restoredAnchorSlot
+            // (= headSlot). Using the historical justifiedSlot would make attestation
+            // source-slot validation fail because GetSlot(anchorRoot) = headSlot ≠
+            // justifiedSlot. Use restoredAnchorSlot so the justified checkpoint slot
+            // aligns with the proto-array registration slot.
+            var effectiveJustifiedSlot = headRoot.Equals(finalizedRoot) && headRoot.Equals(justifiedRoot)
+                ? restoredAnchorSlot
+                : loaded.LatestJustifiedSlot;
+            _latestJustified = new Checkpoint(justifiedRoot, new Slot(effectiveJustifiedSlot));
             _latestFinalized = new Checkpoint(finalizedRoot, new Slot(loaded.LatestFinalizedSlot));
             _currentSlot = loaded.HeadSlot;
 
@@ -670,16 +680,27 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         var justifiedIdx = _protoArray.GetIndex(_latestJustified.Root);
         if (!justifiedIdx.HasValue)
-            return (_latestJustified.Root, _latestJustified.Slot.Value);
+        {
+            // Justified root not in proto-array. This happens after checkpoint sync when
+            // blocks with real attestations reference historical block roots that predate
+            // the anchor (historicalBlockHashes entries not in the proto-array). Fall back
+            // to the proto-array root (index 0) so head selection stays within the known
+            // block tree and doesn't return a garbage slot that triggers a safe-target
+            // regression assertion.
+            _logger.LogDebug(
+                "ComputeForkChoiceHead: justified root not in proto-array, falling back to proto-array root. " +
+                "JustifiedSlot={JustifiedSlot}", _latestJustified.Slot.Value);
+            justifiedIdx = 0;
+        }
 
         var justifiedNode = _protoArray.GetNodeByIndex(justifiedIdx.Value);
         if (justifiedNode is null)
-            return (_latestJustified.Root, _latestJustified.Slot.Value);
+            return (_headRoot, _headSlot);
 
         var bestDescIdx = justifiedNode.BestDescendant ?? justifiedIdx.Value;
         var bestDesc = _protoArray.GetNodeByIndex(bestDescIdx);
         if (bestDesc is null)
-            return (_latestJustified.Root, _latestJustified.Slot.Value);
+            return (_headRoot, _headSlot);
 
         return (bestDesc.Root, bestDesc.Slot);
     }
