@@ -187,19 +187,21 @@ public static class NodeApp
         var anchorRoot = state.LatestBlockHeader.HashTreeRoot();
         var anchorSlot = state.LatestBlockHeader.Slot.Value;
 
-        // Match leanSpec Store.from_anchor(): the anchor root is the trusted
-        // block root inserted into the forkchoice store, so checkpoint roots
-        // reuse that root while preserving the slots learned from the state.
-        // HeadSlot must come from the anchor block header slot, not state.slot.
+        // Match leanSpec Store.from_anchor(): use the anchor block root as head,
+        // but preserve the REAL justified and finalized roots from the state so
+        // that UpdateStoreCheckpoints can advance past those checkpoints when
+        // subsequent blocks arrive. Using anchorRoot for all roots caused a
+        // deadlock: the fork-choice store believed justified=anchorRoot but the
+        // live network had already advanced, leaving node 3 permanently stuck.
         return new ConsensusHeadState(
             anchorSlot,
             anchorRoot,
             state.LatestJustified.Slot.Value,
-            anchorRoot,
+            state.LatestJustified.Root.AsSpan(),
             state.LatestFinalized.Slot.Value,
-            anchorRoot,
+            state.LatestFinalized.Root.AsSpan(),
             state.LatestFinalized.Slot.Value,
-            anchorRoot);
+            state.LatestFinalized.Root.AsSpan());
     }
 
     private static void ApplyBootstrapPeersFromNodesYaml(NodeOptions options)
