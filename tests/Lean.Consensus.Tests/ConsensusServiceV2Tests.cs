@@ -168,6 +168,53 @@ public sealed class ConsensusServiceV2Tests
         Assert.That(validatorIds, Is.EquivalentTo(new[] { 1UL }));
     }
 
+    [Test]
+    public void GetKnownAggregatedPayloadsForBlock_UsesPayloadBackedDataEvenIfTrackerMovedOn()
+    {
+        var (svc, _, store, _) = CreateService();
+        var genesisRoot = store.HeadRoot;
+        var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
+
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        Assert.That(svc.TryComputeBlockStateRoot(block1, out var stateRoot1, out _), Is.True);
+        var validBlock1 = new Block(block1.Slot, block1.ProposerIndex, block1.ParentRoot, stateRoot1, block1.Body);
+        Assert.That(store.OnBlock(WrapBlock(validBlock1), genesisCheckpoint, genesisCheckpoint, validatorCount: 1).Accepted, Is.True);
+        var block1Root = new Bytes32(validBlock1.HashTreeRoot());
+
+        var payloadBackedData = new AttestationData(
+            new Slot(1),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(block1Root, new Slot(1)),
+            genesisCheckpoint);
+
+        Assert.That(store.TryOnAttestation(new SignedAttestation(0, payloadBackedData, XmssSignature.Empty()), out var reason0), Is.True, reason0);
+        store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+
+        var proof = new AggregatedSignatureProof(
+            AggregationBits.FromValidatorIndices(new ulong[] { 0 }),
+            new byte[] { 0xCD });
+        Assert.That(
+            store.TryOnGossipAggregatedAttestation(new SignedAggregatedAttestation(payloadBackedData, proof), out var aggReason),
+            Is.True,
+            aggReason);
+        store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+
+        var newerUnprovenData = new AttestationData(
+            new Slot(2),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(block1Root, new Slot(1)),
+            genesisCheckpoint);
+        Assert.That(store.TryOnAttestation(new SignedAttestation(0, newerUnprovenData, XmssSignature.Empty()), out var reason1), Is.True, reason1);
+        store.TickInterval(2, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+
+        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(slot: 3, requiredSource: genesisCheckpoint);
+
+        Assert.That(attestations, Has.Count.EqualTo(1));
+        Assert.That(proofs, Has.Count.EqualTo(1));
+        Assert.That(attestations[0].Data, Is.EqualTo(payloadBackedData));
+        Assert.That(proofs[0].ProofData, Is.EqualTo(proof.ProofData));
+    }
+
     private static (ConsensusServiceV2 svc, FakeTimeSource time,
         ProtoArrayForkChoiceStore store, SlotClock clock) CreateServiceWithSync(SyncState state)
     {

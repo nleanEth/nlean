@@ -8,8 +8,13 @@ public sealed class ProtoArray
     private readonly Dictionary<string, int> _indices = new(StringComparer.Ordinal);
 
     public ProtoArray(Bytes32 genesisRoot, ulong justifiedSlot, ulong finalizedSlot)
+        : this(genesisRoot, slot: 0, justifiedSlot, finalizedSlot)
     {
-        var genesis = new ProtoNode(genesisRoot, Bytes32.Zero(), 0, null, justifiedSlot, finalizedSlot);
+    }
+
+    public ProtoArray(Bytes32 genesisRoot, ulong slot, ulong justifiedSlot, ulong finalizedSlot)
+    {
+        var genesis = new ProtoNode(genesisRoot, Bytes32.Zero(), slot, null, justifiedSlot, finalizedSlot);
         _nodes.Add(genesis);
         _indices[RootKey(genesisRoot)] = 0;
     }

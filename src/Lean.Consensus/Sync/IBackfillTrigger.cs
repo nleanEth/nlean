@@ -4,5 +4,5 @@ namespace Lean.Consensus.Sync;
 
 public interface IBackfillTrigger
 {
-    void RequestBackfill(Bytes32 parentRoot);
+    void RequestBackfill(Bytes32 parentRoot, string? preferredPeerId = null);
 }

@@ -46,7 +46,7 @@ public sealed class HeadSync
                 slot, blockRoot, parentRoot, _cache.Count);
             _cache.Add(new PendingBlock(blockRoot, parentRoot, slot, peerId, signedBlock));
             _cache.MarkOrphan(parentRoot);
-            _backfill.RequestBackfill(parentRoot);
+            _backfill.RequestBackfill(parentRoot, peerId);
         }
     }
 

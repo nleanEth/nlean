@@ -49,7 +49,8 @@ public sealed class HeadSyncTests
         Assert.That(cache.Count, Is.EqualTo(1));
         Assert.That(cache.OrphanCount, Is.EqualTo(1));
         Assert.That(backfill.BackfillRequests, Has.Count.EqualTo(1));
-        Assert.That(backfill.BackfillRequests[0], Is.EqualTo(parentRoot));
+        Assert.That(backfill.BackfillRequests[0].Root, Is.EqualTo(parentRoot));
+        Assert.That(backfill.BackfillRequests[0].PreferredPeerId, Is.EqualTo("peer-1"));
     }
 
     [Test]
@@ -209,7 +210,8 @@ public sealed class HeadSyncTests
 
     private sealed class FakeBackfillTrigger : IBackfillTrigger
     {
-        public List<Bytes32> BackfillRequests { get; } = new();
-        public void RequestBackfill(Bytes32 parentRoot) => BackfillRequests.Add(parentRoot);
+        public List<(Bytes32 Root, string? PreferredPeerId)> BackfillRequests { get; } = new();
+        public void RequestBackfill(Bytes32 parentRoot, string? preferredPeerId = null) =>
+            BackfillRequests.Add((parentRoot, preferredPeerId));
     }
 }

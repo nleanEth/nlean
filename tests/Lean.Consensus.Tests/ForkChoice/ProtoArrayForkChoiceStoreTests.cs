@@ -22,6 +22,29 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void Constructor_LoadedCheckpointState_PreservesHeadRootSlot()
+    {
+        var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var persisted = new ConsensusHeadState(
+            headSlot: 225,
+            headRoot: anchorRoot.AsSpan(),
+            latestJustifiedSlot: 225,
+            latestJustifiedRoot: anchorRoot.AsSpan(),
+            latestFinalizedSlot: 210,
+            latestFinalizedRoot: anchorRoot.AsSpan(),
+            safeTargetSlot: 210,
+            safeTargetRoot: anchorRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        Assert.That(store.HeadSlot, Is.EqualTo(225UL));
+        Assert.That(store.HeadRoot, Is.EqualTo(anchorRoot));
+        Assert.That(store.ProtoArray.GetSlot(anchorRoot), Is.EqualTo(225UL));
+    }
+
+    [Test]
     public void OnBlock_AcceptsValidChild()
     {
         var store = CreateStore();
@@ -226,13 +249,12 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void TickInterval_At3_SafeTargetStaysAtGenesisWhenOnlyNonLocalGossip()
+    public void TickInterval_At3_SafeTargetAdvancesWhenQuorumGossips()
     {
-        // LocalValidatorId=0 (default). With 4 validators cutoffWeight=3.
-        // Individual gossip from validators 1,2,3 should NOT update latestNew —
-        // only the local validator's (0) gossip updates latestNew for safeTarget.
-        // Even with 4 attestations received, safeTarget stays at genesis because
-        // latestNew has only 0 or 1 vote (own validator) < cutoffWeight=3.
+        // Zeam-style semantics: individual gossip updates latestNew for the
+        // attesting validator, not just for local validators. With 4 validators
+        // cutoffWeight=3, three matching gossip attestations should advance the
+        // safe target even if none came from the local validator.
         var store = CreateStore(validatorCount: 4);
         var genesisRoot = store.HeadRoot;
 
@@ -256,19 +278,18 @@ public sealed class ProtoArrayForkChoiceStoreTests
             new Checkpoint(block2Root, new Slot(2)),
             new Checkpoint(block2Root, new Slot(2)));
 
-        // Send gossip from validators 1, 2, 3 only (non-local). These are aggregated for
-        // signature collection but must NOT update latestNew for the fork choice safeTarget.
+        // Send gossip from validators 1, 2, 3 only (non-local).
         for (ulong v = 1; v < 4; v++)
         {
             var att = new SignedAttestation(v, attData, XmssSignature.Empty());
             Assert.That(store.TryOnAttestation(att, storeSignature: true, out _), Is.True);
         }
 
-        // Interval 3 calls UpdateSafeTarget. cutoffWeight=3, only 0 local votes → stays.
+        // Interval 3 calls UpdateSafeTarget. cutoffWeight=3, three gossip votes → advances.
         store.TickInterval(3, 3);
 
-        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.True,
-            "Safe target must not advance from non-local validators' gossip (aggregation only path)");
+        Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,
+            "Safe target should advance when a quorum of validators gossips the same attestation.");
     }
 
     [Test]
@@ -532,5 +553,34 @@ public sealed class ProtoArrayForkChoiceStoreTests
             new Checkpoint(headRoot, new Slot(slot)));
         var sig = XmssSignature.Empty();
         return new SignedAttestation(validatorId, data, sig);
+    }
+
+    private sealed class FakeConsensusStateStore : IConsensusStateStore
+    {
+        private readonly ConsensusHeadState _state;
+
+        public FakeConsensusStateStore(ConsensusHeadState state)
+        {
+            _state = state;
+        }
+
+        public bool TryLoad([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ConsensusHeadState? state)
+        {
+            state = _state;
+            return true;
+        }
+
+        public bool TryLoad(
+            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ConsensusHeadState? state,
+            out State? headChainState)
+        {
+            state = _state;
+            headChainState = null;
+            return true;
+        }
+
+        public void Save(ConsensusHeadState state) => throw new NotSupportedException();
+        public void Save(ConsensusHeadState state, State headChainState) => throw new NotSupportedException();
+        public void Delete() => throw new NotSupportedException();
     }
 }
