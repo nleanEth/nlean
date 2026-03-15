@@ -15,7 +15,7 @@ public sealed class Libp2pNetworkService : INetworkService
     private static readonly TimeSpan StatusProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan BlocksByRootPerPeerTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan BlocksByRootBatchTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan StatusProbeMinInterval = TimeSpan.FromSeconds(600);
+    private static readonly TimeSpan StatusProbeMinInterval = TimeSpan.FromSeconds(3);
     private const string ConnectionDirectionInbound = "inbound";
     private const string ConnectionDirectionOutbound = "outbound";
     private const string ConnectionResultSuccess = "success";
@@ -362,6 +362,7 @@ public sealed class Libp2pNetworkService : INetworkService
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 stopwatch.Stop();
+                ForgetPeerSession(peerKey);
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
             }
@@ -369,6 +370,7 @@ public sealed class Libp2pNetworkService : INetworkService
             catch (Exception ex)
             {
                 stopwatch.Stop();
+                ForgetPeerSession(peerKey);
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
                 _logger.LogDebug(ex, "Batch blocks-by-root: failed for peer {Peer}. Elapsed={Elapsed}", peerKey, stopwatch.Elapsed);
@@ -857,9 +859,11 @@ public sealed class Libp2pNetworkService : INetworkService
         catch (OperationCanceledException)
         {
             // Timeout/cancel path for best-effort probe.
+            ForgetPeerSession(peerKey);
         }
         catch (Exception ex)
         {
+            ForgetPeerSession(peerKey);
             _logger.LogDebug(ex, "Proactive status probe failed for peer {Peer}.", peerKey);
         }
     }
@@ -1072,6 +1076,20 @@ public sealed class Libp2pNetworkService : INetworkService
         lock (_peerSessionsLock)
         {
             _peerSessions[peerId] = session;
+        }
+    }
+
+    private void ForgetPeerSession(string peerKey)
+    {
+        var peerId = ExtractPeerId(peerKey);
+        if (string.IsNullOrWhiteSpace(peerId))
+        {
+            return;
+        }
+
+        lock (_peerSessionsLock)
+        {
+            _peerSessions.Remove(peerId);
         }
     }
 
