@@ -106,6 +106,35 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_SkipsValidatorDuties_WhenConsensusHasUnknownBlockRootsInFlight()
+    {
+        var consensus = new FakeConsensusService
+        {
+            HasUnknownBlockRootsInFlightValue = true
+        };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 2 },
+            new ValidatorDutyConfig { PublishAggregates = true },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(1, 0);
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
+        await service.OnIntervalAsync(consensus.CurrentSlotValue, 2);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(network.PublishedMessages, Is.Empty);
+        Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
+        Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
+        Assert.That(consensus.GetKnownAggregatedPayloadsCalls, Is.EqualTo(0));
+    }
+
+    [Test]
     public async Task DutyLoop_PublishesAttestation()
     {
         var consensus = new FakeConsensusService();

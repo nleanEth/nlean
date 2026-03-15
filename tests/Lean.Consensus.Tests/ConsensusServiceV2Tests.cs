@@ -114,7 +114,38 @@ public sealed class ConsensusServiceV2Tests
     }
 
     [Test]
-    public void HasUnknownBlockRootsInFlight_AlwaysFalse()
+    public void HasUnknownBlockRootsInFlight_ReturnsTrue_WhenCheckpointJustifiedRootIsAbsentFromProtoArray()
+    {
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+        var persisted = new ConsensusHeadState(
+            headSlot: 335,
+            headRoot: headRoot.AsSpan(),
+            latestJustifiedSlot: 182,
+            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestFinalizedSlot: 169,
+            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            safeTargetSlot: 169,
+            safeTargetRoot: finalizedRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+        var config = new ConsensusConfig
+        {
+            InitialValidatorCount = 1,
+            SecondsPerSlot = 4,
+            GenesisTimeUnix = (ulong)GenesisTime.ToUnixTimeSeconds()
+        };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+        var time = new FakeTimeSource(GenesisTime);
+        var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
+            ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
+        var svc = new ConsensusServiceV2(store, clock, config, stateStore: stateStore);
+
+        Assert.That(svc.HasUnknownBlockRootsInFlight, Is.True);
+    }
+
+    [Test]
+    public void HasUnknownBlockRootsInFlight_RemainsFalse_ForGenesisAndSyncStateOnly()
     {
         var (svc1, _, _, _) = CreateService();
         Assert.That(svc1.HasUnknownBlockRootsInFlight, Is.False);
@@ -290,20 +321,27 @@ public sealed class ConsensusServiceV2Tests
 
     private sealed class FakeConsensusStateStore : IConsensusStateStore
     {
+        private readonly ConsensusHeadState? _loadedState;
+
+        public FakeConsensusStateStore(ConsensusHeadState? loadedState = null)
+        {
+            _loadedState = loadedState;
+        }
+
         public int SaveCount { get; private set; }
         public ConsensusHeadState? LastSavedState { get; private set; }
 
         public bool TryLoad([NotNullWhen(true)] out ConsensusHeadState? state)
         {
-            state = null;
-            return false;
+            state = _loadedState;
+            return state is not null;
         }
 
         public bool TryLoad([NotNullWhen(true)] out ConsensusHeadState? state, out State? headChainState)
         {
-            state = null;
+            state = _loadedState;
             headChainState = null;
-            return false;
+            return state is not null;
         }
 
         public void Save(ConsensusHeadState state)

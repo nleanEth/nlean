@@ -183,9 +183,20 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
     public ulong FinalizedSlot => _snapshot.FinalizedSlot;
 
-    // leanSpec does not gate validator duties on sync state.
-    // Backfill runs independently; validators should always produce.
-    public bool HasUnknownBlockRootsInFlight => false;
+    // Align checkpoint-sync startup with zeam: validator duties must stay
+    // deferred until the store has observed a justified root that actually
+    // exists inside the local proto-array. Otherwise local proposer/attester
+    // paths construct Source checkpoints that immediately fail validation.
+    public bool HasUnknownBlockRootsInFlight
+    {
+        get
+        {
+            lock (_storeLock)
+            {
+                return !_store.ContainsBlock(_store.JustifiedRoot);
+            }
+        }
+    }
 
     public byte[] HeadRoot => _snapshot.HeadRoot.AsSpan().ToArray();
 

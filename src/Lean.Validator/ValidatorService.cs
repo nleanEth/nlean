@@ -117,6 +117,15 @@ public sealed class ValidatorService : IValidatorService
 
         try
         {
+            if (_consensusService.HasUnknownBlockRootsInFlight)
+            {
+                _logger.LogDebug(
+                    "Skipping validator duties while consensus is still initializing checkpoint roots. Slot: {Slot}, Interval: {Interval}",
+                    slot,
+                    intervalInSlot);
+                return;
+            }
+
             if (intervalInSlot == 0 && slot > 0 && TryGetProposerForSlot(slot, out var proposerVid))
             {
                 var publishedBlock = await TryPublishProposerBlockAsync(slot, proposerVid, cancellationToken);
