@@ -68,6 +68,38 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void LoadedCheckpointAnchor_StartsIniting_AndBecomesReadyAfterNewerJustifiedBlock()
+    {
+        var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x44, 32).ToArray());
+        var persisted = new ConsensusHeadState(
+            headSlot: 182,
+            headRoot: anchorRoot.AsSpan(),
+            latestJustifiedSlot: 182,
+            latestJustifiedRoot: anchorRoot.AsSpan(),
+            latestFinalizedSlot: 169,
+            latestFinalizedRoot: anchorRoot.AsSpan(),
+            safeTargetSlot: 169,
+            safeTargetRoot: anchorRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 1 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        Assert.That(store.IsReadyForDuties, Is.False);
+
+        var block = CreateBlock(slot: 183, parentRoot: anchorRoot, proposerIndex: 0);
+        var signed = WrapBlock(block);
+        var blockRoot = new Bytes32(block.HashTreeRoot());
+        var justified = new Checkpoint(blockRoot, new Slot(183));
+        var finalized = new Checkpoint(anchorRoot, new Slot(169));
+
+        var result = store.OnBlock(signed, justified, finalized, validatorCount: 1);
+
+        Assert.That(result.Accepted, Is.True);
+        Assert.That(store.IsReadyForDuties, Is.True);
+    }
+
+    [Test]
     public void OnBlock_AcceptsValidChild()
     {
         var store = CreateStore();

@@ -173,31 +173,38 @@ public sealed class NodeAppBootstrapDefaultsTests
     }
 
     [Test]
-    public void CreateCheckpointHeadState_UsesLatestBlockHeaderSlot_AsHeadSlot()
+    public void CreateCheckpointHeadState_UsesAnchorSlotAndAnchorRootForCheckpointStore()
     {
-        var root = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var anchorStateRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
         var state = new State(
             Config: new Config(1),
             Slot: new Slot(198),
-            LatestJustified: new Checkpoint(root, new Slot(182)),
-            LatestFinalized: new Checkpoint(root, new Slot(169)),
+            LatestJustified: new Checkpoint(justifiedRoot, new Slot(182)),
+            LatestFinalized: new Checkpoint(finalizedRoot, new Slot(169)),
             LatestBlockHeader: new BlockHeader(
                 new Slot(182),
                 0,
                 Bytes32.Zero(),
-                root,
+                anchorStateRoot,
                 Bytes32.Zero()),
             HistoricalBlockHashes: Array.Empty<Bytes32>(),
             JustifiedSlots: Array.Empty<bool>(),
             Validators: Array.Empty<Lean.Consensus.Types.Validator>(),
             JustificationsRoots: Array.Empty<Bytes32>(),
             JustificationsValidators: Array.Empty<bool>());
+        var anchorRoot = new Bytes32(state.LatestBlockHeader.HashTreeRoot());
 
         var headState = NodeApp.CreateCheckpointHeadState(state);
 
         Assert.That(headState.HeadSlot, Is.EqualTo(182UL));
         Assert.That(headState.LatestJustifiedSlot, Is.EqualTo(182UL));
         Assert.That(headState.LatestFinalizedSlot, Is.EqualTo(169UL));
+        Assert.That(headState.HeadRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
+        Assert.That(headState.LatestJustifiedRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
+        Assert.That(headState.LatestFinalizedRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
+        Assert.That(headState.SafeTargetRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
     }
 
     private static NodeOptions CreateOptions(string tempRoot, string validatorConfigPath)

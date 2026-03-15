@@ -29,6 +29,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Checkpoint _latestJustified;
     private Checkpoint _latestFinalized;
     private Bytes32 _safeTarget;
+    private bool _isReadyForDuties;
     private ulong _validatorCount;
     private readonly IReadOnlySet<ulong> _localValidatorIds;
     private readonly HashSet<int> _localValidatorSubnetIds;
@@ -63,57 +64,23 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             && loaded.HeadSlot > 0)
         {
             var headRoot = new Bytes32(loaded.HeadRoot);
-            var justifiedRoot = new Bytes32(loaded.LatestJustifiedRoot);
-            var finalizedRoot = new Bytes32(loaded.LatestFinalizedRoot);
-            var restoredAnchorRoot = headRoot.Equals(finalizedRoot) ? headRoot : finalizedRoot;
-            var restoredAnchorSlot = headRoot.Equals(finalizedRoot)
-                ? loaded.HeadSlot
-                : loaded.LatestFinalizedSlot;
 
             _headRoot = headRoot;
             _headSlot = loaded.HeadSlot;
-
-            // When all roots converge on a single anchor (leanSpec checkpoint sync
-            // from_anchor()), the proto-array registers anchorRoot at restoredAnchorSlot
-            // (= headSlot). Using the historical justifiedSlot would make attestation
-            // source-slot validation fail because GetSlot(anchorRoot) = headSlot ≠
-            // justifiedSlot. Use restoredAnchorSlot so the justified checkpoint slot
-            // aligns with the proto-array registration slot.
-            var effectiveJustifiedSlot = headRoot.Equals(finalizedRoot) && headRoot.Equals(justifiedRoot)
-                ? restoredAnchorSlot
-                : loaded.LatestJustifiedSlot;
-            _latestJustified = new Checkpoint(justifiedRoot, new Slot(effectiveJustifiedSlot));
-            _latestFinalized = new Checkpoint(finalizedRoot, new Slot(loaded.LatestFinalizedSlot));
+            _latestJustified = new Checkpoint(headRoot, new Slot(loaded.LatestJustifiedSlot));
+            _latestFinalized = new Checkpoint(headRoot, new Slot(loaded.LatestFinalizedSlot));
             _currentSlot = loaded.HeadSlot;
-
-            // On cold restart, reset safe target to finalized root rather than
-            // restoring the persisted value. Attestation trackers are not persisted,
-            // so UpdateSafeTarget() (which uses VoteSource.New with 2/3 cutoff)
-            // would compute a lower slot than the saved safe target, triggering a
-            // spurious safe-target regression error. The safe target will naturally
-            // advance once new attestations arrive.
-            _safeTarget = finalizedRoot;
-
-            // Checkpoint imports can persist a single anchor root while keeping
-            // distinct head/justified/finalized slots. When that happens, the
-            // proto-array root must use the anchor root's actual slot (HeadSlot),
-            // otherwise later attestation/proposal validation sees the same root
-            // at conflicting slots and rejects it as unknown/mismatched.
+            _safeTarget = headRoot;
             _protoArray = new ProtoArray(
-                restoredAnchorRoot,
-                restoredAnchorSlot,
+                headRoot,
+                loaded.HeadSlot,
                 loaded.LatestJustifiedSlot,
                 loaded.LatestFinalizedSlot);
-
-            if (!headRoot.Equals(finalizedRoot))
-            {
-                _protoArray.RegisterBlock(headRoot, finalizedRoot, loaded.HeadSlot,
-                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
-            }
+            _isReadyForDuties = false;
 
             _logger.LogInformation(
-                "Loaded checkpoint state. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}",
-                loaded.HeadSlot, loaded.LatestFinalizedSlot, loaded.LatestJustifiedSlot);
+                "Loaded checkpoint anchor. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}, ReadyForDuties={ReadyForDuties}",
+                loaded.HeadSlot, loaded.LatestFinalizedSlot, loaded.LatestJustifiedSlot, _isReadyForDuties);
         }
         else
         {
@@ -129,6 +96,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _currentSlot = 0;
             _protoArray = new ProtoArray(genesisRoot, 0, 0);
             _safeTarget = genesisRoot;
+            _isReadyForDuties = true;
         }
     }
 
@@ -138,6 +106,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public Bytes32 JustifiedRoot => _latestJustified.Root;
     public ulong FinalizedSlot => _latestFinalized.Slot.Value;
     public Bytes32 FinalizedRoot => _latestFinalized.Root;
+    public bool IsReadyForDuties => _isReadyForDuties;
     public Bytes32 SafeTarget => _safeTarget;
     public ProtoArray ProtoArray => _protoArray;
     public bool ContainsBlock(Bytes32 root) => _protoArray.ContainsBlock(root);
@@ -352,7 +321,16 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         _validatorCount = Math.Max(_validatorCount, validatorCount);
 
+        var previousJustifiedSlot = _latestJustified.Slot.Value;
         UpdateStoreCheckpoints(canonicalJustified, canonicalFinalized);
+        if (!_isReadyForDuties && _latestJustified.Slot.Value > previousJustifiedSlot)
+        {
+            _isReadyForDuties = true;
+            _logger.LogInformation(
+                "Checkpoint-init complete: first justified checkpoint observed. JustifiedSlot={JustifiedSlot}, JustifiedRoot={JustifiedRoot}",
+                _latestJustified.Slot.Value,
+                Convert.ToHexString(_latestJustified.Root.AsSpan()));
+        }
 
         // Process block-body attestations: update tracker.LatestKnown (is_from_block=true).
         // Also store aggregated payloads as known for block building.

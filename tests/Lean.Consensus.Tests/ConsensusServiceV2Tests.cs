@@ -114,20 +114,18 @@ public sealed class ConsensusServiceV2Tests
     }
 
     [Test]
-    public void HasUnknownBlockRootsInFlight_ReturnsTrue_WhenCheckpointJustifiedRootIsAbsentFromProtoArray()
+    public void HasUnknownBlockRootsInFlight_ReturnsTrue_DuringCheckpointInitUntilReady()
     {
         var headRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
-        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
-        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
         var persisted = new ConsensusHeadState(
             headSlot: 335,
             headRoot: headRoot.AsSpan(),
             latestJustifiedSlot: 182,
-            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestJustifiedRoot: headRoot.AsSpan(),
             latestFinalizedSlot: 169,
-            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            latestFinalizedRoot: headRoot.AsSpan(),
             safeTargetSlot: 169,
-            safeTargetRoot: finalizedRoot.AsSpan());
+            safeTargetRoot: headRoot.AsSpan());
         var stateStore = new FakeConsensusStateStore(persisted);
         var config = new ConsensusConfig
         {

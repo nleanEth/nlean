@@ -183,17 +183,16 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
     public ulong FinalizedSlot => _snapshot.FinalizedSlot;
 
-    // Align checkpoint-sync startup with zeam: validator duties must stay
-    // deferred until the store has observed a justified root that actually
-    // exists inside the local proto-array. Otherwise local proposer/attester
-    // paths construct Source checkpoints that immediately fail validation.
+    // Align checkpoint-sync startup with zeam: validator duties stay deferred
+    // while forkchoice is still in its anchor/init phase, and only resume once
+    // the first real justified checkpoint is observed through block processing.
     public bool HasUnknownBlockRootsInFlight
     {
         get
         {
             lock (_storeLock)
             {
-                return !_store.ContainsBlock(_store.JustifiedRoot);
+                return !_store.IsReadyForDuties;
             }
         }
     }
