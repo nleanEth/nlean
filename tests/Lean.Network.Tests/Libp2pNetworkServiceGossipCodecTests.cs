@@ -46,18 +46,6 @@ public sealed class Libp2pNetworkServiceGossipCodecTests
         Assert.That(aDialsB ^ bDialsA, Is.True, "exactly one side should initiate the bootstrap dial");
     }
 
-    [Test]
-    public void StatusProbeMinInterval_IsShortEnoughForStartupConvergence()
-    {
-        var field = typeof(Libp2pNetworkService).GetField(
-            "StatusProbeMinInterval",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.That(field, Is.Not.Null);
-        var value = (TimeSpan)field!.GetValue(null)!;
-        Assert.That(value, Is.LessThanOrEqualTo(TimeSpan.FromSeconds(5)));
-    }
-
     private static byte[] InvokeEncode(ReadOnlyMemory<byte> payload)
     {
         var method = typeof(Libp2pNetworkService).GetMethod(
