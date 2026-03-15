@@ -38,6 +38,24 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
     }
 
     [Test]
+    public void OnGossipAggregatedAttestation_StoresPayloadEvenWhenHeadUnknown()
+    {
+        var store = CreateStore();
+        var data = MakeAttestationData(store) with
+        {
+            Head = new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0xAB, 32).ToArray()), new Slot(999))
+        };
+        var bits = new AggregationBits(new[] { true, false, true, false });
+        var proof = new AggregatedSignatureProof(bits, new byte[32]);
+        var signed = new SignedAggregatedAttestation(data, proof);
+
+        var accepted = store.TryOnGossipAggregatedAttestation(signed, out _);
+
+        Assert.That(accepted, Is.True);
+        Assert.That(store.PendingAggregatedPayloadCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public void TickInterval_PromotesAggregatedPayloads()
     {
         var store = CreateStore();

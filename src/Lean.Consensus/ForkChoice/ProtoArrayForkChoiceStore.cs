@@ -178,11 +178,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     public bool TryOnGossipAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
     {
-        if (!TryValidateAttestationData(signed.Data, out reason))
-        {
-            return false;
-        }
-
         if (!signed.Proof.Participants.TryToValidatorIndices(out var participantIds) || participantIds.Count == 0)
         {
             reason = "Aggregated attestation must include at least one participant.";
@@ -199,21 +194,31 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
-        // Unpack aggregated proof participants into per-validator latestNew trackers
-        // immediately at gossip receive time. This matches leanSpec's
-        // on_gossip_aggregated_attestation which stores per-validator entries in
-        // latest_new_aggregated_payloads, and update_safe_target at interval 3 which
-        // merges both pools and extracts per-validator attestations via
-        // extract_attestations_from_aggregated_payloads. Without this, UpdateSafeTarget
-        // sees only the local validator's own vote in latestNew, causing safe_target
-        // divergence across nodes and vote splitting that prevents justification.
-        var headIndex = _protoArray.GetIndex(signed.Data.Head.Root);
-        if (headIndex.HasValue)
+        // Match zeam/leanSpec: payload-backed proofs are stored even when the
+        // lagging node cannot yet attach the attestation to its forkchoice view.
+        // Tracker updates are best-effort only; they can fail while catchup is
+        // still bringing the referenced roots into the proto-array.
+        if (TryValidateAttestationData(signed.Data, out _))
         {
-            foreach (var pid in participantIds)
+            // Unpack aggregated proof participants into per-validator latestNew trackers
+            // immediately at gossip receive time so safe_target can reflect fresh votes.
+            var headIndex = _protoArray.GetIndex(signed.Data.Head.Root);
+            if (headIndex.HasValue)
             {
-                UpdateTrackerFromGossip(pid, headIndex.Value, signed.Data.Slot.Value, signed.Data);
+                foreach (var pid in participantIds)
+                {
+                    UpdateTrackerFromGossip(pid, headIndex.Value, signed.Data.Slot.Value, signed.Data);
+                }
             }
+        }
+        else
+        {
+            _logger.LogDebug(
+                "Stored aggregated payload before tracker admission. Slot: {Slot}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, HeadRoot: {HeadRoot}",
+                signed.Data.Slot.Value,
+                signed.Data.Source.Slot.Value,
+                signed.Data.Target.Slot.Value,
+                Convert.ToHexString(signed.Data.Head.Root.AsSpan())[..8]);
         }
 
         reason = string.Empty;
