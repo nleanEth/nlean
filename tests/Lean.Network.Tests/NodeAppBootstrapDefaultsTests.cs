@@ -3,6 +3,7 @@ using Lean.Network;
 using Lean.Node;
 using Lean.Node.Configuration;
 using Lean.Consensus;
+using Lean.Consensus.Types;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 
@@ -169,6 +170,34 @@ public sealed class NodeAppBootstrapDefaultsTests
                 // Ignore cleanup failures from open handles on CI/dev machines.
             }
         }
+    }
+
+    [Test]
+    public void CreateCheckpointHeadState_UsesLatestBlockHeaderSlot_AsHeadSlot()
+    {
+        var root = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+        var state = new State(
+            Config: new Config(1),
+            Slot: new Slot(198),
+            LatestJustified: new Checkpoint(root, new Slot(182)),
+            LatestFinalized: new Checkpoint(root, new Slot(169)),
+            LatestBlockHeader: new BlockHeader(
+                new Slot(182),
+                0,
+                Bytes32.Zero(),
+                root,
+                Bytes32.Zero()),
+            HistoricalBlockHashes: Array.Empty<Bytes32>(),
+            JustifiedSlots: Array.Empty<bool>(),
+            Validators: Array.Empty<Lean.Consensus.Types.Validator>(),
+            JustificationsRoots: Array.Empty<Bytes32>(),
+            JustificationsValidators: Array.Empty<bool>());
+
+        var headState = NodeApp.CreateCheckpointHeadState(state);
+
+        Assert.That(headState.HeadSlot, Is.EqualTo(182UL));
+        Assert.That(headState.LatestJustifiedSlot, Is.EqualTo(182UL));
+        Assert.That(headState.LatestFinalizedSlot, Is.EqualTo(169UL));
     }
 
     private static NodeOptions CreateOptions(string tempRoot, string validatorConfigPath)
