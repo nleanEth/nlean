@@ -81,6 +81,8 @@ jobs:
           workspaces: native/lean-crypto-ffi
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+      - name: Build patched quic package
+        run: ./scripts/libp2p/build-patched-quic-package.sh --force
       - name: Test
         run: dotnet test Lean.sln -c Release --filter "FullyQualifiedName!~Integration"
       - name: Publish
@@ -114,6 +116,8 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+      - name: Build patched quic package
+        run: ./scripts/libp2p/build-patched-quic-package.sh --force
       - name: Run consensus simulation tests
         run: >
           dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj
@@ -159,6 +163,8 @@ jobs:
           workspaces: native/lean-crypto-ffi
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+      - name: Build patched quic package
+        run: ./scripts/libp2p/build-patched-quic-package.sh --force
       - name: Publish binary
         run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
       - name: Run integration tests
