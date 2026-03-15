@@ -45,6 +45,29 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void ComputeTargetCheckpoint_LoadedCheckpointAnchor_DoesNotReturnZeroRoot()
+    {
+        var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var persisted = new ConsensusHeadState(
+            headSlot: 198,
+            headRoot: anchorRoot.AsSpan(),
+            latestJustifiedSlot: 182,
+            latestJustifiedRoot: anchorRoot.AsSpan(),
+            latestFinalizedSlot: 169,
+            latestFinalizedRoot: anchorRoot.AsSpan(),
+            safeTargetSlot: 198,
+            safeTargetRoot: anchorRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        var target = store.ComputeTargetCheckpoint();
+
+        Assert.That(target.Root, Is.Not.EqualTo(Bytes32.Zero()));
+    }
+
+    [Test]
     public void OnBlock_AcceptsValidChild()
     {
         var store = CreateStore();

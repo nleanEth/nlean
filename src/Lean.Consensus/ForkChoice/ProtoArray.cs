@@ -138,7 +138,12 @@ public sealed class ProtoArray
     public Bytes32? GetParentRoot(Bytes32 root)
     {
         if (_indices.TryGetValue(RootKey(root), out var idx))
-            return _nodes[idx].ParentRoot;
+        {
+            var node = _nodes[idx];
+            if (!node.ParentIndex.HasValue)
+                return null;
+            return node.ParentRoot;
+        }
         return null;
     }
 
