@@ -171,13 +171,28 @@ public static class NodeApp
         }
 
         var state = result.State!;
-        var anchorRoot = state.LatestBlockHeader.HashTreeRoot();
+        var headState = CreateCheckpointHeadState(state);
+        stateStore.Save(headState, state);
 
-        // Match leanSpec Store.from_anchor(): keep original justified/finalized
-        // slots from state, but replace all roots with the anchor block root.
-        // The anchor block IS the justified/finalized point for fork choice.
-        var headState = new ConsensusHeadState(
-            state.Slot.Value,
+        Console.WriteLine(
+            $"Checkpoint sync complete. HeadSlot={headState.HeadSlot}, " +
+            $"JustifiedSlot={state.LatestJustified.Slot.Value}, " +
+            $"FinalizedSlot={state.LatestFinalized.Slot.Value}");
+    }
+
+    internal static ConsensusHeadState CreateCheckpointHeadState(Lean.Consensus.Types.State state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        var anchorRoot = state.LatestBlockHeader.HashTreeRoot();
+        var anchorSlot = state.LatestBlockHeader.Slot.Value;
+
+        // Match leanSpec Store.from_anchor(): the anchor root is the trusted
+        // block root inserted into the forkchoice store, so checkpoint roots
+        // reuse that root while preserving the slots learned from the state.
+        // HeadSlot must come from the anchor block header slot, not state.slot.
+        return new ConsensusHeadState(
+            anchorSlot,
             anchorRoot,
             state.LatestJustified.Slot.Value,
             anchorRoot,
@@ -185,12 +200,6 @@ public static class NodeApp
             anchorRoot,
             state.LatestFinalized.Slot.Value,
             anchorRoot);
-        stateStore.Save(headState, state);
-
-        Console.WriteLine(
-            $"Checkpoint sync complete. HeadSlot={state.Slot.Value}, " +
-            $"JustifiedSlot={state.LatestJustified.Slot.Value}, " +
-            $"FinalizedSlot={state.LatestFinalized.Slot.Value}");
     }
 
     private static void ApplyBootstrapPeersFromNodesYaml(NodeOptions options)
