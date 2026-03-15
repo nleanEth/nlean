@@ -31,7 +31,7 @@ public sealed class BackfillSync : IBackfillTrigger
         });
 
     private readonly object _pendingLock = new();
-    private readonly HashSet<Bytes32> _pendingBackfills = new();
+    private readonly Dictionary<Bytes32, string?> _pendingBackfills = new();
     private Task? _consumerTask;
 
     public BackfillSync(INetworkRequester network, IBlockProcessor processor,
@@ -59,22 +59,34 @@ public sealed class BackfillSync : IBackfillTrigger
             TaskScheduler.Default).Unwrap();
     }
 
-    public void RequestBackfill(Bytes32 parentRoot)
+    public void RequestBackfill(Bytes32 parentRoot, string? preferredPeerId = null)
     {
         lock (_pendingLock)
         {
-            if (!_pendingBackfills.Add(parentRoot))
+            if (_pendingBackfills.ContainsKey(parentRoot))
+            {
+                if (!string.IsNullOrWhiteSpace(preferredPeerId))
+                    _pendingBackfills[parentRoot] = preferredPeerId;
                 return;
+            }
+
+            _pendingBackfills[parentRoot] = preferredPeerId;
         }
 
-        _logger.LogInformation("Backfill queued for root {Root}. PeerCount: {PeerCount}",
-            parentRoot, _peerManager.PeerCount);
+        _logger.LogInformation(
+            "Backfill queued for root {Root}. PeerCount: {PeerCount}, PreferredPeerId: {PreferredPeerId}",
+            parentRoot,
+            _peerManager.PeerCount,
+            preferredPeerId ?? "(none)");
 
         // Non-blocking write; oldest entry dropped if queue is full.
         _queue.Writer.TryWrite(parentRoot);
     }
 
-    public async Task RequestParentsAsync(List<Bytes32> roots, CancellationToken ct)
+    public async Task RequestParentsAsync(
+        List<Bytes32> roots,
+        CancellationToken ct,
+        string? preferredPeerId = null)
     {
         var pending = new Queue<Bytes32>(roots);
         var depth = 0;
@@ -108,7 +120,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 break;
             }
 
-            var fetched = await FetchWithRetryAsync(batch, ct);
+            var fetched = await FetchWithRetryAsync(batch, ct, preferredPeerId);
             if (fetched is null || fetched.Count == 0)
             {
                 consecutiveFailures++;
@@ -256,9 +268,20 @@ public sealed class BackfillSync : IBackfillTrigger
             {
                 try
                 {
+                    string? preferredPeerId;
+                    lock (_pendingLock)
+                    {
+                        preferredPeerId = _pendingBackfills.TryGetValue(parentRoot, out var hint)
+                            ? hint
+                            : null;
+                    }
+
                     using var chainCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     chainCts.CancelAfter(ChainTimeoutMs);
-                    await RequestParentsAsync(new List<Bytes32> { parentRoot }, chainCts.Token);
+                    await RequestParentsAsync(
+                        new List<Bytes32> { parentRoot },
+                        chainCts.Token,
+                        preferredPeerId);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -286,7 +309,9 @@ public sealed class BackfillSync : IBackfillTrigger
     }
 
     private async Task<IReadOnlyList<SignedBlockWithAttestation>?> FetchWithRetryAsync(
-        List<Bytes32> batch, CancellationToken ct)
+        List<Bytes32> batch,
+        CancellationToken ct,
+        string? preferredPeerId = null)
     {
         for (var attempt = 0; attempt < MaxRetries; attempt++)
         {
@@ -298,7 +323,8 @@ public sealed class BackfillSync : IBackfillTrigger
                 await Task.Delay(BaseRetryDelayMs * (1 << attempt), ct);
             }
 
-            var peerId = _peerManager.SelectPeerForRequest();
+            var peerId = _peerManager.SelectPeerForRequest(
+                attempt == 0 ? preferredPeerId : null);
             if (peerId is null)
             {
                 _logger.LogInformation(

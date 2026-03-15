@@ -65,6 +65,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             var headRoot = new Bytes32(loaded.HeadRoot);
             var justifiedRoot = new Bytes32(loaded.LatestJustifiedRoot);
             var finalizedRoot = new Bytes32(loaded.LatestFinalizedRoot);
+            var restoredAnchorRoot = headRoot.Equals(finalizedRoot) ? headRoot : finalizedRoot;
+            var restoredAnchorSlot = headRoot.Equals(finalizedRoot)
+                ? loaded.HeadSlot
+                : loaded.LatestFinalizedSlot;
 
             _headRoot = headRoot;
             _headSlot = loaded.HeadSlot;
@@ -80,7 +84,16 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             // advance once new attestations arrive.
             _safeTarget = finalizedRoot;
 
-            _protoArray = new ProtoArray(finalizedRoot, loaded.LatestFinalizedSlot, loaded.LatestFinalizedSlot);
+            // Checkpoint imports can persist a single anchor root while keeping
+            // distinct head/justified/finalized slots. When that happens, the
+            // proto-array root must use the anchor root's actual slot (HeadSlot),
+            // otherwise later attestation/proposal validation sees the same root
+            // at conflicting slots and rejects it as unknown/mismatched.
+            _protoArray = new ProtoArray(
+                restoredAnchorRoot,
+                restoredAnchorSlot,
+                loaded.LatestJustifiedSlot,
+                loaded.LatestFinalizedSlot);
 
             if (!headRoot.Equals(finalizedRoot))
             {
@@ -406,18 +419,14 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ToDataRootKey(attestation.Message);
         _attestationDataByRoot[dataRootKey] = attestation.Message;
 
-        // Only the local validator's own individual gossip updates latestNew.
-        // Other validators' votes do not update latestNew here: the aggregator
-        // collects them to build the proof (via storeSignature / gossipSignatures),
-        // but the proof is published for other nodes to consume — not fed back into
-        // the aggregator's own safeTarget computation (matching ethlambda behavior).
-        if (_localValidatorIds.Contains(attestation.ValidatorId))
+        // Match current zeam semantics: individual gossip updates latestNew for
+        // the attesting validator directly. Safe target should reflect a quorum
+        // of fresh gossip votes without waiting for local aggregation/proof
+        // publication to feed them back in.
+        var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
+        if (headIndex.HasValue)
         {
-            var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
-            if (headIndex.HasValue)
-            {
-                UpdateTrackerFromGossip(attestation.ValidatorId, headIndex.Value, attestation.Message.Slot.Value, attestation.Message);
-            }
+            UpdateTrackerFromGossip(attestation.ValidatorId, headIndex.Value, attestation.Message.Slot.Value, attestation.Message);
         }
 
         if (storeSignature)

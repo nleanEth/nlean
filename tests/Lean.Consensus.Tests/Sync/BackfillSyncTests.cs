@@ -118,6 +118,29 @@ public sealed class BackfillSyncTests
     }
 
     [Test]
+    public async Task RequestParents_PrefersSuggestedPeerFirst()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync();
+        peerMgr.AddPeer("peer-1");
+        peerMgr.AddPeer("peer-2");
+
+        var grandparentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(grandparentRoot);
+
+        var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
+        var parentRoot = ComputeRoot(parentBlock);
+        network.BlocksByRoot[parentRoot] = parentBlock;
+
+        await backfill.RequestParentsAsync(
+            new List<Bytes32> { parentRoot },
+            CancellationToken.None,
+            preferredPeerId: "peer-2");
+
+        Assert.That(network.RequestedPeers, Is.Not.Empty);
+        Assert.That(network.RequestedPeers[0], Is.EqualTo("peer-2"));
+    }
+
+    [Test]
     public async Task RequestParents_SkipsAlreadyKnownRoots()
     {
         var (backfill, network, processor, peerMgr) = CreateBackfillSync();
@@ -235,12 +258,14 @@ public sealed class BackfillSyncTests
     private sealed class FakeNetworkRequester : INetworkRequester
     {
         public Dictionary<Bytes32, SignedBlockWithAttestation> BlocksByRoot { get; } = new();
+        public List<string> RequestedPeers { get; } = new();
         public int RequestCount { get; private set; }
 
         public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
             string peerId, List<Bytes32> roots, CancellationToken ct)
         {
             RequestCount++;
+            RequestedPeers.Add(peerId);
             var result = new List<SignedBlockWithAttestation>();
             foreach (var root in roots)
             {

@@ -80,7 +80,7 @@ public sealed class SyncService : ISyncService
         // have it, trigger a backfill regardless of sync state.
         if (headRoot is not null)
         {
-            TriggerProactiveBackfill(headRoot.Value, headSlot, peerId);
+            TriggerProactiveBackfill(headRoot.Value, headSlot, peerId, peerId);
         }
 
         return Task.CompletedTask;
@@ -95,7 +95,7 @@ public sealed class SyncService : ISyncService
         if (best is null)
             return;
 
-        TriggerProactiveBackfill(best.Value.Root, best.Value.Slot, "periodic");
+        TriggerProactiveBackfill(best.Value.Root, best.Value.Slot, best.Value.PeerId, "periodic");
     }
 
     public void CascadeAcceptedBlock(Bytes32 blockRoot)
@@ -176,7 +176,11 @@ public sealed class SyncService : ISyncService
         }
     }
 
-    private void TriggerProactiveBackfill(Bytes32 headRoot, ulong peerHeadSlot, string source)
+    private void TriggerProactiveBackfill(
+        Bytes32 headRoot,
+        ulong peerHeadSlot,
+        string? preferredPeerId,
+        string source)
     {
         var localHead = _processor.HeadSlot;
         if (localHead < peerHeadSlot && !_processor.IsBlockKnown(headRoot))
@@ -184,7 +188,7 @@ public sealed class SyncService : ISyncService
             _logger.LogInformation(
                 "Proactive sync: triggering backfill from peer head root. Source: {Source}, PeerHead: {PeerHeadSlot}, LocalHead: {LocalHead}, HeadRoot: {HeadRoot}",
                 source, peerHeadSlot, localHead, headRoot);
-            _backfillSync.RequestBackfill(headRoot);
+            _backfillSync.RequestBackfill(headRoot, preferredPeerId);
         }
     }
 

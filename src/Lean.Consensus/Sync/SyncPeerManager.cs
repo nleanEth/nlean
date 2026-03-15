@@ -86,7 +86,7 @@ public sealed class SyncPeerManager
         }
     }
 
-    public string? SelectPeerForRequest()
+    public string? SelectPeerForRequest(string? preferredPeerId = null)
     {
         lock (_lock)
         {
@@ -104,6 +104,15 @@ public sealed class SyncPeerManager
 
             if (eligible.Count == 0)
                 return null;
+
+            if (!string.IsNullOrWhiteSpace(preferredPeerId))
+            {
+                foreach (var peer in eligible)
+                {
+                    if (peer.PeerId == preferredPeerId)
+                        return peer.PeerId;
+                }
+            }
 
             var roll = _random.Next(totalWeight);
             var cumulative = 0;
@@ -133,7 +142,7 @@ public sealed class SyncPeerManager
         }
     }
 
-    public (Bytes32 Root, ulong Slot)? GetBestPeerHead()
+    public (string PeerId, Bytes32 Root, ulong Slot)? GetBestPeerHead()
     {
         lock (_lock)
         {
@@ -147,7 +156,7 @@ public sealed class SyncPeerManager
             }
 
             return best?.HeadRoot is not null
-                ? (best.HeadRoot.Value, best.HeadSlot)
+                ? (best.PeerId, best.HeadRoot.Value, best.HeadSlot)
                 : null;
         }
     }

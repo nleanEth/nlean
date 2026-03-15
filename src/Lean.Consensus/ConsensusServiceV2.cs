@@ -398,39 +398,39 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         lock (_storeLock)
         {
-            // Keep tracker-first implementation, but match leanSpec's exact
-            // SignatureKey(validator_id, data_root) gate semantics:
-            // a validator contributes a block-building candidate only if there is
-            // at least one known proof for this data_root that explicitly includes
-            // that validator.
-            var knownAttestations = _store.GetKnownAttestations();
             var attestations = new List<AggregatedAttestation>();
             var proofs = new List<AggregatedSignatureProof>();
             var pool = _store.GetKnownPayloadPool();
-            foreach (var (validatorId, data) in knownAttestations)
+
+            // Match zeam/leanSpec block building: derive candidates from the
+            // payload-backed known proof pool, not from tracker.LatestKnown.
+            // Tracker votes may advance to newer attestation data before a proof
+            // exists for that data root; proposal construction must still be able
+            // to use the older payload-backed data until a newer proof arrives.
+            foreach (var (dataRootKey, poolProofs) in pool)
             {
+                if (!_store.TryGetAttestationData(dataRootKey, out var data))
+                    continue;
+
                 if (data.Slot.Value >= slot)
                     continue;
                 if (!data.Source.Equals(requiredSource))
                     continue;
 
-                var key = Convert.ToHexString(data.HashTreeRoot());
-                if (!pool.TryGetValue(key, out var poolProofs))
-                {
-                    continue;
-                }
-
                 foreach (var proof in poolProofs)
                 {
                     if (!proof.Participants.TryToValidatorIndices(out var proofParticipants) ||
-                        !proofParticipants.Contains(validatorId))
+                        proofParticipants.Count == 0)
                     {
                         continue;
                     }
 
-                    var bits = AggregationBits.FromValidatorIndices(new[] { validatorId });
-                    attestations.Add(new AggregatedAttestation(bits, data));
-                    proofs.Add(proof);
+                    foreach (var validatorId in proofParticipants)
+                    {
+                        var bits = AggregationBits.FromValidatorIndices(new[] { validatorId });
+                        attestations.Add(new AggregatedAttestation(bits, data));
+                        proofs.Add(proof);
+                    }
                 }
             }
 

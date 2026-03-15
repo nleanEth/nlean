@@ -129,6 +129,20 @@ public sealed class SyncPeerManagerTests
     }
 
     [Test]
+    public void SelectPeerForRequest_PrefersSuggestedPeer_WhenEligible()
+    {
+        var mgr = new SyncPeerManager();
+        mgr.AddPeer("peer-1");
+        mgr.AddPeer("peer-2");
+
+        for (int i = 0; i < 10; i++)
+        {
+            var peer = mgr.SelectPeerForRequest(preferredPeerId: "peer-2");
+            Assert.That(peer, Is.EqualTo("peer-2"));
+        }
+    }
+
+    [Test]
     public void SelectPeerForRequest_ReturnsNull_WhenNoPeers()
     {
         var mgr = new SyncPeerManager();
