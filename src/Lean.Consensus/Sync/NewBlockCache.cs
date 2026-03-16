@@ -83,6 +83,34 @@ public sealed class NewBlockCache
 
     public List<Bytes32> GetOrphanParents() { lock (_lock) return new(_orphanParents); }
 
+    public List<(Bytes32 ParentRoot, string? PreferredPeerId)> GetOrphanParentsWithHints()
+    {
+        lock (_lock)
+        {
+            var results = new List<(Bytes32 ParentRoot, string? PreferredPeerId)>(_orphanParents.Count);
+            foreach (var parentRoot in _orphanParents)
+            {
+                string? preferredPeerId = null;
+                if (_childrenByParent.TryGetValue(parentRoot, out var childRoots))
+                {
+                    foreach (var childRoot in childRoots)
+                    {
+                        if (_blocks.TryGetValue(childRoot, out var child) &&
+                            !string.IsNullOrWhiteSpace(child.ReceivedFrom))
+                        {
+                            preferredPeerId = child.ReceivedFrom;
+                            break;
+                        }
+                    }
+                }
+
+                results.Add((parentRoot, preferredPeerId));
+            }
+
+            return results;
+        }
+    }
+
     private void RemoveCore(Bytes32 root)
     {
         if (!_blocks.TryGetValue(root, out var block))

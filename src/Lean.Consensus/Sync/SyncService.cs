@@ -169,10 +169,10 @@ public sealed class SyncService : ISyncService
 
     private void RetryOrphanBackfills()
     {
-        var orphanParents = _cache.GetOrphanParents();
-        foreach (var parent in orphanParents)
+        var orphanParents = _cache.GetOrphanParentsWithHints();
+        foreach (var (parent, preferredPeerId) in orphanParents)
         {
-            _backfillSync.RequestBackfill(parent);
+            _backfillSync.RequestBackfill(parent, preferredPeerId);
         }
     }
 

@@ -122,6 +122,35 @@ public sealed class NewBlockCacheTests
     }
 
     [Test]
+    public void GetOrphanParentsWithHints_UsesReceivedFromFromCachedChild()
+    {
+        var cache = new NewBlockCache(capacity: 10);
+        var parent = MakeRoot(0x01);
+        cache.Add(MakePending(MakeRoot(0x10), parent, slot: 1, receivedFrom: "peer-1"));
+        cache.MarkOrphan(parent);
+
+        var orphanParents = cache.GetOrphanParentsWithHints();
+
+        Assert.That(orphanParents, Has.Count.EqualTo(1));
+        Assert.That(orphanParents[0].ParentRoot, Is.EqualTo(parent));
+        Assert.That(orphanParents[0].PreferredPeerId, Is.EqualTo("peer-1"));
+    }
+
+    [Test]
+    public void GetOrphanParentsWithHints_ReturnsNullHint_WhenNoPeerInformationExists()
+    {
+        var cache = new NewBlockCache(capacity: 10);
+        var parent = MakeRoot(0x01);
+        cache.MarkOrphan(parent);
+
+        var orphanParents = cache.GetOrphanParentsWithHints();
+
+        Assert.That(orphanParents, Has.Count.EqualTo(1));
+        Assert.That(orphanParents[0].ParentRoot, Is.EqualTo(parent));
+        Assert.That(orphanParents[0].PreferredPeerId, Is.Null);
+    }
+
+    [Test]
     public void OrphanCount_TracksOrphans()
     {
         var cache = new NewBlockCache(capacity: 10);
