@@ -24,11 +24,32 @@ public sealed class SyncPeerManagerTests
     }
 
     [Test]
+    public void AddPeer_SamePeerIdDifferentAddresses_IsDeduplicated()
+    {
+        var mgr = new SyncPeerManager();
+        mgr.AddPeer("/ip4/127.0.0.1/udp/19601/quic-v1/p2p/16Uiu2HAmPeerA");
+        mgr.AddPeer("/ip4/127.0.0.1/udp/29601/quic-v1/p2p/16Uiu2HAmPeerA");
+
+        Assert.That(mgr.PeerCount, Is.EqualTo(1));
+    }
+
+    [Test]
     public void RemovePeer_DecreasesPeerCount()
     {
         var mgr = new SyncPeerManager();
         mgr.AddPeer("peer-1");
         mgr.RemovePeer("peer-1");
+        Assert.That(mgr.PeerCount, Is.EqualTo(0));
+    }
+
+    [Test]
+    public void RemovePeer_ByEquivalentAddress_RemovesNormalizedPeer()
+    {
+        var mgr = new SyncPeerManager();
+        mgr.AddPeer("/ip4/127.0.0.1/udp/19601/quic-v1/p2p/16Uiu2HAmPeerA");
+
+        mgr.RemovePeer("/ip4/127.0.0.1/udp/29601/quic-v1/p2p/16Uiu2HAmPeerA");
+
         Assert.That(mgr.PeerCount, Is.EqualTo(0));
     }
 
@@ -39,6 +60,17 @@ public sealed class SyncPeerManagerTests
         mgr.AddPeer("peer-1");
         mgr.UpdatePeerStatus("peer-1", headSlot: 100, finalizedSlot: 50);
 
+        Assert.That(mgr.GetNetworkHeadSlot(), Is.EqualTo(100UL));
+    }
+
+    [Test]
+    public void UpdatePeerStatus_SamePeerIdDifferentAddresses_UpdatesSinglePeer()
+    {
+        var mgr = new SyncPeerManager();
+        mgr.UpdatePeerStatus("/ip4/127.0.0.1/udp/19601/quic-v1/p2p/16Uiu2HAmPeerA", headSlot: 50, finalizedSlot: 20);
+        mgr.UpdatePeerStatus("/ip4/127.0.0.1/udp/29601/quic-v1/p2p/16Uiu2HAmPeerA", headSlot: 100, finalizedSlot: 60);
+
+        Assert.That(mgr.PeerCount, Is.EqualTo(1));
         Assert.That(mgr.GetNetworkHeadSlot(), Is.EqualTo(100UL));
     }
 

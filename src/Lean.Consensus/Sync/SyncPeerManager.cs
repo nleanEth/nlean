@@ -19,22 +19,31 @@ public sealed class SyncPeerManager
 
     public void AddPeer(string peerId)
     {
-        lock (_lock) _peers.TryAdd(peerId, new SyncPeer(peerId));
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
+        lock (_lock) _peers.TryAdd(normalizedPeerId, new SyncPeer(normalizedPeerId));
     }
 
     public void RemovePeer(string peerId)
     {
-        lock (_lock) _peers.Remove(peerId);
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
+        lock (_lock) _peers.Remove(normalizedPeerId);
     }
 
     public void UpdatePeerStatus(string peerId, ulong headSlot, ulong finalizedSlot, Bytes32? headRoot = null)
     {
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
         lock (_lock)
         {
-            if (!_peers.TryGetValue(peerId, out var peer))
+            if (!_peers.TryGetValue(normalizedPeerId, out var peer))
             {
-                peer = new SyncPeer(peerId);
-                _peers[peerId] = peer;
+                peer = new SyncPeer(normalizedPeerId);
+                _peers[normalizedPeerId] = peer;
             }
 
             peer.HeadSlot = headSlot;
@@ -47,47 +56,64 @@ public sealed class SyncPeerManager
 
     public void OnRequestSuccess(string peerId)
     {
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
         lock (_lock)
         {
-            if (_peers.TryGetValue(peerId, out var peer))
+            if (_peers.TryGetValue(normalizedPeerId, out var peer))
                 peer.Score = Math.Clamp(peer.Score + SuccessScoreDelta, MinScore, MaxScore);
         }
     }
 
     public void OnRequestFailure(string peerId)
     {
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
         lock (_lock)
         {
-            if (_peers.TryGetValue(peerId, out var peer))
+            if (_peers.TryGetValue(normalizedPeerId, out var peer))
                 peer.Score = Math.Clamp(peer.Score + FailureScoreDelta, MinScore, MaxScore);
         }
     }
 
     public int GetPeerScore(string peerId)
     {
-        lock (_lock) return _peers.TryGetValue(peerId, out var peer) ? peer.Score : 0;
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return 0;
+
+        lock (_lock) return _peers.TryGetValue(normalizedPeerId, out var peer) ? peer.Score : 0;
     }
 
     public void IncrementInflight(string peerId)
     {
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
         lock (_lock)
         {
-            if (_peers.TryGetValue(peerId, out var peer))
+            if (_peers.TryGetValue(normalizedPeerId, out var peer))
                 peer.RequestsInFlight++;
         }
     }
 
     public void DecrementInflight(string peerId)
     {
+        if (!TryNormalizePeerId(peerId, out var normalizedPeerId))
+            return;
+
         lock (_lock)
         {
-            if (_peers.TryGetValue(peerId, out var peer) && peer.RequestsInFlight > 0)
+            if (_peers.TryGetValue(normalizedPeerId, out var peer) && peer.RequestsInFlight > 0)
                 peer.RequestsInFlight--;
         }
     }
 
     public string? SelectPeerForRequest(string? preferredPeerId = null)
     {
+        var hasPreferredPeerId = TryNormalizePeerId(preferredPeerId, out var normalizedPreferredPeerId);
+
         lock (_lock)
         {
             var eligible = new List<SyncPeer>();
@@ -105,11 +131,11 @@ public sealed class SyncPeerManager
             if (eligible.Count == 0)
                 return null;
 
-            if (!string.IsNullOrWhiteSpace(preferredPeerId))
+            if (hasPreferredPeerId)
             {
                 foreach (var peer in eligible)
                 {
-                    if (peer.PeerId == preferredPeerId)
+                    if (peer.PeerId == normalizedPreferredPeerId)
                         return peer.PeerId;
                 }
             }
@@ -187,5 +213,28 @@ public sealed class SyncPeerManager
         public int RequestsInFlight { get; set; }
         public int Score { get; set; } = InitialScore;
         public bool StatusReceived { get; set; }
+    }
+
+    private static bool TryNormalizePeerId(string? peerIdOrKey, out string normalizedPeerId)
+    {
+        normalizedPeerId = string.Empty;
+        if (string.IsNullOrWhiteSpace(peerIdOrKey))
+            return false;
+
+        var trimmed = peerIdOrKey.Trim();
+        const string marker = "/p2p/";
+        var markerIndex = trimmed.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex >= 0)
+        {
+            var peerIdStart = markerIndex + marker.Length;
+            if (peerIdStart >= trimmed.Length)
+                return false;
+
+            normalizedPeerId = trimmed[peerIdStart..];
+            return !string.IsNullOrWhiteSpace(normalizedPeerId);
+        }
+
+        normalizedPeerId = trimmed;
+        return true;
     }
 }

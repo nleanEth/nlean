@@ -46,6 +46,29 @@ public sealed class Libp2pNetworkServiceGossipCodecTests
         Assert.That(aDialsB ^ bDialsA, Is.True, "exactly one side should initiate the bootstrap dial");
     }
 
+    [Test]
+    public void NormalizePeerIdentityKey_UsesPeerId_WhenPeerIdExists()
+    {
+        const string peerKeyA = "/ip4/127.0.0.1/udp/19601/quic-v1/p2p/16Uiu2HAmPeerA";
+        const string peerKeyB = "/ip4/127.0.0.1/udp/29601/quic-v1/p2p/16Uiu2HAmPeerA";
+
+        var normalizedA = InvokeNormalizePeerIdentityKey(peerKeyA);
+        var normalizedB = InvokeNormalizePeerIdentityKey(peerKeyB);
+
+        Assert.That(normalizedA, Is.EqualTo("16Uiu2HAmPeerA"));
+        Assert.That(normalizedB, Is.EqualTo("16Uiu2HAmPeerA"));
+    }
+
+    [Test]
+    public void NormalizePeerIdentityKey_FallsBackToTrimmedKey_WhenPeerIdMissing()
+    {
+        const string peerKey = " /ip4/127.0.0.1/udp/19601/quic-v1 ";
+
+        var normalized = InvokeNormalizePeerIdentityKey(peerKey);
+
+        Assert.That(normalized, Is.EqualTo("/ip4/127.0.0.1/udp/19601/quic-v1"));
+    }
+
     private static byte[] InvokeEncode(ReadOnlyMemory<byte> payload)
     {
         var method = typeof(Libp2pNetworkService).GetMethod(
@@ -74,5 +97,15 @@ public sealed class Libp2pNetworkServiceGossipCodecTests
 
         Assert.That(method, Is.Not.Null);
         return (bool)method!.Invoke(null, new object[] { localPeerId, peerKey })!;
+    }
+
+    private static string InvokeNormalizePeerIdentityKey(string peerKey)
+    {
+        var method = typeof(Libp2pNetworkService).GetMethod(
+            "NormalizePeerIdentityKey",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.That(method, Is.Not.Null);
+        return (string)method!.Invoke(null, new object[] { peerKey })!;
     }
 }

@@ -339,7 +339,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 session = TryFindBootstrapSession(peerKey);
                 if (session is null)
                     session = await _peer.DialAsync(address, batchCts.Token);
-                _blocksByRootPeerSelector.MarkConnected(peerKey);
+                _blocksByRootPeerSelector.MarkConnected(NormalizePeerIdentityKey(peerKey));
 
                 // Single protocol dial: send all roots, read streamed responses until EOF.
                 var payloads = await session.DialAsync<LeanBlocksByRootProtocol, byte[][], byte[][]>(
@@ -349,7 +349,7 @@ public sealed class Libp2pNetworkService : INetworkService
 
                 if (payloads.Length > 0)
                 {
-                    _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Success, stopwatch.Elapsed);
+                    _blocksByRootPeerSelector.RecordAttempt(NormalizePeerIdentityKey(peerKey), BlocksByRootPeerAttemptResult.Success, stopwatch.Elapsed);
                     _logger.LogInformation(
                         "blocks-by-root batch hit. Peer={Peer}, Requested={Requested}, Received={Received}, Elapsed={Elapsed}",
                         peerKey, roots.Count, payloads.Length, stopwatch.Elapsed);
@@ -357,22 +357,22 @@ public sealed class Libp2pNetworkService : INetworkService
                     return new List<byte[]>(payloads);
                 }
 
-                _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.EmptyResponse, stopwatch.Elapsed);
+                _blocksByRootPeerSelector.RecordAttempt(NormalizePeerIdentityKey(peerKey), BlocksByRootPeerAttemptResult.EmptyResponse, stopwatch.Elapsed);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 stopwatch.Stop();
                 ForgetPeerSession(peerKey);
-                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
-                _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
+                _blocksByRootPeerSelector.MarkDisconnected(NormalizePeerIdentityKey(peerKey));
+                _blocksByRootPeerSelector.RecordAttempt(NormalizePeerIdentityKey(peerKey), BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 stopwatch.Stop();
                 ForgetPeerSession(peerKey);
-                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
-                _blocksByRootPeerSelector.RecordAttempt(peerKey, BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
+                _blocksByRootPeerSelector.MarkDisconnected(NormalizePeerIdentityKey(peerKey));
+                _blocksByRootPeerSelector.RecordAttempt(NormalizePeerIdentityKey(peerKey), BlocksByRootPeerAttemptResult.Failure, stopwatch.Elapsed);
                 _logger.LogDebug(ex, "Batch blocks-by-root: failed for peer {Peer}. Elapsed={Elapsed}", peerKey, stopwatch.Elapsed);
             }
             finally
@@ -497,7 +497,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 dialCts.CancelAfter(BootstrapDialTimeout);
                 var session = await _peer.DialAsync(address, dialCts.Token);
                 RegisterBlocksByRootCandidate(session.RemoteAddress.ToString(), session.RemoteAddress);
-                _blocksByRootPeerSelector.MarkConnected(peerKey);
+                _blocksByRootPeerSelector.MarkConnected(NormalizePeerIdentityKey(peerKey));
                 RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
                 TrackPeerSession(session);
                 lock (_bootstrapSessionsLock)
@@ -515,14 +515,14 @@ public sealed class Libp2pNetworkService : INetworkService
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
+                _blocksByRootPeerSelector.MarkDisconnected(NormalizePeerIdentityKey(peerKey));
                 ReleaseBootstrapPeerConnection(peerKey);
                 RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
                 _logger.LogWarning(ex, "Timed out connecting to bootstrap peer {Address}", peerKey);
             }
             catch (Exception ex)
             {
-                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
+                _blocksByRootPeerSelector.MarkDisconnected(NormalizePeerIdentityKey(peerKey));
                 ReleaseBootstrapPeerConnection(peerKey);
                 RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
                 _logger.LogWarning(ex, "Failed to connect to bootstrap peer {Address}", peerKey);
@@ -639,7 +639,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 dialCts.CancelAfter(BootstrapDialTimeout);
                 var session = await _peer.DialAsync(address, dialCts.Token);
                 RegisterBlocksByRootCandidate(session.RemoteAddress.ToString(), session.RemoteAddress);
-                _blocksByRootPeerSelector.MarkConnected(peerKey);
+                _blocksByRootPeerSelector.MarkConnected(NormalizePeerIdentityKey(peerKey));
                 RecordPeerConnected(peerKey, ConnectionDirectionOutbound);
                 TrackPeerSession(session);
                 lock (_bootstrapSessionsLock)
@@ -656,7 +656,7 @@ public sealed class Libp2pNetworkService : INetworkService
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
+                _blocksByRootPeerSelector.MarkDisconnected(NormalizePeerIdentityKey(peerKey));
                 ReleaseBootstrapPeerConnection(peerKey);
                 _logger.LogDebug("Timed out reconnecting to bootstrap peer {Address}", peerKey);
             }
@@ -667,7 +667,7 @@ public sealed class Libp2pNetworkService : INetworkService
             }
             catch (Exception ex)
             {
-                _blocksByRootPeerSelector.MarkDisconnected(peerKey);
+                _blocksByRootPeerSelector.MarkDisconnected(NormalizePeerIdentityKey(peerKey));
                 ReleaseBootstrapPeerConnection(peerKey);
                 _logger.LogDebug(ex, "Failed to reconnect to bootstrap peer {Address}", peerKey);
             }
@@ -724,8 +724,9 @@ public sealed class Libp2pNetworkService : INetworkService
         var remoteAddress = session.RemoteAddress;
         var peerKey = remoteAddress.ToString();
         RegisterBlocksByRootCandidate(peerKey, remoteAddress);
-        _blocksByRootPeerSelector.MarkConnected(peerKey);
-        RecordPeerConnected(peerKey, ConnectionDirectionInbound);
+        var peerIdentityKey = NormalizePeerIdentityKey(peerKey);
+        _blocksByRootPeerSelector.MarkConnected(peerIdentityKey);
+        RecordPeerConnected(peerIdentityKey, ConnectionDirectionInbound);
         TrackPeerSession(session);
 
         // Register inbound peers that match a bootstrap address so the reconnect
@@ -734,11 +735,11 @@ public sealed class Libp2pNetworkService : INetworkService
 
         // Notify the sync layer so SyncPeerManager tracks this peer immediately
         // (matching leanSpec: PeerConnectedEvent → peer_manager.add_peer).
-        _statusRpcRouter.NotifyPeerConnected(peerKey);
+        _statusRpcRouter.NotifyPeerConnected(peerIdentityKey);
         // Probe status on the already-established session, but still honor the
         // normal per-peer probe gate so duplicate startup connections don't
         // bypass throttling and open redundant status streams immediately.
-        await TryProbePeerStatusAsync(session, peerKey);
+        await TryProbePeerStatusAsync(session, peerIdentityKey);
         // NOTE: Do NOT call NotifyPeerStoreIfPubsubEnabled here.
         // For outbound connections, ConnectBootstrapPeersAsync already notifies.
         // For inbound connections, the remote peer's gossipsub dial triggers
@@ -870,7 +871,7 @@ public sealed class Libp2pNetworkService : INetworkService
 
     private bool TryReserveStatusProbe(string peerKey, bool forceProbe = false)
     {
-        if (!TryNormalizePeerKey(peerKey, out var normalizedPeerKey))
+        if (!TryNormalizePeerKey(NormalizePeerIdentityKey(peerKey), out var normalizedPeerKey))
         {
             return false;
         }
@@ -898,7 +899,7 @@ public sealed class Libp2pNetworkService : INetworkService
             return;
         }
 
-        var normalizedKey = peerKey.Trim();
+        var normalizedKey = NormalizePeerIdentityKey(peerKey);
         lock (_blocksByRootPeersLock)
         {
             _blocksByRootPeerAddresses[normalizedKey] = address;
@@ -1105,9 +1106,21 @@ public sealed class Libp2pNetworkService : INetworkService
         return true;
     }
 
+    private static string NormalizePeerIdentityKey(string? peerKey)
+    {
+        if (string.IsNullOrWhiteSpace(peerKey))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = peerKey.Trim();
+        var peerId = ExtractPeerId(trimmed);
+        return string.IsNullOrWhiteSpace(peerId) ? trimmed : peerId;
+    }
+
     private void RecordPeerConnected(string peerKey, string direction)
     {
-        if (!TryNormalizePeerKey(peerKey, out var normalizedPeerKey))
+        if (!TryNormalizePeerKey(NormalizePeerIdentityKey(peerKey), out var normalizedPeerKey))
         {
             return;
         }
@@ -1132,18 +1145,28 @@ public sealed class Libp2pNetworkService : INetworkService
 
     private void RecordPeerDisconnected(string peerKey, string direction, string reason)
     {
-        if (TryNormalizePeerKey(peerKey, out var normalizedPeerKey))
+        if (TryNormalizePeerKey(NormalizePeerIdentityKey(peerKey), out var normalizedPeerKey))
         {
             lock (_connectedPeersLock)
             {
                 _connectedPeers.Remove(normalizedPeerKey);
                 LeanMetrics.SetConnectedPeers(_connectedPeers.Count);
             }
+
+            lock (_blocksByRootPeersLock)
+            {
+                _blocksByRootPeerAddresses.Remove(normalizedPeerKey);
+            }
+
+            lock (_statusProbeLock)
+            {
+                _lastStatusProbeAtUtc.Remove(normalizedPeerKey);
+            }
         }
 
         // Notify the sync layer so SyncPeerManager removes this peer
         // (matching leanSpec: PeerDisconnectedEvent → peer_manager.remove_peer).
-        _statusRpcRouter.NotifyPeerDisconnected(peerKey);
+        _statusRpcRouter.NotifyPeerDisconnected(NormalizePeerIdentityKey(peerKey));
 
         LeanMetrics.PeerDisconnectionEventsTotal.WithLabels(direction, reason).Inc();
     }
