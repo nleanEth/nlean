@@ -100,6 +100,21 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void TickInterval_Throws_WhenJustifiedRootIsAbsentFromProtoArray()
+    {
+        var store = CreateStore(validatorCount: 4);
+        typeof(ProtoArrayForkChoiceStore)
+            .GetField("_latestJustified", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(
+                store,
+                new Checkpoint(
+                    new Bytes32(Enumerable.Repeat((byte)0xAB, 32).ToArray()),
+                    new Slot(1)));
+
+        Assert.Throws<InvalidOperationException>(() => store.TickInterval(1, IntervalsPerSlot - 1));
+    }
+
+    [Test]
     public void OnBlock_AcceptsValidChild()
     {
         var store = CreateStore();

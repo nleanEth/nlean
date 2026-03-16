@@ -664,16 +664,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var justifiedIdx = _protoArray.GetIndex(_latestJustified.Root);
         if (!justifiedIdx.HasValue)
         {
-            // Justified root not in proto-array. This happens after checkpoint sync when
-            // blocks with real attestations reference historical block roots that predate
-            // the anchor (historicalBlockHashes entries not in the proto-array). Fall back
-            // to the proto-array root (index 0) so head selection stays within the known
-            // block tree and doesn't return a garbage slot that triggers a safe-target
-            // regression assertion.
-            _logger.LogDebug(
-                "ComputeForkChoiceHead: justified root not in proto-array, falling back to proto-array root. " +
-                "JustifiedSlot={JustifiedSlot}", _latestJustified.Slot.Value);
-            justifiedIdx = 0;
+            throw new InvalidOperationException(
+                $"Justified root {_latestJustified.Root} is not present in the proto-array.");
         }
 
         var justifiedNode = _protoArray.GetNodeByIndex(justifiedIdx.Value);

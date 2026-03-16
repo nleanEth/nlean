@@ -114,6 +114,46 @@ public sealed class ConsensusServiceV2Tests
     }
 
     [Test]
+    public void GetFinalizedStateSsz_ReturnsFinalizedRootState_NotHeadState()
+    {
+        var chainStateCache = new ChainStateCache();
+        var (svc, _, _, _) = CreateService(chainStateCache: chainStateCache);
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+
+        var finalizedState = new State(
+            new Config(GenesisTime.ToUnixTimeSeconds() is var gt ? (ulong)gt : 0),
+            new Slot(169),
+            new BlockHeader(new Slot(169), 0, Bytes32.Zero(), new Bytes32(Enumerable.Repeat((byte)0x44, 32).ToArray()), Bytes32.Zero()),
+            new Checkpoint(finalizedRoot, new Slot(169)),
+            new Checkpoint(finalizedRoot, new Slot(169)),
+            Array.Empty<Bytes32>(),
+            Array.Empty<bool>(),
+            Array.Empty<Validator>(),
+            Array.Empty<Bytes32>(),
+            Array.Empty<bool>());
+        var headState = finalizedState with
+        {
+            Slot = new Slot(206),
+            LatestBlockHeader = new BlockHeader(new Slot(206), 0, finalizedRoot, new Bytes32(Enumerable.Repeat((byte)0x55, 32).ToArray()), Bytes32.Zero()),
+            LatestJustified = new Checkpoint(headRoot, new Slot(182)),
+            LatestFinalized = new Checkpoint(finalizedRoot, new Slot(169))
+        };
+
+        chainStateCache.Set(ChainStateCache.RootKey(finalizedRoot), finalizedState);
+        chainStateCache.Set(ChainStateCache.RootKey(headRoot), headState);
+        SetSnapshot(svc, headRoot, 206, headRoot, 182, finalizedRoot, 169);
+
+        var bytes = svc.GetFinalizedStateSsz();
+
+        Assert.That(bytes, Is.Not.Null);
+        var decoded = SszDecoding.DecodeState(bytes!);
+        Assert.That(decoded.Slot.Value, Is.EqualTo(169UL));
+        Assert.That(decoded.LatestBlockHeader.Slot.Value, Is.EqualTo(169UL));
+        Assert.That(decoded.LatestFinalized.Root, Is.EqualTo(finalizedRoot));
+    }
+
+    [Test]
     public void HasUnknownBlockRootsInFlight_ReturnsTrue_DuringCheckpointInitUntilReady()
     {
         var headRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
@@ -253,7 +293,9 @@ public sealed class ConsensusServiceV2Tests
 
     private static (ConsensusServiceV2 svc, FakeTimeSource time,
         ProtoArrayForkChoiceStore store, SlotClock clock) CreateService(
-        ISyncService? syncService = null, IConsensusStateStore? stateStore = null)
+        ISyncService? syncService = null,
+        IConsensusStateStore? stateStore = null,
+        ChainStateCache? chainStateCache = null)
     {
         var config = new ConsensusConfig
         {
@@ -265,8 +307,33 @@ public sealed class ConsensusServiceV2Tests
         var time = new FakeTimeSource(GenesisTime);
         var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
             ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
-        var svc = new ConsensusServiceV2(store, clock, config, syncService, stateStore: stateStore);
+        var svc = new ConsensusServiceV2(store, clock, config, syncService, chainStateCache: chainStateCache, stateStore: stateStore);
         return (svc, time, store, clock);
+    }
+
+    private static void SetSnapshot(
+        ConsensusServiceV2 svc,
+        Bytes32 headRoot,
+        ulong headSlot,
+        Bytes32 justifiedRoot,
+        ulong justifiedSlot,
+        Bytes32 finalizedRoot,
+        ulong finalizedSlot)
+    {
+        var snapshotType = typeof(ConsensusServiceV2).GetNestedType(
+            "ConsensusSnapshot",
+            System.Reflection.BindingFlags.NonPublic)!;
+        var snapshot = Activator.CreateInstance(
+            snapshotType,
+            headRoot,
+            headSlot,
+            justifiedRoot,
+            justifiedSlot,
+            finalizedRoot,
+            finalizedSlot)!;
+        typeof(ConsensusServiceV2)
+            .GetField("_snapshot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(svc, snapshot);
     }
 
     private static Block CreateBlock(ulong slot, Bytes32 parentRoot, ulong proposerIndex)

@@ -144,22 +144,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (snap.FinalizedSlot == 0)
             return null;
 
-        // Always serve the head state, not the finalized root's cached state.
-        //
-        // In 3SF-mini, a block is finalized by attestations in LATER blocks, so
-        // the cached post-state at the finalized root was computed when that block
-        // was first proposed — before the finalizing attestations existed. Its
-        // LatestFinalized.Slot can be 0 or far below the actual current value.
-        //
-        // ChainStateTransition uses LatestFinalized.Slot in IsJustifiableAfter
-        // checks and JustifiedIndexAfter index calculations. A stale value makes
-        // different slots "justifiable", producing a different post-state hash
-        // (state root mismatch) when the syncing node processes the next block.
-        // This causes backfill to stall completely.
-        //
-        // The head state has up-to-date LatestFinalized/LatestJustified, matching
-        // what the original block proposer used, so state transitions agree.
-        if (!_chainStateCache.TryGet(ChainStateCache.RootKey(snap.HeadRoot), out var state))
+        if (!_chainStateCache.TryGet(ChainStateCache.RootKey(snap.FinalizedRoot), out var state))
             return null;
 
         // Fill in zeroed LatestBlockHeader.StateRoot before encoding.
