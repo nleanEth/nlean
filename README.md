@@ -1,105 +1,132 @@
-# Lean C# Client
+# nlean
 
-This repo contains a .NET 10+ Lean consensus client scaffold with Rust FFI bindings for leanSig/leanMultisig and Nethermind dotnet-libp2p networking stack.
+Lean consensus client in C#, built with .NET 10+, Rust FFI for hash-based crypto (leanSig/leanMultisig), and Nethermind dotnet-libp2p for networking.
 
-## Quick start
+## Prerequisites
+
+- [.NET SDK 10.0+](https://dotnet.microsoft.com/) (see `global.json`)
+- [Rust toolchain](https://rustup.rs/) (`cargo`) for native crypto FFI
+- Docker (for integration tests and interop)
+- Git submodules: `git submodule update --init --recursive`
+
+## Quick Start
 
 ```bash
 # Build native crypto bindings
 ./scripts/build-native.sh
 
-# Build patched dotnet-libp2p pubsub package (Anonymous gossip compatibility)
+# Build patched libp2p packages (required for gossip/quic compatibility)
 ./scripts/libp2p/build-patched-pubsub-package.sh
+./scripts/libp2p/build-patched-quic-package.sh
 
-# Run the client
-./src/Lean.Client/bin/Debug/net10.0/Lean.Client --validator-config validator-config.yaml --node lean_client_0
+# Build
+dotnet build Lean.sln -c Release
+
+# Run all unit tests
+dotnet test Lean.sln -c Release
 ```
 
-## lean-quickstart interop
+## Running the Client
 
 ```bash
-# Initialize quickstart submodule once
-git submodule update --init --recursive vendor/lean-quickstart
+# Publish
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
 
-# Wrapper script (kept) with pass/fail checks
-./scripts/interop/run-lean-quickstart-devnet2.sh
-# Override quickstart checkout path if needed:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --quickstart-dir /path/to/lean-quickstart
-# Run a specific topology (example: nlean + ethlambda):
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --nodes nlean_0,ethlambda_0
-# Disable sudo shim if your quickstart setup requires real sudo:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --no-sudo-shim
-# Override gossip network name if needed:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --network-name devnet2
-# Keep network running after checks:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --keep-running
-# Skip checks and only boot the network:
-# ./scripts/interop/run-lean-quickstart-devnet2.sh --skip-checks
+# Run
+./artifacts/lean-client/Lean.Client \
+  --validator-config /path/to/validator-config.yaml \
+  --node nlean_0 \
+  --data-dir data/nlean_0 \
+  --network devnet0 \
+  --node-key /path/to/nlean_0.key \
+  --socket-port 9101 \
+  --api-port 5052 \
+  --metrics-port 18081 \
+  --hash-sig-key-dir /path/to/hash-sig-keys \
+  --is-aggregator \
+  --log Information
 ```
 
-Direct `spin-node.sh` interop (nlean + ethlambda):
+## Project Structure
 
-```bash
-# Install nlean client command into quickstart
-install -m 755 ./client-cmds/nlean-cmd.sh ./vendor/lean-quickstart/client-cmds/nlean-cmd.sh
-
-# Start nlean + ethlambda from quickstart
-cd ./vendor/lean-quickstart
-NETWORK_DIR=local-devnet-nlean-ethlambda \
-NLEAN_REPO="$(cd ../.. && pwd)" \
-NLEAN_QUICKSTART_SETUP=docker \
-NLEAN_DOCKER_IMAGE=nlean-local:devnet2 \
-NLEAN_NETWORK_NAME=devnet0 \
-NLEAN_QUICKSTART_NODES=nlean_0,ethlambda_0 \
-./spin-node.sh --node nlean_0,ethlambda_0 --generateGenesis --metrics
+```
+src/
+  Lean.Client/        CLI entry point
+  Lean.Consensus/     Consensus, fork choice, sync (backfill, head, checkpoint)
+  Lean.Crypto/        Rust FFI bindings for leanSig / leanMultisig
+  Lean.Metrics/       Prometheus metrics
+  Lean.Network/       libp2p networking (gossip, RPC, discovery)
+  Lean.Node/          Node app orchestration
+  Lean.Storage/       Persistent storage layer
+  Lean.Validator/     Validator duties (propose, attest, aggregate)
+tests/
+  Lean.Consensus.Tests/    Fork choice, sync, state transition (~291 tests)
+  Lean.Crypto.Tests/       FFI round-trip (~5 tests)
+  Lean.Network.Tests/      Networking (~40 tests)
+  Lean.Validator.Tests/    Validator service (~28 tests)
+  Lean.Integration.Tests/  Multi-node devnet (~4 tests)
+native/
+  lean-crypto-ffi/    Rust crate for crypto bindings
+client-cmds/
+  nlean-cmd.sh        lean-quickstart client-cmd contract
+scripts/
+  build-native.sh     Build Rust FFI
+  libp2p/             Patched pubsub/quic package builders
+vendor/
+  lean-quickstart/    Git submodule — devnet orchestration
 ```
 
-`local-devnet-nlean-ethlambda` is intended for local interop iteration under `vendor/lean-quickstart`.
-
-Notes:
-- On macOS, if `--nlean-setup binary` is used with non-`nlean_*` peers, the script auto-switches nlean to docker mode to avoid QUIC handshake timeouts in mixed host/docker runs.
-- `bootstrapNodeNames` generation is opt-in for quickstart configs. Set `NLEAN_ENABLE_BOOTSTRAP_NODE_NAMES=true` only when peer-id derivation is known to match your peer clients.
-- By default, the interop script starts quickstart in background, verifies nlean Prometheus metrics, then stops nodes and exits with non-zero on failure.
-
-What this does:
-- installs `client-cmds/nlean-cmd.sh` into your lean-quickstart checkout
-- uses a quickstart-generated `validator-config.yaml` as the devnet validator layout
-- builds patched pubsub package, publishes `Lean.Client`, builds Rust FFI native library, and starts quickstart via `spin-node.sh`
-- maps consensus scenarios to interop checks on nlean metrics:
-  - from-genesis progress: `lean_head_slot` reaches target (`--min-head-slot`, default `3`)
-  - finalize progression: `lean_latest_finalized_slot` reaches target (`--min-finalized-slot`, default `0`; raise it when running finalized-gated interop)
-  - multi-node consistency: min/max finalized slot across selected `nlean_*` jobs converge
-
-## Crypto binding tests
+## Testing
 
 ```bash
-# Optional but recommended before interop runs (forces local Anonymous-compatible pubsub package)
-./scripts/libp2p/build-patched-pubsub-package.sh --force
-
-# One-line: builds native FFI and runs crypto tests
-dotnet test tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj -c Release
-
-# Consensus tests
-dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj -c Release
-
-# Full solution tests
+# All unit tests
 dotnet test Lean.sln -c Release
 
-# Single test (example)
-dotnet test tests/Lean.Crypto.Tests/Lean.Crypto.Tests.csproj -c Release --filter FullyQualifiedName~LeanSigXmssInteropTests
+# Consensus simulation (CI-aligned)
+dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
+  -c Release \
+  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" \
+  /m:1 /nodeReuse:false
+
+# Integration tests (requires published binary)
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
+dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release
+
+# Format check
+dotnet tool install --tool-path ./.dotnet-tools dotnet-format
+./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace --exclude vendor
 ```
 
-If `dotnet` is not on PATH, use `~/.dotnet/dotnet` instead. The test build expects a Rust toolchain (`cargo`) to be available.
-If you hit local socket permission errors in CI or sandboxed shells, retry with `--disable-build-servers /m:1 /nodeReuse:false`.
+## Local Devnet
+
+Uses [lean-quickstart](https://github.com/blockblaz/lean-quickstart) via git submodule:
+
+```bash
+git submodule update --init --recursive vendor/lean-quickstart
+
+cd vendor/lean-quickstart
+NETWORK_DIR=local-devnet-nlean ./spin-node.sh --node all
+```
+
+The `client-cmds/nlean-cmd.sh` script follows lean-quickstart's client-cmd contract, passing CLI flags directly.
 
 ## Docker
 
 ```bash
-docker build -t lean-client --build-arg GIT_SHA=<git_sha> .
+docker build -t nlean --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
 ```
 
-## Notes
+## CI
 
-- validator-config.yaml format follows lean-quickstart.
-- Native crypto is built from pinned leanSig/leanMultisig commits.
-- Consensus, state transition, and fork choice are stubbed and need leanSpec wiring.
+GitHub Actions (`.github/workflows/ci.yml`) on PR and push to `main`:
+
+| Job | Description |
+|-----|-------------|
+| `format-check` | dotnet-format whitespace check |
+| `build-test (ubuntu/macos)` | Build + unit tests + publish |
+| `consensus-simulation` | Multi-node finalization simulation |
+| `integration-tests` | 4-node devnet integration (45 min timeout) |
+
+## License
+
+See [LICENSE](LICENSE).

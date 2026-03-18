@@ -1,20 +1,46 @@
-# AGENT.md
+# AGENTS.md
 
-## Project at a Glance
+## Project Overview
 
-- Name: `nlean` (Lean C# client scaffold)
-- Main stack: `.NET 10+` + `Rust FFI` + `Nethermind dotnet-libp2p`
-- Solution file: `Lean.sln`
+- **Name**: `nlean` — Lean consensus client in C#
+- **Stack**: .NET 10+ · Rust FFI (leanSig/leanMultisig) · Nethermind dotnet-libp2p
+- **Solution**: `Lean.sln`
 
-## Environment Prerequisites
+## Repository Layout
 
-- .NET SDK version from `global.json`
-- Rust toolchain (`cargo`) for native/FFI build paths
-- Git submodules initialized for interop work:
-
-```bash
-git submodule update --init --recursive vendor/lean-quickstart
 ```
+src/
+  Lean.Client/        # CLI entry point
+  Lean.Consensus/     # Consensus, fork choice, sync (backfill, head, checkpoint)
+  Lean.Crypto/        # Rust FFI bindings for leanSig / leanMultisig
+  Lean.Metrics/       # Prometheus metrics
+  Lean.Network/       # libp2p networking (gossip, RPC, discovery)
+  Lean.Node/          # Node app orchestration
+  Lean.Storage/       # Persistent storage layer
+  Lean.Validator/     # Validator duties (propose, attest, aggregate)
+tests/
+  Lean.Consensus.Tests/    # ~291 tests — fork choice, sync, state transition
+  Lean.Crypto.Tests/       # ~5 tests — FFI round-trip
+  Lean.Network.Tests/      # ~40 tests — networking
+  Lean.Validator.Tests/    # ~28 tests — validator service
+  Lean.Integration.Tests/  # ~4 tests — multi-node devnet (requires published binary)
+native/
+  lean-crypto-ffi/    # Rust crate for crypto bindings
+client-cmds/
+  nlean-cmd.sh        # lean-quickstart client-cmd contract
+scripts/
+  build-native.sh     # Build Rust FFI
+  libp2p/             # Patched pubsub/quic package builders
+vendor/
+  lean-quickstart/    # Git submodule — devnet orchestration
+```
+
+## Prerequisites
+
+- .NET SDK 10.0+ (see `global.json`)
+- Rust toolchain (`cargo`) for native crypto builds
+- Git submodules: `git submodule update --init --recursive`
+- Docker (for integration tests and interop)
 
 ## Common Commands
 
@@ -22,27 +48,33 @@ git submodule update --init --recursive vendor/lean-quickstart
 # Build native crypto bindings
 ./scripts/build-native.sh
 
-# Build patched pubsub package (required for Anonymous gossip compatibility)
+# Build patched pubsub package (required for gossip compatibility)
 ./scripts/libp2p/build-patched-pubsub-package.sh
+
+# Build patched quic package
+./scripts/libp2p/build-patched-quic-package.sh
 
 # Build solution
 dotnet build Lean.sln -c Release
 
-# Run all tests
+# Run all unit tests (excludes integration)
 dotnet test Lean.sln -c Release
 
-# Run format check aligned with CI
+# Run format check
 dotnet tool install --tool-path ./.dotnet-tools dotnet-format
 ./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace --exclude vendor
 
-# Run consensus simulation test shard aligned with CI
+# Run consensus simulation tests
 dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   -c Release \
   --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" \
-  /m:1 \
-  /nodeReuse:false
+  /m:1 /nodeReuse:false
 
-# Run client (example)
+# Run integration tests (publish binary first)
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
+dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release
+
+# Run client
 ./artifacts/lean-client/Lean.Client \
   --validator-config /path/to/validator-config.yaml \
   --node nlean_0 \
@@ -55,49 +87,45 @@ dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   --hash-sig-key-dir /path/to/hash-sig-keys \
   --is-aggregator \
   --log Information
-
-# Run integration tests (requires published binary)
-dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
-dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release
 ```
 
-## Devnet via lean-quickstart
-
-Initialize submodule once:
+## Local Devnet via lean-quickstart
 
 ```bash
 git submodule update --init --recursive vendor/lean-quickstart
-```
 
-The `client-cmds/nlean-cmd.sh` script follows lean-quickstart's client-cmd contract,
-passing CLI flags directly (no JSON config generation). To run a local devnet:
-
-```bash
 cd vendor/lean-quickstart
 NETWORK_DIR=local-devnet-nlean ./spin-node.sh --node all
 ```
 
-## PR / CI Checklist
+The `client-cmds/nlean-cmd.sh` follows lean-quickstart's client-cmd contract, passing CLI flags directly.
 
-Before opening PR:
+## CI Jobs
 
-- Ensure local format check passes:
-  - `./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace --exclude vendor`
-- Ensure solution tests pass:
-  - `dotnet test Lean.sln -c Release`
-- Ensure publish step still works for changed runtime target(s):
-  - `dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r osx-arm64 --self-contained false`
-  - `dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r linux-x64 --self-contained false`
-- If consensus code changed, run CI-aligned simulation shard:
-  - `dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj -c Release --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" /m:1 /nodeReuse:false`
+GitHub Actions (`.github/workflows/ci.yml`) on PR and push to `main`:
 
-Expected GitHub CI jobs on PR/push to `main`:
-- `format-check`
-- `build-test (ubuntu-latest)`
-- `build-test (macos-latest)`
-- `consensus-simulation`
+| Job | Description |
+|-----|-------------|
+| `format-check` | `dotnet-format` whitespace check |
+| `build-test (ubuntu-latest)` | Build + unit tests + publish (linux-x64) |
+| `build-test (macos-latest)` | Build + unit tests + publish (osx-arm64) |
+| `consensus-simulation` | Multi-node finalization simulation |
+| `integration-tests` | 4-node devnet integration tests (45 min timeout) |
+
+## PR Checklist
+
+- [ ] Format check: `./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace --exclude vendor`
+- [ ] Unit tests: `dotnet test Lean.sln -c Release`
+- [ ] Publish: `dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r osx-arm64 --self-contained false`
+- [ ] If consensus changed: `dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj -c Release --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" /m:1 /nodeReuse:false`
+- [ ] If integration-relevant: `dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release`
 
 ## Notes
+
+- If `dotnet` is not on PATH, use `~/.dotnet/dotnet`.
+- Rust toolchain (`cargo`) is required for native builds/tests.
+- `vendor/` should not be modified unless explicitly required.
+- Consensus behavior changes must include corresponding `Lean.Consensus.Tests`.
 
 - If `dotnet` is not on PATH, use `~/.dotnet/dotnet`.
 - Rust toolchain (`cargo`) is required for native-related builds/tests.
