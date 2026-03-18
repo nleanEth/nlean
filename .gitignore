@@ -45,6 +45,9 @@ ScaffoldingReadMe.txt
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
+# Keep patched packages required for Docker / CI builds
+!local-nuget/*.nupkg
+!local-nuget/*.snupkg
 
 # Others
 ~$*
