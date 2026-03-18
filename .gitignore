@@ -69,9 +69,6 @@ nunit-*.xml
 # Scripts / quickstart helpers
 scripts/quickstart/
 
-# Plan docs (local only)
-docs/plans/
-
 # Temp working files
 tmp/
 50
