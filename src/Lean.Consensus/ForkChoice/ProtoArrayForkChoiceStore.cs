@@ -172,10 +172,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
         list.Add(signed.Proof);
 
-        // Match zeam/leanSpec: payload-backed proofs are stored even when the
-        // lagging node cannot yet attach the attestation to its forkchoice view.
-        // Tracker updates happen later in AcceptNewAttestations (tick intervals 0/4).
-
         reason = string.Empty;
         return true;
     }
@@ -233,7 +229,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     }
 
     /// <summary>
-    /// Align proposal flow with ethlambda/leanSpec: force pending-attestation acceptance
+    /// Force pending-attestation acceptance
     /// before selecting proposal head for the slot.
     /// </summary>
     public void PrepareForProposal(ulong slot)
@@ -261,7 +257,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Registers a block in the fork choice store using checkpoints from the
-    /// canonical state transition. Matches zeam/ethlambda architecture.
+    /// canonical state transition.
     /// </summary>
     public ForkChoiceApplyResult OnBlock(
         SignedBlockWithAttestation signedBlock,
@@ -335,7 +331,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             knownProofs.Add(proof);
 
             // Use AggregationBits to extract per-validator votes from block attestations.
-            // Matches zeam onAttestationUnlocked with is_from_block=true.
             if (attestation.AggregationBits.TryToValidatorIndices(out var vids))
             {
                 foreach (var vid in vids)
@@ -359,7 +354,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 signedBlock.Signature.ProposerSignature;
         }
 
-        // Compute head using zeam-style full delta rebuild.
+        // Compute head using full delta rebuild.
         var newHead = ComputeForkChoiceHead(VoteSource.Known, cutoffWeight: 0);
 
         var headChanged = !newHead.Root.Equals(_headRoot);
@@ -398,7 +393,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ToDataRootKey(attestation.Message);
         _attestationDataByRoot[dataRootKey] = attestation.Message;
 
-        // Match zeam/leanSpec: tracker updates happen in AcceptNewAttestations.
+        // Tracker updates happen in AcceptNewAttestations.
         // Individual attestations feed into aggregation; the aggregated payloads
         // are unpacked into per-validator trackers at tick intervals 0/4.
 
@@ -484,7 +479,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Called at each interval within a slot.
-    /// Matches ethlambda devnet3 tick_interval mapping:
+    /// Tick interval mapping:
     ///   0 = accept_new_attestations (if has_proposal)
     ///   1 = nothing
     ///   2 = nothing
@@ -510,7 +505,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     }
 
     /// <summary>
-    /// Zeam-style accept_new_attestations: promote latestNew → latestKnown for all validators,
+    /// Promote latestNew → latestKnown for all validators,
     /// then recompute head.
     /// </summary>
     private void AcceptNewAttestations()
@@ -520,7 +515,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _attestationTrackers.Count);
 
         // Step 1: Unpack received aggregated payloads into per-validator latestNew.
-        // Match zeam/leanSpec: this is the sole path for tracker updates from
+        // This is the sole path for tracker updates from
         // aggregated attestations. Gossip receive only stores payloads.
         foreach (var (dataRootKey, proofs) in _newAggregatedPayloads)
         {
@@ -554,7 +549,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _newAggregatedPayloads.Clear();
 
         // Step 3: Promote latestNew → latestKnown for all validators.
-        // Match latest zeam main (#651): once a vote has been accepted, latestNew
+        // Once a vote has been accepted, latestNew
         // continues to mirror latestKnown instead of being cleared. This keeps the
         // tracker in a state where safe_target (which reads latestNew) still sees
         // accepted votes until a newer gossip vote replaces them.
@@ -599,7 +594,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Computes safe_target at interval 3 using the same proto-array mechanism
-    /// with cutoffWeight = ceil(2N/3). Match latest zeam main by reading only
+    /// with cutoffWeight = ceil(2N/3). Reads only
     /// latestNew/new votes here; latestKnown continues to drive head/proposal.
     /// </summary>
     private void UpdateSafeTarget()
@@ -631,7 +626,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     }
 
     /// <summary>
-    /// Zeam-style full-rebuild delta computation + proto-array head lookup.
+    /// Full-rebuild delta computation + proto-array head lookup.
     /// Known = LatestKnown (head election), New = LatestNew, Merged = per-validator fresher of known/new.
     /// </summary>
     private (Bytes32 Root, ulong Slot) ComputeForkChoiceHead(VoteSource source, long cutoffWeight)
@@ -664,7 +659,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Full delta rebuild: for every validator, subtract old appliedIndex, add selected vote.
-    /// Matches zeam computeDeltasUnlocked.
     /// </summary>
     private long[] ComputeDeltas(VoteSource source)
     {
@@ -674,7 +668,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         if (_deltas.Length < nodeCount)
             _deltas = new long[nodeCount];
 
-        // Zero-fill deltas buffer (NOT node weights — zeam maintains weights
+        // Zero-fill deltas buffer (NOT node weights — weights are maintained
         // incrementally via subtract-old/add-new delta mechanism).
         Array.Clear(_deltas, 0, nodeCount);
 
@@ -725,7 +719,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Update attestation tracker from block attestation (is_from_block=true).
-    /// Match latest zeam main (#651): if a block vote is newer than latestKnown and
+    /// If a block vote is newer than latestKnown and
     /// also newer than latestNew, latestNew is pulled up to latestKnown instead of cleared.
     /// </summary>
     private void UpdateTrackerFromBlock(ulong validatorId, int headIndex, ulong slot, AttestationData data)
@@ -792,7 +786,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     /// <summary>
     /// Remap AttestationTracker indices after proto-array pruning.
-    /// Matches zeam rebase logic: null out indices that were pruned.
+    /// Null out indices that were pruned.
     /// </summary>
     private void RemapAttestationTrackerIndices(Dictionary<int, int> oldToNew)
     {

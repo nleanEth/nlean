@@ -67,7 +67,7 @@ internal static class Libp2pIdentityFactory
 
         // Nethermind.Libp2p currently parses secp256k1 private keys via a signed
         // BigInteger constructor. Prefix high-bit keys with 0x00 so they are
-        // interpreted as positive scalars and match peer IDs used by ream/zeam.
+        // interpreted as positive scalars and match expected peer IDs.
         if ((privateKeyBytes[0] & 0x80) == 0)
         {
             return privateKeyBytes;

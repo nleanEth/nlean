@@ -640,8 +640,7 @@ public sealed class ValidatorService : IValidatorService
             return;
         }
 
-        // Align with ethlambda select_aggregated_proofs:
-        // for each attestation data root, greedily cover remaining validators using known proofs.
+        // For each attestation data root, greedily cover remaining validators using known proofs.
         foreach (var entry in groups.OrderByDescending(g => g.Value.Data.Slot.Value).ThenBy(g => g.Key, StringComparer.Ordinal))
         {
             if (outputAttestations.Count >= MaxAggregatedProofsPerBlock)
@@ -655,8 +654,6 @@ public sealed class ValidatorService : IValidatorService
 
             while (outputAttestations.Count < MaxAggregatedProofsPerBlock && remaining.Count > 0)
             {
-                // ethlambda picks an arbitrary validator from remaining and only
-                // considers proofs containing that validator.
                 var targetValidator = remaining.Min();
 
                 AggregatedSignatureProof? bestProof = null;
@@ -930,7 +927,6 @@ public sealed class ValidatorService : IValidatorService
 
     private static uint ToSignatureEpoch(ulong slot)
     {
-        // Lean clients (ream/zeam) use slot as the XMSS epoch parameter.
         return checked((uint)slot);
     }
 

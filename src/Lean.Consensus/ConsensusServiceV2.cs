@@ -172,7 +172,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
     public ulong FinalizedSlot => _snapshot.FinalizedSlot;
 
-    // Align checkpoint-sync startup with zeam: validator duties stay deferred
+    // Validator duties stay deferred
     // while forkchoice is still in its anchor/init phase, and only resume once
     // the first real justified checkpoint is observed through block processing.
     public bool HasUnknownBlockRootsInFlight
@@ -192,8 +192,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         lock (_storeLock)
         {
-            // Align with ethlambda/leanSpec get_proposal_head:
-            // proposal path must force pending attestation acceptance before selecting parent/head.
+            // Proposal path must force pending attestation acceptance before selecting parent/head.
             _store.PrepareForProposal(slot);
             RefreshSnapshot();
 
@@ -463,7 +462,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         lock (_storeLock)
         {
-            // leanSpec/ethlambda: interval 0 only promotes attestations when has_proposal.
+            // Interval 0 only promotes attestations when has_proposal.
             var validatorCount = (int)Math.Max(1UL, _config.InitialValidatorCount);
             var hasProposal = intervalInSlot == 0 &&
                 _config.LocalValidatorIds.Any(vid =>
@@ -1058,7 +1057,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, IReadOnlySet<ulong> localValidatorIds)
     {
-        // ethlambda/leanSpec: each validator subscribes only to its own subnet
+        // Each validator subscribes only to its own subnet
         // (validator_id % committee_count). Non-validators subscribe to subnet 0.
         var committeeCount = Math.Max(1, attestationCommitteeCount);
         var subnets = new HashSet<int>();

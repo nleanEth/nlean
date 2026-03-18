@@ -42,7 +42,6 @@ internal sealed class ChainStateTransition
             Array.Empty<bool>());
 
         // Compute state root with zeroed header state_root, then fill it in.
-        // This matches ethlambda's init_store() and leanSpec's generate_genesis().
         var stateRoot = new Bytes32(state.HashTreeRoot());
         return state with { LatestBlockHeader = genesisHeader with { StateRoot = stateRoot } };
     }
@@ -145,7 +144,7 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
-            // Verify the block proposer matches round-robin selection (leanSpec/ethlambda).
+            // Verify the block proposer matches round-robin selection.
             if (!block.ProposerIndex.IsProposerFor(block.Slot.Value, validators.Count))
             {
                 postState = default!;
@@ -153,7 +152,7 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
-            // Verify block.parent_root matches hash_tree_root(latest_block_header) (leanSpec/ethlambda).
+            // Verify block.parent_root matches hash_tree_root(latest_block_header).
             var expectedParentRoot = new Bytes32(latestBlockHeader.HashTreeRoot());
             if (!block.ParentRoot.Equals(expectedParentRoot))
             {
@@ -258,7 +257,7 @@ internal sealed class ChainStateTransition
 
                 if (sourceSlot >= (ulong)historicalBlockHashes.Count || targetSlot >= (ulong)historicalBlockHashes.Count)
                 {
-                    // Match leanSpec/ethlambda semantics: block import remains valid and
+                    // Block import remains valid and
                     // this attestation is ignored when it references unavailable history.
                     continue;
                 }

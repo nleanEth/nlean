@@ -224,7 +224,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     [Test]
     public void OnBlock_StaleCanonicalCheckpoint_StillBecomesHeadViaLmdGhost()
     {
-        // With LMD GHOST head selection (matching ethlambda's update_head), blocks with
+        // With LMD GHOST head selection, blocks with
         // stale canonical checkpoints can still become head. Unlike proto-array FindHead
         // which filtered by viability, LMD GHOST follows the heaviest chain tip regardless
         // of per-block checkpoint values.
@@ -434,7 +434,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
             participantIds: new ulong[] { 0, 1, 2 });
         Assert.That(ApplyBlock(store, signed2, 4).Accepted, Is.True);
 
-        // Latest zeam main (#651) keeps latestNew aligned with accepted latestKnown
+        // latestNew is kept aligned with accepted latestKnown
         // votes. With 3/4 known votes in the tracker, safe_target should advance
         // even though no fresh gossip arrived after block processing.
         store.TickInterval(3, 3);
@@ -508,7 +508,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
         var proof = new AggregatedSignatureProof(participants, new byte[32]);
         store.OnGossipAggregatedAttestation(new SignedAggregatedAttestation(attData, proof));
 
-        // Interval 3 calls UpdateSafeTarget (zeam gr/devnet3 mapping).
+        // Interval 3 calls UpdateSafeTarget.
         store.TickInterval(5, 3);
 
         // The target should be walked back from head toward safe_target (slot 2)

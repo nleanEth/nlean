@@ -782,7 +782,6 @@ public static class NodeApp
 
     private static PubsubSettings BuildPubsubSettings()
     {
-        // Keep pubsub signature policy aligned with current Ream/Zeam images.
         // Lean gossip currently uses unsigned envelopes.
         var defaults = PubsubSettings.Default;
         return new PubsubSettings
