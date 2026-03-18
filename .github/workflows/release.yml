@@ -57,26 +57,17 @@ jobs:
       - name: Build patched quic package
         run: ./scripts/libp2p/build-patched-quic-package.sh --force
 
-      - name: Publish
-        run: >
-          dotnet publish src/Lean.Client/Lean.Client.csproj
-          -c Release
-          -r ${{ matrix.rid }}
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:ContinuousIntegrationBuild=true
-          -o artifacts/lean-client-${{ matrix.rid }}
-
-      - name: Bundle libmsquic (Linux x64)
+      - name: Install libmsquic (Linux x64)
         if: matrix.rid == 'linux-x64'
         run: |
           wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
           sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libmsquic
-          cp /usr/lib/x86_64-linux-gnu/libmsquic.so.2 artifacts/lean-client-${{ matrix.rid }}/
+          mkdir -p src/Lean.Client/runtimes/linux-x64/native
+          cp /usr/lib/x86_64-linux-gnu/libmsquic.so.2 src/Lean.Client/runtimes/linux-x64/native/
 
-      - name: Bundle libmsquic (Linux arm64)
+      - name: Install libmsquic (Linux arm64)
         if: matrix.rid == 'linux-arm64'
         run: |
           wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
@@ -84,27 +75,61 @@ jobs:
           sudo dpkg --add-architecture arm64
           sudo apt-get update || true
           apt-get download libmsquic:arm64 || true
+          mkdir -p src/Lean.Client/runtimes/linux-arm64/native
           if ls libmsquic*.deb 1>/dev/null 2>&1; then
             dpkg-deb -x libmsquic*.deb msquic-extract
-            cp msquic-extract/usr/lib/aarch64-linux-gnu/libmsquic.so.2 artifacts/lean-client-${{ matrix.rid }}/
+            cp msquic-extract/usr/lib/aarch64-linux-gnu/libmsquic.so.2 src/Lean.Client/runtimes/linux-arm64/native/
           else
             echo "::warning::Could not download arm64 libmsquic; users must install it separately"
           fi
 
-      - name: Bundle libmsquic (macOS)
+      - name: Install libmsquic (macOS)
         if: matrix.rid == 'osx-arm64'
         run: |
           brew install libmsquic
-          cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client-${{ matrix.rid }}/
+          mkdir -p src/Lean.Client/runtimes/osx-arm64/native
+          cp /opt/homebrew/lib/libmsquic.dylib src/Lean.Client/runtimes/osx-arm64/native/
 
-      - name: Archive
+      - name: Publish (single-file)
+        if: startsWith(matrix.rid, 'linux-')
+        run: >
+          dotnet publish src/Lean.Client/Lean.Client.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeAllContentForSelfExtract=true
+          -p:DebugType=embedded
+          -p:ContinuousIntegrationBuild=true
+          -o artifacts/lean-client-${{ matrix.rid }}
+
+      - name: Publish (portable)
+        run: >
+          dotnet publish src/Lean.Client/Lean.Client.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:DebugType=embedded
+          -p:ContinuousIntegrationBuild=true
+          -o artifacts/lean-client-${{ matrix.rid }}-portable
+
+      - name: Archive (single-file)
+        if: startsWith(matrix.rid, 'linux-')
         run: tar -czf nlean-${{ matrix.rid }}.tar.gz -C artifacts lean-client-${{ matrix.rid }}
+
+      - name: Archive (portable)
+        if: startsWith(matrix.rid, 'linux-')
+        run: tar -czf nlean-${{ matrix.rid }}-portable.tar.gz -C artifacts lean-client-${{ matrix.rid }}-portable
+
+      - name: Archive (macOS)
+        if: matrix.rid == 'osx-arm64'
+        run: tar -czf nlean-${{ matrix.rid }}.tar.gz -C artifacts lean-client-${{ matrix.rid }}-portable
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: nlean-${{ matrix.rid }}
-          path: nlean-${{ matrix.rid }}.tar.gz
+          path: nlean-${{ matrix.rid }}*.tar.gz
 
   release:
     name: create-release

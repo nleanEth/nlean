@@ -13,15 +13,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="runtimes/**">
+    <None Include="runtimes/$(RuntimeIdentifier)/native/*" Condition="'$(RuntimeIdentifier)' != ''">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>%(Filename)%(Extension)</Link>
+    </None>
+    <Content Include="runtimes/**" Condition="'$(RuntimeIdentifier)' == ''">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
-
-  <Target Name="CopyNativeLibsToPublish" AfterTargets="Publish">
-    <ItemGroup>
-      <_NativeLibs Include="runtimes/*/native/*" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_NativeLibs)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
-  </Target>
 </Project>

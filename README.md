@@ -166,6 +166,20 @@ On tag `v*` push (`.github/workflows/docker-publish.yml` + `.github/workflows/re
 | `release build` | Self-contained binaries (linux-x64, linux-arm64, osx-arm64) |
 | `release create-release` | GitHub Release with tar.gz artifacts |
 
+## Release Binaries
+
+Each tagged release publishes the following artifacts:
+
+| Artifact | Platform | Format | Description |
+|----------|----------|--------|-------------|
+| `nlean-linux-x64.tar.gz` | Linux x64 | Single file | Self-contained single executable with all native libs bundled |
+| `nlean-linux-x64-portable.tar.gz` | Linux x64 | Multi-file | Self-contained publish with separate DLLs and native libs |
+| `nlean-linux-arm64.tar.gz` | Linux arm64 | Single file | Self-contained single executable with all native libs bundled |
+| `nlean-linux-arm64-portable.tar.gz` | Linux arm64 | Multi-file | Self-contained publish with separate DLLs and native libs |
+| `nlean-osx-arm64.tar.gz` | macOS arm64 | Multi-file | Self-contained publish with separate DLLs and native libs |
+
+> **Note:** macOS releases are multi-file only. Single-file publish (`PublishSingleFile=true`) on macOS causes segfaults due to native library loading issues with `libmsquic`. The multi-file format works correctly on all platforms.
+
 ## License
 
 See [LICENSE](LICENSE).
