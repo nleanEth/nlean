@@ -82,7 +82,7 @@ jobs:
           wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
           sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
           sudo dpkg --add-architecture arm64
-          sudo apt-get update
+          sudo apt-get update || true
           apt-get download libmsquic:arm64 || true
           if ls libmsquic*.deb 1>/dev/null 2>&1; then
             dpkg-deb -x libmsquic*.deb msquic-extract
@@ -93,6 +93,8 @@ jobs:
 
       - name: Bundle libmsquic (macOS)
         if: matrix.rid == 'osx-arm64'
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           brew install microsoft/msquic/libmsquic
           cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client-${{ matrix.rid }}/
