@@ -65,3 +65,17 @@ nunit-*.xml
 
 # Worktrees
 .worktrees/
+
+# Scripts / quickstart helpers
+scripts/quickstart/
+
+# Plan docs (local only)
+docs/plans/
+
+# Temp working files
+tmp/
+50
+
+# Tool-generated local dirs
+.claude/
+.serena/

@@ -142,10 +142,14 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         var snap = _snapshot;
         if (snap.FinalizedSlot == 0)
+        {
             return null;
+        }
 
         if (!_chainStateCache.TryGet(ChainStateCache.RootKey(snap.FinalizedRoot), out var state))
+        {
             return null;
+        }
 
         // Fill in zeroed LatestBlockHeader.StateRoot before encoding.
         // The state transition stores the header with StateRoot=0; the root
@@ -222,6 +226,14 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public bool IsBlockKnown(Bytes32 root)
     {
         lock (_storeLock) { return _store.ContainsBlock(root); }
+    }
+
+    public bool HasState(Bytes32 root)
+    {
+        lock (_storeLock)
+        {
+            return _chainStateCache.TryGet(ChainStateCache.RootKey(root), out _);
+        }
     }
 
     public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
@@ -389,6 +401,22 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         lock (_storeLock) { return _store.TryOnGossipAggregatedAttestation(signed, out reason); }
     }
 
+    public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, List<AggregatedSignatureProof>> PayloadPool)
+        GetAllAvailableAttestationsForBlock(ulong slot)
+    {
+        lock (_storeLock)
+        {
+            var attestations = _store.ExtractAllAttestationsFromKnownPayloads(slot);
+            var pool = _store.GetKnownPayloadPool();
+            return (attestations, pool);
+        }
+    }
+
+    public IReadOnlySet<Bytes32> GetKnownBlockRoots()
+    {
+        lock (_storeLock) { return _store.GetAllBlockRoots(); }
+    }
+
     public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
     {
         lock (_storeLock)
@@ -396,17 +424,10 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             var attestations = new List<AggregatedAttestation>();
             var proofs = new List<AggregatedSignatureProof>();
             var pool = _store.GetKnownPayloadPool();
-
-            // Match zeam/leanSpec block building: derive candidates from the
-            // payload-backed known proof pool, not from tracker.LatestKnown.
-            // Tracker votes may advance to newer attestation data before a proof
-            // exists for that data root; proposal construction must still be able
-            // to use the older payload-backed data until a newer proof arrives.
             foreach (var (dataRootKey, poolProofs) in pool)
             {
                 if (!_store.TryGetAttestationData(dataRootKey, out var data))
                     continue;
-
                 if (data.Slot.Value >= slot)
                     continue;
                 if (!data.Source.Equals(requiredSource))
@@ -649,7 +670,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _inboxTask = null;
         Interlocked.Exchange(ref _statusProbeInFlight, 0);
 
-        // Final state save — capture any progress since the last finalization checkpoint.
         SaveFinalState();
     }
 
@@ -661,9 +681,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         try
         {
             var snap = _snapshot;
-            if (snap is null)
-                return;
-
             var headState = new ConsensusHeadState(
                 snap.HeadSlot,
                 snap.HeadRoot.AsSpan(),
@@ -681,7 +698,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             _logger.LogInformation(
                 "Saved final state on shutdown. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}",
-                snap.HeadSlot, snap.FinalizedSlot);
+                snap.HeadSlot,
+                snap.FinalizedSlot);
         }
         catch (Exception ex)
         {
@@ -735,7 +753,6 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private void ProcessGossipBlockFromInbox(GossipBlockMessage msg)
     {
-        var forkChoiceTimer = Stopwatch.StartNew();
         var signedBlock = msg.Block;
         var block = signedBlock.Message.Block;
         // Compute blockRoot from the block itself — must match the key used by
@@ -817,17 +834,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
                 _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
-                _slotIndexStore?.Save(block.Slot.Value, blockRoot);
-                _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
-                _stateByRootStore?.Save(blockRoot, postState);
-                LeanMetrics.IncSyncBlocksProcessed();
-                if (result.HeadChanged)
-                    LeanMetrics.RecordForkChoiceReorg(1);
             }
         }
-
-        forkChoiceTimer.Stop();
-        LeanMetrics.RecordForkChoiceBlockProcessing(forkChoiceTimer.Elapsed);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -853,11 +861,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             return;
         }
 
-        var timer = Stopwatch.StartNew();
-        bool valid;
-        lock (_storeLock) { valid = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _); }
-        timer.Stop();
-        LeanMetrics.RecordAttestationValidation("gossip", valid, timer.Elapsed);
+        lock (_storeLock) { _ = _store.TryOnAttestation(msg.Attestation, _config.IsAggregator, out _); }
     }
 
     private void ProcessGossipAggregatedAttestationFromInbox(GossipAggregatedAttestationMessage msg)
@@ -1062,6 +1066,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         {
             subnets.Add((int)(vid % (ulong)committeeCount));
         }
+
         return subnets.Select(s => gossipTopics.AttestationSubnetTopic(s)).ToArray();
     }
 
@@ -1140,14 +1145,14 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         {
         }
 
+        public void Delete(Bytes32 blockRoot)
+        {
+        }
+
         public bool TryLoad(Bytes32 blockRoot, [NotNullWhen(true)] out byte[]? payload)
         {
             payload = null;
             return false;
-        }
-
-        public void Delete(Bytes32 blockRoot)
-        {
         }
     }
 }

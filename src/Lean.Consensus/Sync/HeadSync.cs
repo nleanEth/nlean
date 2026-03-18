@@ -32,7 +32,7 @@ public sealed class HeadSync
             return;
         }
 
-        if (_processor.IsBlockKnown(parentRoot))
+        if (_processor.IsBlockKnown(parentRoot) && _processor.HasState(parentRoot))
         {
             _logger.LogDebug(
                 "HeadSync process parent known: slot={Slot}, blockRoot={Root}, parentRoot={Parent}",

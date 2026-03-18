@@ -52,11 +52,25 @@ public sealed class CheckpointSyncTests
     }
 
     [Test]
-    public void ValidateState_ZeroedStateRoot_Fails()
+    public async Task SyncFromCheckpoint_ZeroedStateRoot_IsNormalizedAndSucceeds()
     {
         var state = MakeStateWithZeroedRoot(validatorCount: 4);
-        var error = CheckpointSync.ValidateState(state);
-        Assert.That(error, Does.Contain("zeroed"));
+        var config = MakeMatchingConfig(state);
+        var provider = new FakeCheckpointProvider(state);
+        var sync = new CheckpointSync(provider);
+
+        var result = await sync.SyncFromCheckpointAsync("http://example.com", config, CancellationToken.None);
+
+        Assert.That(result.Succeeded, Is.True);
+        Assert.That(result.State, Is.Not.Null);
+        Assert.That(result.State!.LatestBlockHeader.StateRoot, Is.Not.EqualTo(Bytes32.Zero()));
+
+        var withZeroedRoot = result.State with
+        {
+            LatestBlockHeader = result.State.LatestBlockHeader with { StateRoot = Bytes32.Zero() }
+        };
+        var expectedRoot = new Bytes32(withZeroedRoot.HashTreeRoot());
+        Assert.That(result.State.LatestBlockHeader.StateRoot, Is.EqualTo(expectedRoot));
     }
 
     [Test]

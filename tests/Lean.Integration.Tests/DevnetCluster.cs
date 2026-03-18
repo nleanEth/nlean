@@ -90,7 +90,7 @@ public sealed class DevnetCluster : IDisposable
             await Task.Delay(2000);
         }
 
-        var diag = BuildDiagnostics(indices);
+        var diag = await BuildDiagnosticsAsync(indices);
         throw new TimeoutException(
             $"Timed out waiting for finalization >= {targetSlot} after {timeout.TotalSeconds}s.\n{diag}");
     }
@@ -100,20 +100,24 @@ public sealed class DevnetCluster : IDisposable
         await WaitForFinalization(targetSlot, timeout, new[] { nodeIndex });
     }
 
-    private string BuildDiagnostics(int[] indices)
+    private async Task<string> BuildDiagnosticsAsync(int[] indices)
     {
         var lines = new List<string>();
         foreach (var i in indices)
         {
             var node = _nodes[i];
             var status = node is null ? "null" : node.IsRunning ? "running" : "exited";
+            var checkpoint = await GetFinalizedCheckpoint(i);
+            var checkpointText = checkpoint is null
+                ? $"api={ApiPort(i)} finalized=<unavailable>"
+                : $"api={ApiPort(i)} finalized_slot={checkpoint.Value.slot} finalized_root={checkpoint.Value.root}";
             var stdout = node?.GetStdout() ?? "";
             var stderr = node?.GetStderr() ?? "";
             var lastStdout = string.Join('\n',
                 stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(50));
             var lastStderr = string.Join('\n',
                 stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(20));
-            lines.Add($"--- Node {i} ({status}) ---\nSTDOUT (last 50):\n{lastStdout}\nSTDERR (last 20):\n{lastStderr}");
+            lines.Add($"--- Node {i} ({status}) ---\n{checkpointText}\nSTDOUT (last 50):\n{lastStdout}\nSTDERR (last 20):\n{lastStderr}");
         }
         return string.Join('\n', lines);
     }

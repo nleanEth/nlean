@@ -27,6 +27,7 @@ public sealed class HeadSyncTests
         var (headSync, processor, cache, backfill) = CreateHeadSync();
         var parentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(parentRoot);
+        processor.StateReadyRoots.Add(parentRoot);
 
         var block = MakeSignedBlock(parentRoot, slot: 1);
         var root = ComputeRoot(block);
@@ -54,11 +55,30 @@ public sealed class HeadSyncTests
     }
 
     [Test]
+    public void OnGossipBlock_ParentKnownButStateUnavailable_CachesAndBackfills()
+    {
+        var (headSync, processor, cache, backfill) = CreateHeadSync();
+        var parentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(parentRoot);
+
+        var block = MakeSignedBlock(parentRoot, slot: 1);
+        var root = ComputeRoot(block);
+        headSync.OnGossipBlock(block, root, peerId: "peer-1");
+
+        Assert.That(processor.ProcessedCount, Is.EqualTo(0));
+        Assert.That(cache.Count, Is.EqualTo(1));
+        Assert.That(cache.OrphanCount, Is.EqualTo(1));
+        Assert.That(backfill.BackfillRequests, Has.Count.EqualTo(1));
+        Assert.That(backfill.BackfillRequests[0].Root, Is.EqualTo(parentRoot));
+    }
+
+    [Test]
     public void OnGossipBlock_CascadesDescendants()
     {
         var (headSync, processor, cache, backfill) = CreateHeadSync();
         var genesisRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(genesisRoot);
+        processor.StateReadyRoots.Add(genesisRoot);
 
         // Create block A (parent=genesis)
         var blockA = MakeSignedBlock(genesisRoot, slot: 1);
@@ -88,6 +108,7 @@ public sealed class HeadSyncTests
         var (headSync, processor, cache, backfill) = CreateHeadSync();
         var genesisRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(genesisRoot);
+        processor.StateReadyRoots.Add(genesisRoot);
 
         var blockA = MakeSignedBlock(genesisRoot, slot: 1);
         var rootA = ComputeRoot(blockA);
@@ -116,6 +137,7 @@ public sealed class HeadSyncTests
         var (headSync, processor, cache, backfill) = CreateHeadSync();
         var genesisRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(genesisRoot);
+        processor.StateReadyRoots.Add(genesisRoot);
 
         var blockA = MakeSignedBlock(genesisRoot, slot: 1);
         var rootA = ComputeRoot(blockA);
@@ -141,6 +163,7 @@ public sealed class HeadSyncTests
         var (headSync, processor, cache, backfill) = CreateHeadSync();
         var grandParent = MakeRoot(0x00);
         processor.KnownRoots.Add(grandParent);
+        processor.StateReadyRoots.Add(grandParent);
 
         var blockParent = MakeSignedBlock(grandParent, slot: 1);
         var parentRoot = ComputeRoot(blockParent);
@@ -189,11 +212,13 @@ public sealed class HeadSyncTests
     private sealed class FakeBlockProcessor : IBlockProcessor
     {
         public HashSet<Bytes32> KnownRoots { get; } = new();
+        public HashSet<Bytes32> StateReadyRoots { get; } = new();
         public HashSet<Bytes32> RejectRoots { get; } = new();
         public int ProcessedCount { get; private set; }
         public ulong HeadSlot { get; private set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
+        public bool HasState(Bytes32 root) => StateReadyRoots.Contains(root);
 
         public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
         {
@@ -204,6 +229,7 @@ public sealed class HeadSyncTests
                     ForkChoiceRejectReason.StateTransitionFailed, "rejected", 0, Bytes32.Zero());
 
             KnownRoots.Add(root);
+            StateReadyRoots.Add(root);
             return ForkChoiceApplyResult.AcceptedResult(false, 0, Bytes32.Zero());
         }
     }

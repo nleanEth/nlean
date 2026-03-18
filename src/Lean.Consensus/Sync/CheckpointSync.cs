@@ -21,11 +21,12 @@ public sealed class CheckpointSync
         if (state is null)
             return CheckpointSyncResult.Failure("Failed to fetch finalized state from checkpoint provider.");
 
-        var validationError = ValidateState(state, config);
+        var normalizedState = NormalizeState(state);
+        var validationError = ValidateState(normalizedState, config);
         if (validationError is not null)
             return CheckpointSyncResult.Failure(validationError);
 
-        return CheckpointSyncResult.Success(state);
+        return CheckpointSyncResult.Success(normalizedState);
     }
 
     public static string? ValidateState(State state, ConsensusConfig config)
@@ -74,19 +75,33 @@ public sealed class CheckpointSync
         if (state.Validators.Count > ValidatorRegistryLimit)
             return $"Checkpoint state has {state.Validators.Count} validators, exceeding limit of {ValidatorRegistryLimit}.";
 
-        var headerStateRoot = state.LatestBlockHeader.StateRoot;
-        if (headerStateRoot.Equals(Bytes32.Zero()))
-            return "Checkpoint state has zeroed LatestBlockHeader.StateRoot; state root was never filled.";
-
-        var withZeroedRoot = state with
+        var normalizedState = NormalizeState(state);
+        var headerStateRoot = normalizedState.LatestBlockHeader.StateRoot;
+        var withZeroedRoot = normalizedState with
         {
-            LatestBlockHeader = state.LatestBlockHeader with { StateRoot = Bytes32.Zero() }
+            LatestBlockHeader = normalizedState.LatestBlockHeader with { StateRoot = Bytes32.Zero() }
         };
         var computedRoot = new Bytes32(withZeroedRoot.HashTreeRoot());
         if (!computedRoot.Equals(headerStateRoot))
             return $"State root mismatch: LatestBlockHeader.StateRoot={headerStateRoot} but computed={computedRoot}.";
 
         return null;
+    }
+
+    public static State NormalizeState(State state)
+    {
+        if (!state.LatestBlockHeader.StateRoot.Equals(Bytes32.Zero()))
+            return state;
+
+        var withZeroedRoot = state with
+        {
+            LatestBlockHeader = state.LatestBlockHeader with { StateRoot = Bytes32.Zero() }
+        };
+        var computedRoot = new Bytes32(withZeroedRoot.HashTreeRoot());
+        return withZeroedRoot with
+        {
+            LatestBlockHeader = withZeroedRoot.LatestBlockHeader with { StateRoot = computedRoot }
+        };
     }
 
     private static string NormalizeHex(string hex)

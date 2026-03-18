@@ -100,9 +100,10 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void TickInterval_Throws_WhenJustifiedRootIsAbsentFromProtoArray()
+    public void TickInterval_GracefulFallback_WhenJustifiedRootIsAbsentFromProtoArray()
     {
         var store = CreateStore(validatorCount: 4);
+        var headBefore = store.HeadRoot;
         typeof(ProtoArrayForkChoiceStore)
             .GetField("_latestJustified", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(
@@ -111,7 +112,9 @@ public sealed class ProtoArrayForkChoiceStoreTests
                     new Bytes32(Enumerable.Repeat((byte)0xAB, 32).ToArray()),
                     new Slot(1)));
 
-        Assert.Throws<InvalidOperationException>(() => store.TickInterval(1, IntervalsPerSlot - 1));
+        // Should NOT throw — graceful fallback to index 0 during catch-up.
+        Assert.DoesNotThrow(() => store.TickInterval(1, IntervalsPerSlot - 1));
+        Assert.That(store.HeadRoot, Is.EqualTo(headBefore));
     }
 
     [Test]
@@ -321,10 +324,9 @@ public sealed class ProtoArrayForkChoiceStoreTests
     [Test]
     public void TickInterval_At3_SafeTargetAdvancesWhenQuorumGossips()
     {
-        // Zeam-style semantics: individual gossip updates latestNew for the
-        // attesting validator, not just for local validators. With 4 validators
-        // cutoffWeight=3, three matching gossip attestations should advance the
-        // safe target even if none came from the local validator.
+        // leanSpec semantics: aggregated payloads are stored at gossip time,
+        // unpacked into trackers by AcceptNewAttestations (interval 4),
+        // then safe_target reads latestNew at interval 3.
         var store = CreateStore(validatorCount: 4);
         var genesisRoot = store.HeadRoot;
 
@@ -348,14 +350,16 @@ public sealed class ProtoArrayForkChoiceStoreTests
             new Checkpoint(block2Root, new Slot(2)),
             new Checkpoint(block2Root, new Slot(2)));
 
-        // Send gossip from validators 1, 2, 3 only (non-local).
-        for (ulong v = 1; v < 4; v++)
-        {
-            var att = new SignedAttestation(v, attData, XmssSignature.Empty());
-            Assert.That(store.TryOnAttestation(att, storeSignature: true, out _), Is.True);
-        }
+        // Send aggregated attestation with participants 1, 2, 3.
+        var bits = AggregationBits.FromValidatorIndices(new ulong[] { 1, 2, 3 });
+        var proof = new AggregatedSignatureProof(bits, new byte[32]);
+        var aggAtt = new SignedAggregatedAttestation(attData, proof);
+        Assert.That(store.TryOnGossipAggregatedAttestation(aggAtt, out _), Is.True);
 
-        // Interval 3 calls UpdateSafeTarget. cutoffWeight=3, three gossip votes → advances.
+        // Interval 4: AcceptNewAttestations unpacks payloads into trackers.
+        store.TickInterval(3, 4);
+
+        // Interval 3: UpdateSafeTarget. cutoffWeight=3, three votes -> advances.
         store.TickInterval(3, 3);
 
         Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,
@@ -365,9 +369,9 @@ public sealed class ProtoArrayForkChoiceStoreTests
     [Test]
     public void TickInterval_At3_UpdatesSafeTargetWhenLocalValidatorGossips()
     {
-        // Single-validator setup: localValidatorId=0, validatorCount=1 → cutoffWeight=1.
-        // The local validator's own gossip attestation DOES update latestNew,
-        // and 1 vote == cutoffWeight=1 → safeTarget should advance.
+        // Single-validator setup: validatorCount=1 → cutoffWeight=1.
+        // Aggregated attestation stored, accepted via interval 4, then
+        // safe_target should advance at interval 3.
         var store = CreateStore(validatorCount: 1);
         var genesisRoot = store.HeadRoot;
 
@@ -383,16 +387,21 @@ public sealed class ProtoArrayForkChoiceStoreTests
         // Advance _currentSlot so attestation validation passes.
         store.TickInterval(3, 0);
 
-        // Local validator (id=0) gossips an attestation for block2.
+        // Local validator (id=0) sends aggregated attestation for block2.
         var attData = new AttestationData(
             new Slot(2),
             new Checkpoint(block2Root, new Slot(2)),
             new Checkpoint(block2Root, new Slot(2)),
             new Checkpoint(block2Root, new Slot(2)));
-        var att = new SignedAttestation(0, attData, XmssSignature.Empty());
-        Assert.That(store.TryOnAttestation(att, storeSignature: true, out _), Is.True);
+        var bits = AggregationBits.FromValidatorIndices(new ulong[] { 0 });
+        var proof = new AggregatedSignatureProof(bits, new byte[32]);
+        var aggAtt = new SignedAggregatedAttestation(attData, proof);
+        Assert.That(store.TryOnGossipAggregatedAttestation(aggAtt, out _), Is.True);
 
-        // Interval 3 calls UpdateSafeTarget. cutoffWeight=1, 1 local vote → advances.
+        // Interval 4: AcceptNewAttestations unpacks payloads into trackers.
+        store.TickInterval(3, 4);
+
+        // Interval 3: UpdateSafeTarget. cutoffWeight=1, 1 vote → advances.
         store.TickInterval(3, 3);
 
         Assert.That(store.SafeTarget.Equals(genesisRoot), Is.False,

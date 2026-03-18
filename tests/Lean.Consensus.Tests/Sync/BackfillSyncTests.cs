@@ -16,6 +16,7 @@ public sealed class BackfillSyncTests
         // grandparent is known (e.g. genesis)
         var grandparentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
 
         var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
         var parentRoot = ComputeRoot(parentBlock);
@@ -46,6 +47,7 @@ public sealed class BackfillSyncTests
         // grandparent is known
         var grandparentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
 
         // parent block exists on network, its parent is grandparent (known)
         var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
@@ -91,6 +93,7 @@ public sealed class BackfillSyncTests
         // Make grandparent known so no recursive fetch happens
         var grandparentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
 
         var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
         var parentRoot = ComputeRoot(parentBlock);
@@ -126,6 +129,7 @@ public sealed class BackfillSyncTests
 
         var grandparentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
 
         var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
         var parentRoot = ComputeRoot(parentBlock);
@@ -162,6 +166,7 @@ public sealed class BackfillSyncTests
 
         var grandparentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
 
         var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
         var parentRoot = ComputeRoot(parentBlock);
@@ -190,6 +195,7 @@ public sealed class BackfillSyncTests
 
         var grandparentRoot = MakeRoot(0x00);
         processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
 
         var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
         var parentRoot = ComputeRoot(parentBlock);
@@ -224,6 +230,25 @@ public sealed class BackfillSyncTests
         await backfill.StopAsync();
 
         // Should not throw or hang
+    }
+
+    [Test]
+    public async Task RequestParents_ParentKnownButStateUnavailable_DoesNotProcessChild()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync(maxDepth: 1);
+        peerMgr.AddPeer("peer-1");
+
+        var parentRoot = MakeRoot(0x11);
+        processor.KnownRoots.Add(parentRoot);
+
+        var childBlock = MakeSignedBlock(parentRoot, slot: 2);
+        var childRoot = ComputeRoot(childBlock);
+        network.BlocksByRoot[childRoot] = childBlock;
+
+        await backfill.RequestParentsAsync(new List<Bytes32> { childRoot }, CancellationToken.None);
+
+        Assert.That(processor.ProcessedBlocks, Is.Empty);
+        Assert.That(processor.KnownRoots, Does.Not.Contain(childRoot));
     }
 
     // --- Helpers ---
@@ -280,16 +305,19 @@ public sealed class BackfillSyncTests
     private sealed class FakeBackfillProcessor : IBlockProcessor
     {
         public HashSet<Bytes32> KnownRoots { get; } = new();
+        public HashSet<Bytes32> StateReadyRoots { get; } = new();
         public List<SignedBlockWithAttestation> ProcessedBlocks { get; } = new();
         public ulong HeadSlot { get; private set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
+        public bool HasState(Bytes32 root) => StateReadyRoots.Contains(root);
 
         public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
         {
             ProcessedBlocks.Add(signedBlock);
             var root = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
             KnownRoots.Add(root);
+            StateReadyRoots.Add(root);
             HeadSlot = Math.Max(HeadSlot, signedBlock.Message.Block.Slot.Value);
             return ForkChoiceApplyResult.AcceptedResult(false, HeadSlot, root);
         }

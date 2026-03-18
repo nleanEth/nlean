@@ -76,26 +76,12 @@ public sealed class SyncService : ISyncService
         RecomputeState();
         RetryOrphanBackfills();
 
-        // Proactive sync: if the peer gave us their head root and we don't
-        // have it, trigger a backfill regardless of sync state.
-        if (headRoot is not null)
-        {
-            TriggerProactiveBackfill(headRoot.Value, headSlot, peerId, peerId);
-        }
-
         return Task.CompletedTask;
     }
 
     public void TrySyncFromBestPeer()
     {
-        // Trigger backfill whenever we're behind the best known peer head,
-        // regardless of sync state. TriggerProactiveBackfill already checks
-        // localHead < peerHeadSlot so this is safe during normal operation.
-        var best = _peerManager.GetBestPeerHead();
-        if (best is null)
-            return;
-
-        TriggerProactiveBackfill(best.Value.Root, best.Value.Slot, best.Value.PeerId, "periodic");
+        RetryOrphanBackfills();
     }
 
     public void CascadeAcceptedBlock(Bytes32 blockRoot)
@@ -169,29 +155,13 @@ public sealed class SyncService : ISyncService
 
     private void RetryOrphanBackfills()
     {
+        var bestPeerId = _peerManager.GetBestPeerHead()?.PeerId;
         var orphanParents = _cache.GetOrphanParentsWithHints();
         foreach (var (parent, preferredPeerId) in orphanParents)
         {
-            _backfillSync.RequestBackfill(parent, preferredPeerId);
+            _backfillSync.RequestBackfill(parent, ResolvePreferredPeerId(preferredPeerId, bestPeerId));
         }
     }
-
-    private void TriggerProactiveBackfill(
-        Bytes32 headRoot,
-        ulong peerHeadSlot,
-        string? preferredPeerId,
-        string source)
-    {
-        var localHead = _processor.HeadSlot;
-        if (localHead < peerHeadSlot && !_processor.IsBlockKnown(headRoot))
-        {
-            _logger.LogInformation(
-                "Proactive sync: triggering backfill from peer head root. Source: {Source}, PeerHead: {PeerHeadSlot}, LocalHead: {LocalHead}, HeadRoot: {HeadRoot}",
-                source, peerHeadSlot, localHead, headRoot);
-            _backfillSync.RequestBackfill(headRoot, preferredPeerId);
-        }
-    }
-
     private void EnqueuePendingAttestation(SignedAttestation attestation)
     {
         _pendingAttestations.Enqueue(attestation);
@@ -232,5 +202,13 @@ public sealed class SyncService : ISyncService
             _logger.LogDebug("Drained pending attestations. Replayed: {Replayed}, StillPending: {Pending}",
                 remaining - retryCount, retryCount);
         }
+    }
+
+    internal static string? ResolvePreferredPeerId(string? hintedPeerId, string? bestPeerId)
+    {
+        if (!string.IsNullOrWhiteSpace(hintedPeerId))
+            return hintedPeerId;
+
+        return string.IsNullOrWhiteSpace(bestPeerId) ? null : bestPeerId;
     }
 }

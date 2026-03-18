@@ -207,6 +207,36 @@ public sealed class NodeAppBootstrapDefaultsTests
         Assert.That(headState.SafeTargetRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
     }
 
+    [Test]
+    public void NormalizeCheckpointState_PreservesCheckpointRoots_AndFillsStateRoot()
+    {
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var state = new State(
+            Config: new Config(1),
+            Slot: new Slot(198),
+            LatestJustified: new Checkpoint(justifiedRoot, new Slot(182)),
+            LatestFinalized: new Checkpoint(finalizedRoot, new Slot(169)),
+            LatestBlockHeader: new BlockHeader(
+                new Slot(182),
+                0,
+                Bytes32.Zero(),
+                Bytes32.Zero(),
+                Bytes32.Zero()),
+            HistoricalBlockHashes: Array.Empty<Bytes32>(),
+            JustifiedSlots: Array.Empty<bool>(),
+            Validators: Array.Empty<Lean.Consensus.Types.Validator>(),
+            JustificationsRoots: Array.Empty<Bytes32>(),
+            JustificationsValidators: Array.Empty<bool>());
+
+        var normalized = NodeApp.NormalizeCheckpointState(state);
+        Assert.That(normalized.LatestBlockHeader.StateRoot, Is.Not.EqualTo(Bytes32.Zero()));
+        Assert.That(normalized.LatestJustified.Slot.Value, Is.EqualTo(182UL));
+        Assert.That(normalized.LatestFinalized.Slot.Value, Is.EqualTo(169UL));
+        Assert.That(normalized.LatestJustified.Root, Is.EqualTo(justifiedRoot));
+        Assert.That(normalized.LatestFinalized.Root, Is.EqualTo(finalizedRoot));
+    }
+
     private static NodeOptions CreateOptions(string tempRoot, string validatorConfigPath)
     {
         return new NodeOptions

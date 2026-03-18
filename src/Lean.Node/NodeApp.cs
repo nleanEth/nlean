@@ -158,7 +158,6 @@ public static class NodeApp
         }
 
         Console.WriteLine($"Running checkpoint sync from {options.CheckpointSyncUrl}");
-
         var provider = new HttpCheckpointProvider();
         var sync = new CheckpointSync(provider);
         var result = await sync.SyncFromCheckpointAsync(
@@ -170,7 +169,7 @@ public static class NodeApp
                 $"Checkpoint sync failed: {result.Error}");
         }
 
-        var state = result.State!;
+        var state = NormalizeCheckpointState(result.State!);
         var headState = CreateCheckpointHeadState(state);
         stateStore.Save(headState, state);
 
@@ -187,11 +186,6 @@ public static class NodeApp
         var anchorRoot = state.LatestBlockHeader.HashTreeRoot();
         var anchorSlot = state.LatestBlockHeader.Slot.Value;
 
-        // Match leanSpec/zeam from_anchor(): treat the anchor block as the
-        // trusted checkpoint root for fork-choice initialization, while
-        // preserving the justified/finalized SLOT values learned from the
-        // synced state. Validator duties stay deferred until the first real
-        // justified checkpoint is observed through subsequent block processing.
         return new ConsensusHeadState(
             anchorSlot,
             anchorRoot,
@@ -201,6 +195,12 @@ public static class NodeApp
             anchorRoot,
             state.LatestFinalized.Slot.Value,
             anchorRoot);
+    }
+
+    internal static Lean.Consensus.Types.State NormalizeCheckpointState(Lean.Consensus.Types.State state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return CheckpointSync.NormalizeState(state);
     }
 
     private static void ApplyBootstrapPeersFromNodesYaml(NodeOptions options)
@@ -617,13 +617,10 @@ public static class NodeApp
             ApplyInitialValidatorCount(options, validatorConfig, chainConfig);
             var node = validatorConfig.FindNode(options.NodeName);
 
-            // Auto-derive ValidatorIndex from cumulative position in the validators list.
-            // Each node's base index accounts for preceding nodes' Count values.
-            // e.g. node0(count=2)→indices 0,1; node1(count=2)→indices 2,3.
             if (node is not null && options.Validator.ValidatorIndex == 0)
             {
                 ulong cumulativeIndex = 0;
-                for (int i = 0; i < validatorConfig.Validators.Count; i++)
+                for (var i = 0; i < validatorConfig.Validators.Count; i++)
                 {
                     if (string.Equals(validatorConfig.Validators[i].Name, node.Name, StringComparison.OrdinalIgnoreCase))
                     {
@@ -631,6 +628,7 @@ public static class NodeApp
                         options.Validator.ValidatorCount = (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
                         break;
                     }
+
                     cumulativeIndex += (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
                 }
             }
@@ -719,7 +717,6 @@ public static class NodeApp
         var allPublicKeyPaths = new List<string>();
         var allSecretKeyPaths = new List<string>();
 
-        // Resolve key paths for each validator this node manages.
         if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
             string.IsNullOrWhiteSpace(options.Validator.PublicKeyPath) &&
             string.IsNullOrWhiteSpace(options.Validator.SecretKeyPath))
@@ -748,7 +745,6 @@ public static class NodeApp
             }
         }
 
-        // Backwards-compat: single-validator fields from the first resolved entry.
         var publicKeyPath = allPublicKeyPaths.Count > 0 ? allPublicKeyPaths[0] : options.Validator.PublicKeyPath;
         var secretKeyPath = allSecretKeyPaths.Count > 0 ? allSecretKeyPaths[0] : options.Validator.SecretKeyPath;
 
@@ -757,8 +753,6 @@ public static class NodeApp
             validatorIndices.Add(baseIndex);
         }
 
-        // Only fall back to validatorNodeConfig.Privkey when no hash-sig key paths were resolved.
-        // The Privkey field is the libp2p identity key (secp256k1), not a hash-sig secret key.
         var secretKeyHex = options.Validator.SecretKeyHex;
         if (string.IsNullOrWhiteSpace(secretKeyHex) &&
             string.IsNullOrWhiteSpace(secretKeyPath))

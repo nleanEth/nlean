@@ -430,6 +430,52 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_StaleProposerDuty_DoesNotPublishBlock()
+    {
+        var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig { ValidatorIndex = 2 },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(2, 0);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(consensus.CurrentSlotReadCalls, Is.GreaterThan(0));
+        Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
+    }
+
+    [Test]
+    public async Task DutyLoop_StaleAttestationDuty_DoesNotPublishAttestation()
+    {
+        var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig { ValidatorIndex = 1 },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(2, 1);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(consensus.CurrentSlotReadCalls, Is.GreaterThan(0));
+        Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
+    }
+
+    [Test]
     public async Task DutyLoop_WhenSlotJumps_ProcessesIntermediateSlotsAndPublishesProposerBlock()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
@@ -564,6 +610,7 @@ public sealed class ValidatorServiceTests
             });
 
         await service.StartAsync(CancellationToken.None);
+
         await service.OnIntervalAsync(3, 0);
         await service.StopAsync(CancellationToken.None);
 
@@ -639,6 +686,7 @@ public sealed class ValidatorServiceTests
             });
 
         await service.StartAsync(CancellationToken.None);
+
         await service.OnIntervalAsync(3, 0);
         await service.StopAsync(CancellationToken.None);
 
@@ -714,6 +762,7 @@ public sealed class ValidatorServiceTests
             });
 
         await service.StartAsync(CancellationToken.None);
+
         await service.OnIntervalAsync(3, 0);
         await service.StopAsync(CancellationToken.None);
 
@@ -890,10 +939,8 @@ public sealed class ValidatorServiceTests
         public bool HasUnknownBlockRootsInFlightValue { get; set; }
         public bool LocalBlockApplyResult { get; set; } = true;
         public bool LocalAttestationApplyResult { get; set; } = true;
-        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs)
-            KnownAggregatedPayloads
-        { get; set; } =
-                (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
+        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) KnownAggregatedPayloads { get; set; } =
+            (Array.Empty<AggregatedAttestation>(), Array.Empty<AggregatedSignatureProof>());
 
         public ulong CurrentSlot
         {
@@ -1083,6 +1130,19 @@ public sealed class ValidatorServiceTests
             {
                 handler(payload);
             }
+        }
+
+        public Task<byte[]?> RequestBlockByRootAsync(ReadOnlyMemory<byte> blockRoot, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<byte[]?>(null);
+        }
+
+        public Task<byte[]?> RequestBlockByRootAsync(
+            ReadOnlyMemory<byte> blockRoot,
+            string preferredPeerKey,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<byte[]?>(null);
         }
 
         public Task ProbePeerStatusesAsync(CancellationToken cancellationToken = default)

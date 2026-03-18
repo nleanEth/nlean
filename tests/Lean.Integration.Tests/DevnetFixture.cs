@@ -133,7 +133,7 @@ public sealed class DevnetFixture : IDisposable
         sb.AppendLine($"GENESIS_TIME: {GenesisTime}");
         sb.AppendLine();
         sb.AppendLine("# Timing");
-        var secondsPerSlot = Environment.GetEnvironmentVariable("CI") == "true" ? 2 : 1;
+        var secondsPerSlot = ResolveSecondsPerSlot();
         sb.AppendLine($"SECONDS_PER_SLOT: {secondsPerSlot}");
         sb.AppendLine();
         sb.AppendLine("# Key Settings");
@@ -206,6 +206,17 @@ public sealed class DevnetFixture : IDisposable
             });
             File.WriteAllText(Path.Combine(DataDirs[i], "node-config.json"), json);
         }
+    }
+
+    private static int ResolveSecondsPerSlot()
+    {
+        var overrideValue = Environment.GetEnvironmentVariable("NLEAN_INTEG_SECONDS_PER_SLOT");
+        if (int.TryParse(overrideValue, out var parsed) && parsed > 0)
+        {
+            return parsed;
+        }
+
+        return Environment.GetEnvironmentVariable("CI") == "true" ? 2 : 1;
     }
 
     private static string ResolveBinaryPath()

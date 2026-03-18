@@ -123,6 +123,49 @@ public sealed class SyncServiceTests
     }
 
     [Test]
+    public async Task OnPeerStatusAsync_DoesNotBackfillFromPeerHeadRoot()
+    {
+        var peerMgr = new SyncPeerManager();
+        var processor = new FakeSyncBlockProcessor();
+        var cache = new NewBlockCache(capacity: 100);
+        var attestations = new FakeAttestationStore();
+        var network = new RecordingNetworkRequester();
+        var svc = new SyncService(processor, peerMgr, cache, attestations, network);
+        using var cts = new CancellationTokenSource();
+
+        await svc.StartAsync(cts.Token);
+        svc.OnPeerConnected("peer-1");
+        await svc.OnPeerStatusAsync("peer-1", headSlot: 100, finalizedSlot: 50, headRoot: MakeRoot(0x42));
+        await Task.Delay(100);
+        cts.Cancel();
+        await svc.StopAsync(CancellationToken.None);
+
+        Assert.That(network.Requests.Count, Is.EqualTo(0));
+    }
+
+    [Test]
+    public async Task TrySyncFromBestPeer_DoesNotBackfillFromPeerHeadRoot()
+    {
+        var peerMgr = new SyncPeerManager();
+        var processor = new FakeSyncBlockProcessor();
+        var cache = new NewBlockCache(capacity: 100);
+        var attestations = new FakeAttestationStore();
+        var network = new RecordingNetworkRequester();
+        var svc = new SyncService(processor, peerMgr, cache, attestations, network);
+        using var cts = new CancellationTokenSource();
+
+        await svc.StartAsync(cts.Token);
+        svc.OnPeerConnected("peer-1");
+        await svc.OnPeerStatusAsync("peer-1", headSlot: 100, finalizedSlot: 50, headRoot: MakeRoot(0x43));
+        svc.TrySyncFromBestPeer();
+        await Task.Delay(100);
+        cts.Cancel();
+        await svc.StopAsync(CancellationToken.None);
+
+        Assert.That(network.Requests.Count, Is.EqualTo(0));
+    }
+
+    [Test]
     public async Task PendingAttestations_ReplayedOnBlockArrival()
     {
         var attestationSink = new RejectThenAcceptAttestationStore();
@@ -149,6 +192,20 @@ public sealed class SyncServiceTests
 
         // The pending attestation should now have been replayed and accepted
         Assert.That(attestationSink.AcceptedCount, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void ResolvePreferredPeerId_PrefersHint_ThenBestPeer()
+    {
+        Assert.That(
+            InvokeResolvePreferredPeerId("peer-hint", "peer-best"),
+            Is.EqualTo("peer-hint"));
+        Assert.That(
+            InvokeResolvePreferredPeerId(null, "peer-best"),
+            Is.EqualTo("peer-best"));
+        Assert.That(
+            InvokeResolvePreferredPeerId("", null),
+            Is.Null);
     }
 
     // --- Helpers ---
@@ -192,6 +249,16 @@ public sealed class SyncServiceTests
         return new SignedAttestation(validatorId, data, XmssSignature.Empty());
     }
 
+    private static string? InvokeResolvePreferredPeerId(string? hintedPeerId, string? bestPeerId)
+    {
+        var method = typeof(SyncService).GetMethod(
+            "ResolvePreferredPeerId",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.That(method, Is.Not.Null);
+        return (string?)method!.Invoke(null, new object?[] { hintedPeerId, bestPeerId });
+    }
+
     private sealed class FakeSyncBlockProcessor : IBlockProcessor
     {
         public HashSet<Bytes32> KnownRoots { get; } = new();
@@ -200,6 +267,7 @@ public sealed class SyncServiceTests
         public ulong HeadSlot => CurrentHeadSlot;
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
+        public bool HasState(Bytes32 root) => KnownRoots.Contains(root);
 
         public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
         {
@@ -243,5 +311,17 @@ public sealed class SyncServiceTests
         public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
             string peerId, List<Bytes32> roots, CancellationToken ct) =>
             Task.FromResult(new List<SignedBlockWithAttestation>());
+    }
+
+    private sealed class RecordingNetworkRequester : INetworkRequester
+    {
+        public List<(string PeerId, List<Bytes32> Roots)> Requests { get; } = new();
+
+        public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
+            string peerId, List<Bytes32> roots, CancellationToken ct)
+        {
+            Requests.Add((peerId, new List<Bytes32>(roots)));
+            return Task.FromResult(new List<SignedBlockWithAttestation>());
+        }
     }
 }

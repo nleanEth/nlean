@@ -75,7 +75,7 @@ public sealed class BackfillSync : IBackfillTrigger
 
         _logger.LogInformation(
             "Backfill queued for root {Root}. PeerCount: {PeerCount}, PreferredPeerId: {PreferredPeerId}",
-            parentRoot,
+            Convert.ToHexString(parentRoot.AsSpan()),
             _peerManager.PeerCount,
             preferredPeerId ?? "(none)");
 
@@ -222,7 +222,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 var (block, blockRoot) = unprocessed[i];
                 var parentRoot = block.Message.Block.ParentRoot;
 
-                if (!_processor.IsBlockKnown(parentRoot))
+                if (!_processor.IsBlockKnown(parentRoot) || !_processor.HasState(parentRoot))
                     continue;
 
                 var result = _processor.ProcessBlock(block);
@@ -235,8 +235,11 @@ public sealed class BackfillSync : IBackfillTrigger
                 else
                 {
                     _logger.LogInformation(
-                        "Backfill: block rejected. Slot: {Slot}, Root: {Root}, Reason: {Reason}",
-                        block.Message.Block.Slot.Value, blockRoot, result.Reason);
+                        "Backfill: block rejected. Slot: {Slot}, Root: {Root}, ParentRoot: {ParentRoot}, Reason: {Reason}",
+                        block.Message.Block.Slot.Value,
+                        Convert.ToHexString(blockRoot.AsSpan()),
+                        Convert.ToHexString(block.Message.Block.ParentRoot.AsSpan()),
+                        result.Reason);
                 }
 
                 // Remove whether accepted or rejected — no point retrying.
@@ -294,7 +297,12 @@ public sealed class BackfillSync : IBackfillTrigger
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Backfill failed for root {Root}", parentRoot);
+                    _logger.LogWarning(
+                        ex,
+                        "Backfill failed for root {Root}. ExceptionType={ExceptionType}, Message={Message}",
+                        Convert.ToHexString(parentRoot.AsSpan()),
+                        ex.GetType().FullName,
+                        ex.Message);
                 }
                 finally
                 {

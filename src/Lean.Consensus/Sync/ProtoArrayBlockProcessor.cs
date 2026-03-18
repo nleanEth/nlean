@@ -2,6 +2,8 @@ using System.Diagnostics;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
 using Lean.Metrics;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Lean.Consensus.Sync;
 
@@ -19,6 +21,7 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
     private readonly IStateByRootStore? _stateByRootStore;
     private readonly ChainStateTransition _chainStateTransition;
     private readonly ChainStateCache _chainStateCache;
+    private readonly ILogger<ProtoArrayBlockProcessor> _logger;
 
     public ProtoArrayBlockProcessor(
         ProtoArrayForkChoiceStore store,
@@ -27,7 +30,8 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         ChainStateCache chainStateCache,
         ISlotIndexStore? slotIndexStore = null,
         IStateRootIndexStore? stateRootIndexStore = null,
-        IStateByRootStore? stateByRootStore = null)
+        IStateByRootStore? stateByRootStore = null,
+        ILogger<ProtoArrayBlockProcessor>? logger = null)
     {
         _store = store;
         _blockStore = blockStore;
@@ -36,6 +40,7 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         _slotIndexStore = slotIndexStore;
         _stateRootIndexStore = stateRootIndexStore;
         _stateByRootStore = stateByRootStore;
+        _logger = logger ?? NullLogger<ProtoArrayBlockProcessor>.Instance;
     }
 
     public ulong HeadSlot
@@ -57,6 +62,11 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         }
     }
 
+    public bool HasState(Bytes32 root)
+    {
+        return _chainStateCache.TryGet(ChainStateCache.RootKey(root), out _);
+    }
+
     public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
@@ -70,6 +80,16 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         // is missing from cache or if the transition itself fails.
         if (!_chainStateCache.TryGet(parentKey, out var parentState))
         {
+            var hasPersistedParentBlock = _blockStore.TryLoad(block.ParentRoot, out _);
+            var hasPersistedParentState = _stateByRootStore?.TryLoad(block.ParentRoot, out _) == true;
+            _logger.LogInformation(
+                "ProtoArrayBlockProcessor cache miss. Slot={Slot}, BlockRoot={BlockRoot}, ParentRoot={ParentRoot}, PersistedParentBlock={PersistedParentBlock}, PersistedParentState={PersistedParentState}, CacheCount={CacheCount}",
+                block.Slot.Value,
+                Convert.ToHexString(blockRoot.AsSpan()),
+                Convert.ToHexString(block.ParentRoot.AsSpan()),
+                hasPersistedParentBlock,
+                hasPersistedParentState,
+                _chainStateCache.Count);
             return ForkChoiceApplyResult.Rejected(
                 ForkChoiceRejectReason.UnknownParent,
                 "Parent state not found in chain state cache.",
@@ -102,6 +122,21 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
             _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
             _stateByRootStore?.Save(blockRoot, postState);
             _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
+            _logger.LogInformation(
+                "ProtoArrayBlockProcessor accepted. Slot={Slot}, BlockRoot={BlockRoot}, ParentRoot={ParentRoot}, CacheCount={CacheCount}",
+                block.Slot.Value,
+                Convert.ToHexString(blockRoot.AsSpan()),
+                Convert.ToHexString(block.ParentRoot.AsSpan()),
+                _chainStateCache.Count);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "ProtoArrayBlockProcessor rejected. Slot={Slot}, BlockRoot={BlockRoot}, ParentRoot={ParentRoot}, Reason={Reason}",
+                block.Slot.Value,
+                Convert.ToHexString(blockRoot.AsSpan()),
+                Convert.ToHexString(block.ParentRoot.AsSpan()),
+                result.Reason);
         }
 
         forkChoiceTimer.Stop();

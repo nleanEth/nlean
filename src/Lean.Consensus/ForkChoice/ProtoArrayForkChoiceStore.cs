@@ -64,22 +64,31 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             && loaded.HeadSlot > 0)
         {
             var headRoot = new Bytes32(loaded.HeadRoot);
+            var justifiedRoot = new Bytes32(loaded.LatestJustifiedRoot);
+            var finalizedRoot = new Bytes32(loaded.LatestFinalizedRoot);
 
             _headRoot = headRoot;
             _headSlot = loaded.HeadSlot;
-            _latestJustified = new Checkpoint(headRoot, new Slot(loaded.LatestJustifiedSlot));
-            _latestFinalized = new Checkpoint(headRoot, new Slot(loaded.LatestFinalizedSlot));
+            _latestJustified = new Checkpoint(justifiedRoot, new Slot(loaded.LatestJustifiedSlot));
+            _latestFinalized = new Checkpoint(finalizedRoot, new Slot(loaded.LatestFinalizedSlot));
             _currentSlot = loaded.HeadSlot;
-            _safeTarget = headRoot;
-            _protoArray = new ProtoArray(
-                headRoot,
-                loaded.HeadSlot,
-                loaded.LatestJustifiedSlot,
-                loaded.LatestFinalizedSlot);
+            _safeTarget = new Bytes32(loaded.SafeTargetRoot);
+
+            var rootSlot = headRoot.Equals(finalizedRoot) && loaded.HeadSlot != loaded.LatestFinalizedSlot
+                ? loaded.HeadSlot
+                : loaded.LatestFinalizedSlot;
+            _protoArray = new ProtoArray(finalizedRoot, rootSlot, loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+
+            if (!headRoot.Equals(finalizedRoot))
+            {
+                _protoArray.RegisterBlock(headRoot, finalizedRoot, loaded.HeadSlot,
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+            }
+
             _isReadyForDuties = false;
 
             _logger.LogInformation(
-                "Loaded checkpoint anchor. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}, ReadyForDuties={ReadyForDuties}",
+                "Loaded checkpoint state. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}, ReadyForDuties={ReadyForDuties}",
                 loaded.HeadSlot, loaded.LatestFinalizedSlot, loaded.LatestJustifiedSlot, _isReadyForDuties);
         }
         else
@@ -165,30 +174,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         // Match zeam/leanSpec: payload-backed proofs are stored even when the
         // lagging node cannot yet attach the attestation to its forkchoice view.
-        // Tracker updates are best-effort only; they can fail while catchup is
-        // still bringing the referenced roots into the proto-array.
-        if (TryValidateAttestationData(signed.Data, out _))
-        {
-            // Unpack aggregated proof participants into per-validator latestNew trackers
-            // immediately at gossip receive time so safe_target can reflect fresh votes.
-            var headIndex = _protoArray.GetIndex(signed.Data.Head.Root);
-            if (headIndex.HasValue)
-            {
-                foreach (var pid in participantIds)
-                {
-                    UpdateTrackerFromGossip(pid, headIndex.Value, signed.Data.Slot.Value, signed.Data);
-                }
-            }
-        }
-        else
-        {
-            _logger.LogDebug(
-                "Stored aggregated payload before tracker admission. Slot: {Slot}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, HeadRoot: {HeadRoot}",
-                signed.Data.Slot.Value,
-                signed.Data.Source.Slot.Value,
-                signed.Data.Target.Slot.Value,
-                Convert.ToHexString(signed.Data.Head.Root.AsSpan())[..8]);
-        }
+        // Tracker updates happen later in AcceptNewAttestations (tick intervals 0/4).
 
         reason = string.Empty;
         return true;
@@ -412,15 +398,9 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ToDataRootKey(attestation.Message);
         _attestationDataByRoot[dataRootKey] = attestation.Message;
 
-        // Match current zeam semantics: individual gossip updates latestNew for
-        // the attesting validator directly. Safe target should reflect a quorum
-        // of fresh gossip votes without waiting for local aggregation/proof
-        // publication to feed them back in.
-        var headIndex = _protoArray.GetIndex(attestation.Message.Head.Root);
-        if (headIndex.HasValue)
-        {
-            UpdateTrackerFromGossip(attestation.ValidatorId, headIndex.Value, attestation.Message.Slot.Value, attestation.Message);
-        }
+        // Match zeam/leanSpec: tracker updates happen in AcceptNewAttestations.
+        // Individual attestations feed into aggregation; the aggregated payloads
+        // are unpacked into per-validator trackers at tick intervals 0/4.
 
         if (storeSignature)
         {
@@ -540,10 +520,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _attestationTrackers.Count);
 
         // Step 1: Unpack received aggregated payloads into per-validator latestNew.
-        // Note: per-validator latestNew is now also set at gossip receive time
-        // (TryOnGossipAggregatedAttestation) so that UpdateSafeTarget at interval 3
-        // sees all validators' votes. This step is idempotent: UpdateTrackerFromGossip
-        // uses a slot guard, so re-unpacking same-slot data is a no-op.
+        // Match zeam/leanSpec: this is the sole path for tracker updates from
+        // aggregated attestations. Gossip receive only stores payloads.
         foreach (var (dataRootKey, proofs) in _newAggregatedPayloads)
         {
             if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
@@ -664,8 +642,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var justifiedIdx = _protoArray.GetIndex(_latestJustified.Root);
         if (!justifiedIdx.HasValue)
         {
-            throw new InvalidOperationException(
-                $"Justified root {_latestJustified.Root} is not present in the proto-array.");
+            // During catch-up the justified root may not yet be in the proto-array.
+            // Fall back to index 0 (finalized node) so head election still works.
+            _logger.LogDebug(
+                "ComputeForkChoiceHead: justified root not in proto-array, falling back to index 0. JustifiedRoot: {Root}",
+                Convert.ToHexString(_latestJustified.Root.AsSpan())[..8]);
+            justifiedIdx = 0;
         }
 
         var justifiedNode = _protoArray.GetNodeByIndex(justifiedIdx.Value);
