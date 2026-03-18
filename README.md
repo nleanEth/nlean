@@ -112,8 +112,16 @@ The `client-cmds/nlean-cmd.sh` script follows lean-quickstart's client-cmd contr
 
 ## Docker
 
+Build locally:
+
 ```bash
 docker build -t nlean --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
+```
+
+Pre-built multi-arch images are published to GitHub Container Registry on every tagged release:
+
+```bash
+docker pull ghcr.io/nleaneth/nlean:latest
 ```
 
 ## CI
@@ -126,6 +134,14 @@ GitHub Actions (`.github/workflows/ci.yml`) on PR and push to `main`:
 | `build-test (ubuntu/macos)` | Build + unit tests + publish |
 | `consensus-simulation` | Multi-node finalization simulation |
 | `integration-tests` | 4-node devnet integration (45 min timeout) |
+
+On tag `v*` push (`.github/workflows/docker-publish.yml` + `.github/workflows/release.yml`):
+
+| Job | Description |
+|-----|-------------|
+| `docker build-and-push` | Multi-arch Docker image → `ghcr.io/nleaneth/nlean` |
+| `release build` | Self-contained binaries (linux-x64, linux-arm64, osx-arm64) |
+| `release create-release` | GitHub Release with tar.gz artifacts |
 
 ## License
 

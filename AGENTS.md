@@ -112,6 +112,19 @@ GitHub Actions (`.github/workflows/ci.yml`) on PR and push to `main`:
 | `consensus-simulation` | Multi-node finalization simulation |
 | `integration-tests` | 4-node devnet integration tests (45 min timeout) |
 
+GitHub Actions (`.github/workflows/docker-publish.yml`) on tag `v*` push:
+
+| Job | Description |
+|-----|-------------|
+| `build-and-push` | Multi-arch Docker image → `ghcr.io/nleaneth/nlean` |
+
+GitHub Actions (`.github/workflows/release.yml`) on tag `v*` push:
+
+| Job | Description |
+|-----|-------------|
+| `build (linux-x64/linux-arm64/osx-arm64)` | Self-contained publish + tar.gz archive |
+| `create-release` | GitHub Release with binary artifacts |
+
 ## PR Checklist
 
 - [ ] Format check: `./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace --exclude vendor`

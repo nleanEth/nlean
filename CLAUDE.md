@@ -63,6 +63,10 @@ GitHub Actions runs on PR and push to `main`:
 - `consensus-simulation` — multi-node finalization simulation
 - `integration-tests` — 4-node devnet (45 min timeout)
 
+On tag `v*` push:
+- `docker-publish` — multi-arch Docker image to `ghcr.io/nleaneth/nlean`
+- `release` — GitHub Release with self-contained binaries (linux-x64, linux-arm64, osx-arm64)
+
 ## Local Devnet
 
 ```bash

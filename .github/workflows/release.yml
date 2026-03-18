@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-latest
+            rid: linux-arm64
+          - os: macos-latest
+            rid: osx-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json', 'NuGet.config', 'scripts/libp2p/build-patched-pubsub-package.sh', 'scripts/libp2p/patches/pubsub-anonymous.patch') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/lean-crypto-ffi
+
+      - name: Build patched pubsub package
+        run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+
+      - name: Build patched quic package
+        run: ./scripts/libp2p/build-patched-quic-package.sh --force
+
+      - name: Publish
+        run: >
+          dotnet publish src/Lean.Client/Lean.Client.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:ContinuousIntegrationBuild=true
+          -o artifacts/lean-client-${{ matrix.rid }}
+
+      - name: Archive
+        run: tar -czf nlean-${{ matrix.rid }}.tar.gz -C artifacts lean-client-${{ matrix.rid }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nlean-${{ matrix.rid }}
+          path: nlean-${{ matrix.rid }}.tar.gz
+
+  release:
+    name: create-release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*.tar.gz
