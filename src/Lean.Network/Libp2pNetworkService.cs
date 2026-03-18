@@ -1359,8 +1359,9 @@ public sealed class Libp2pNetworkService : INetworkService
         if (OperatingSystem.IsMacOS())
         {
             return "QUIC is enabled but System.Net.Quic is not supported on this macOS runtime. " +
-                   "Install libmsquic and ensure it is visible to the process, for example: " +
-                   "export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH";
+                   "Install libmsquic (brew install microsoft/msquic/libmsquic) and copy the library " +
+                   "next to the binary: cp /opt/homebrew/lib/libmsquic.dylib <app-dir>/ " +
+                   "(macOS SIP strips DYLD_LIBRARY_PATH, so the library must be co-located with the binary).";
         }
 
         return "QUIC is enabled but System.Net.Quic is not supported on this runtime. " +

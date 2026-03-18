@@ -24,6 +24,13 @@ Key source directories:
 - `src/Lean.Client/` — CLI entry point
 - `native/lean-crypto-ffi/` — Rust crate for crypto
 
+## Runtime Dependencies
+
+- **libmsquic** (version 2+) — required for QUIC transport
+  - macOS: `brew install microsoft/msquic/libmsquic` and copy `libmsquic.dylib` next to the binary (macOS SIP strips `DYLD_LIBRARY_PATH`)
+  - Linux: install via Microsoft apt repo (see README)
+  - Docker: already handled in Dockerfile
+
 ## Coding Conventions
 
 - Do NOT modify files under `vendor/` unless explicitly required.

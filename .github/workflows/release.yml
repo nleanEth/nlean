@@ -67,6 +67,36 @@ jobs:
           -p:ContinuousIntegrationBuild=true
           -o artifacts/lean-client-${{ matrix.rid }}
 
+      - name: Bundle libmsquic (Linux x64)
+        if: matrix.rid == 'linux-x64'
+        run: |
+          wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libmsquic
+          cp /usr/lib/x86_64-linux-gnu/libmsquic.so.2 artifacts/lean-client-${{ matrix.rid }}/
+
+      - name: Bundle libmsquic (Linux arm64)
+        if: matrix.rid == 'linux-arm64'
+        run: |
+          wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          apt-get download libmsquic:arm64 || true
+          if ls libmsquic*.deb 1>/dev/null 2>&1; then
+            dpkg-deb -x libmsquic*.deb msquic-extract
+            cp msquic-extract/usr/lib/aarch64-linux-gnu/libmsquic.so.2 artifacts/lean-client-${{ matrix.rid }}/
+          else
+            echo "::warning::Could not download arm64 libmsquic; users must install it separately"
+          fi
+
+      - name: Bundle libmsquic (macOS)
+        if: matrix.rid == 'osx-arm64'
+        run: |
+          brew install microsoft/msquic/libmsquic
+          cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client-${{ matrix.rid }}/
+
       - name: Archive
         run: tar -czf nlean-${{ matrix.rid }}.tar.gz -C artifacts lean-client-${{ matrix.rid }}
 

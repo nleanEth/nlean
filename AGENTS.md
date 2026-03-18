@@ -39,6 +39,9 @@ vendor/
 
 - .NET SDK 10.0+ (see `global.json`)
 - Rust toolchain (`cargo`) for native crypto builds
+- [libmsquic](https://github.com/microsoft/msquic) (version 2+) for QUIC transport
+  - macOS: `brew install microsoft/msquic/libmsquic` then copy `libmsquic.dylib` next to the binary
+  - Linux: install via Microsoft apt repo (see README)
 - Git submodules: `git submodule update --init --recursive`
 - Docker (for integration tests and interop)
 

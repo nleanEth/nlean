@@ -6,8 +6,31 @@ Lean consensus client in C#, built with .NET 10+, Rust FFI for hash-based crypto
 
 - [.NET SDK 10.0+](https://dotnet.microsoft.com/) (see `global.json`)
 - [Rust toolchain](https://rustup.rs/) (`cargo`) for native crypto FFI
+- [libmsquic](https://github.com/microsoft/msquic) (version 2+) for QUIC transport
 - Docker (for integration tests and interop)
 - Git submodules: `git submodule update --init --recursive`
+
+### Installing libmsquic
+
+**macOS (Homebrew):**
+
+```bash
+brew install microsoft/msquic/libmsquic
+```
+
+After installing, copy the library next to the published binary so .NET can find it (macOS SIP strips `DYLD_LIBRARY_PATH`):
+
+```bash
+cp /opt/homebrew/lib/libmsquic.dylib <publish-dir>/
+```
+
+**Ubuntu / Debian:**
+
+```bash
+wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
+sudo apt-get update && sudo apt-get install -y libmsquic
+```
 
 ## Quick Start
 
