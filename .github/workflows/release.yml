@@ -95,7 +95,10 @@ jobs:
         if: matrix.rid == 'osx-arm64'
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          echo "https://x-access-token:${GH_TOKEN}@github.com" > "$HOME/.git-credentials"
+          git config --global credential.helper 'store'
           brew install microsoft/msquic/libmsquic
           cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client-${{ matrix.rid }}/
 
