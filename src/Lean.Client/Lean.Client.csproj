@@ -22,4 +22,11 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <Target Name="CopyNativeLibsToPublish" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == ''">
+    <ItemGroup>
+      <_NativeLibs Include="runtimes/*/native/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_NativeLibs)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
