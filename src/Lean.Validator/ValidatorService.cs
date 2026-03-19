@@ -252,7 +252,7 @@ public sealed class ValidatorService : IValidatorService
             var verificationStopwatch = Stopwatch.StartNew();
             selfVerificationOk = _leanSig.Verify(validatorPublicKey, epoch, messageRoot, signatureBytes);
             verificationStopwatch.Stop();
-            LeanMetrics.RecordPqAttestationVerification(verificationStopwatch.Elapsed);
+            LeanMetrics.RecordPqAttestationVerification(selfVerificationOk, verificationStopwatch.Elapsed);
         }
 
         var signature = XmssSignature.FromBytes(signatureBytes);
@@ -382,6 +382,7 @@ public sealed class ValidatorService : IValidatorService
                 proofData = _leanMultiSig.AggregateSignatures(publicKeys, signatureBytes, messageRoot, epoch);
                 aggregationStopwatch.Stop();
                 LeanMetrics.RecordPqAggregatedSignatureBuilt(publicKeys.Count, aggregationStopwatch.Elapsed);
+                LeanMetrics.RecordCommitteeSignaturesAggregation(aggregationStopwatch.Elapsed);
             }
             catch (Exception ex)
             {
@@ -723,6 +724,8 @@ public sealed class ValidatorService : IValidatorService
         _validatorId = indices[0];
         _validatorCount = Math.Max(_consensusConfig.InitialValidatorCount, indices.Max() + 1);
         LeanMetrics.SetValidatorsCount((ulong)indices.Count);
+        LeanMetrics.SetAttestationCommitteeSubnet(
+            new ValidatorIndex(_validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount));
 
         LoadKnownValidatorPublicKeysFromGenesisConfig();
 

@@ -1,5 +1,6 @@
 using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
+using Lean.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -142,6 +143,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     {
         var key = (validatorId, ProtoArray.RootKey(dataRoot));
         _gossipSignatures[key] = signature;
+        LeanMetrics.SetGossipSignatures(_gossipSignatures.Count);
     }
 
     public bool HasGossipSignature(ulong validatorId, Bytes32 dataRoot)
@@ -171,6 +173,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _newAggregatedPayloads[dataRootKey] = list;
         }
         list.Add(signed.Proof);
+        LeanMetrics.SetLatestNewAggregatedPayloads(
+            _newAggregatedPayloads.Values.Sum(v => v.Count));
 
         reason = string.Empty;
         return true;
@@ -408,6 +412,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         {
             _gossipSignatures.Remove((attestation.ValidatorId, dataRootKey));
         }
+        LeanMetrics.SetGossipSignatures(_gossipSignatures.Count);
         reason = string.Empty;
         return true;
     }
@@ -547,6 +552,9 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             knownList.AddRange(payloads);
         }
         _newAggregatedPayloads.Clear();
+        LeanMetrics.SetLatestNewAggregatedPayloads(0);
+        LeanMetrics.SetLatestKnownAggregatedPayloads(
+            _knownAggregatedPayloads.Values.Sum(v => v.Count));
 
         // Step 3: Promote latestNew → latestKnown for all validators.
         // Once a vote has been accepted, latestNew
@@ -878,6 +886,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _knownAggregatedPayloads.Remove(dataKey);
             _newAggregatedPayloads.Remove(dataKey);
         }
+
+        LeanMetrics.SetGossipSignatures(_gossipSignatures.Count);
+        LeanMetrics.SetLatestKnownAggregatedPayloads(
+            _knownAggregatedPayloads.Values.Sum(v => v.Count));
+        LeanMetrics.SetLatestNewAggregatedPayloads(
+            _newAggregatedPayloads.Values.Sum(v => v.Count));
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {

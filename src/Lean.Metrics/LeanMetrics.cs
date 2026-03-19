@@ -5,6 +5,9 @@ namespace Lean.Metrics;
 public static class LeanMetrics
 {
     private static readonly double[] ShortLatencyBuckets = { 0.005, 0.01, 0.025, 0.05, 0.1, 1 };
+    private static readonly double[] ForkChoiceBlockBuckets = { 0.005, 0.01, 0.025, 0.05, 0.1, 1, 1.25, 1.5, 2, 4 };
+    private static readonly double[] AggregatedSignatureBuckets = { 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4 };
+    private static readonly double[] CommitteeSignaturesBuckets = { 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1 };
     private static readonly double[] StateTransitionBuckets = { 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4 };
     private static readonly double[] ReorgDepthBuckets = { 1, 2, 3, 5, 7, 10, 20, 30, 50, 100 };
 
@@ -20,8 +23,20 @@ public static class LeanMetrics
         "lean_node_start_time_seconds",
         "Node start timestamp in unix seconds.");
 
+    public static readonly Counter PqSigAttestationSignaturesTotal = Prometheus.Metrics.CreateCounter(
+        "lean_pq_sig_attestation_signatures_total",
+        "Total number of individual attestation signatures.");
+
+    public static readonly Counter PqSigAttestationSignaturesValidTotal = Prometheus.Metrics.CreateCounter(
+        "lean_pq_sig_attestation_signatures_valid_total",
+        "Total number of valid individual attestation signatures.");
+
+    public static readonly Counter PqSigAttestationSignaturesInvalidTotal = Prometheus.Metrics.CreateCounter(
+        "lean_pq_sig_attestation_signatures_invalid_total",
+        "Total number of invalid individual attestation signatures.");
+
     public static readonly Histogram PqSigAttestationSigningTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_signature_attestation_signing_time_seconds",
+        "lean_pq_sig_attestation_signing_time_seconds",
         "Time taken to sign an attestation.",
         new HistogramConfiguration
         {
@@ -29,7 +44,7 @@ public static class LeanMetrics
         });
 
     public static readonly Histogram PqSigAttestationVerificationTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_signature_attestation_verification_time_seconds",
+        "lean_pq_sig_attestation_verification_time_seconds",
         "Time taken to verify an attestation signature.",
         new HistogramConfiguration
         {
@@ -44,12 +59,12 @@ public static class LeanMetrics
         "lean_pq_sig_attestations_in_aggregated_signatures_total",
         "Total number of attestations included into aggregated signatures.");
 
-    public static readonly Histogram PqSigAttestationSignaturesBuildingTimeSeconds = Prometheus.Metrics.CreateHistogram(
-        "lean_pq_sig_attestation_signatures_building_time_seconds",
+    public static readonly Histogram PqSigAggregatedSignaturesBuildingTimeSeconds = Prometheus.Metrics.CreateHistogram(
+        "lean_pq_sig_aggregated_signatures_building_time_seconds",
         "Time taken to build an aggregated attestation signature.",
         new HistogramConfiguration
         {
-            Buckets = ShortLatencyBuckets
+            Buckets = AggregatedSignatureBuckets
         });
 
     public static readonly Histogram PqSigAggregatedSignaturesVerificationTimeSeconds = Prometheus.Metrics.CreateHistogram(
@@ -57,7 +72,7 @@ public static class LeanMetrics
         "Time taken to verify an aggregated attestation signature.",
         new HistogramConfiguration
         {
-            Buckets = ShortLatencyBuckets
+            Buckets = AggregatedSignatureBuckets
         });
 
     public static readonly Counter PqSigAggregatedSignaturesValidTotal = Prometheus.Metrics.CreateCounter(
@@ -85,7 +100,7 @@ public static class LeanMetrics
         "Time taken to process block in fork choice.",
         new HistogramConfiguration
         {
-            Buckets = ShortLatencyBuckets
+            Buckets = ForkChoiceBlockBuckets
         });
 
     public static readonly Counter AttestationsValidTotal = Prometheus.Metrics.CreateCounter(
@@ -180,9 +195,33 @@ public static class LeanMetrics
             Buckets = ShortLatencyBuckets
         });
 
+    public static readonly Gauge GossipSignatures = Prometheus.Metrics.CreateGauge(
+        "lean_gossip_signatures",
+        "Number of gossip signatures in fork-choice store.");
+
+    public static readonly Gauge LatestNewAggregatedPayloads = Prometheus.Metrics.CreateGauge(
+        "lean_latest_new_aggregated_payloads",
+        "Number of new aggregated payload items.");
+
+    public static readonly Gauge LatestKnownAggregatedPayloads = Prometheus.Metrics.CreateGauge(
+        "lean_latest_known_aggregated_payloads",
+        "Number of known aggregated payload items.");
+
+    public static readonly Histogram CommitteeSignaturesAggregationTimeSeconds = Prometheus.Metrics.CreateHistogram(
+        "lean_committee_signatures_aggregation_time_seconds",
+        "Time taken to aggregate committee signatures.",
+        new HistogramConfiguration
+        {
+            Buckets = CommitteeSignaturesBuckets
+        });
+
     public static readonly Gauge ValidatorsCount = Prometheus.Metrics.CreateGauge(
         "lean_validators_count",
         "Number of validators managed by a node.");
+
+    public static readonly Gauge IsAggregator = Prometheus.Metrics.CreateGauge(
+        "lean_is_aggregator",
+        "Validator's is_aggregator status. True=1, False=0.");
 
     public static readonly Gauge ConnectedPeers = Prometheus.Metrics.CreateGauge(
         "lean_connected_peers",
@@ -203,6 +242,14 @@ public static class LeanMetrics
         {
             LabelNames = new[] { "direction", "reason" }
         });
+
+    public static readonly Gauge AttestationCommitteeSubnet = Prometheus.Metrics.CreateGauge(
+        "lean_attestation_committee_subnet",
+        "Node's attestation committee subnet.");
+
+    public static readonly Gauge AttestationCommitteeCount = Prometheus.Metrics.CreateGauge(
+        "lean_attestation_committee_count",
+        "Number of attestation committees (ATTESTATION_COMMITTEE_COUNT).");
 
     // --- Sync metrics ---
 
@@ -329,12 +376,21 @@ public static class LeanMetrics
 
     public static void RecordPqAttestationSigning(TimeSpan elapsed)
     {
+        PqSigAttestationSignaturesTotal.Inc();
         PqSigAttestationSigningTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
     }
 
-    public static void RecordPqAttestationVerification(TimeSpan elapsed)
+    public static void RecordPqAttestationVerification(bool valid, TimeSpan elapsed)
     {
         PqSigAttestationVerificationTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
+        if (valid)
+        {
+            PqSigAttestationSignaturesValidTotal.Inc();
+        }
+        else
+        {
+            PqSigAttestationSignaturesInvalidTotal.Inc();
+        }
     }
 
     public static void RecordPqAggregatedSignatureBuilt(int attestationsIncluded, TimeSpan elapsed)
@@ -345,7 +401,7 @@ public static class LeanMetrics
             PqSigAttestationsInAggregatedSignaturesTotal.Inc(attestationsIncluded);
         }
 
-        PqSigAttestationSignaturesBuildingTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
+        PqSigAggregatedSignaturesBuildingTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
     }
 
     public static void RecordPqAggregatedSignatureVerification(bool valid, TimeSpan elapsed)
@@ -398,5 +454,40 @@ public static class LeanMetrics
     public static void SetConnectedPeers(int peerCount)
     {
         ConnectedPeers.Set(Math.Max(0, peerCount));
+    }
+
+    public static void SetGossipSignatures(int count)
+    {
+        GossipSignatures.Set(Math.Max(0, count));
+    }
+
+    public static void SetLatestNewAggregatedPayloads(int count)
+    {
+        LatestNewAggregatedPayloads.Set(Math.Max(0, count));
+    }
+
+    public static void SetLatestKnownAggregatedPayloads(int count)
+    {
+        LatestKnownAggregatedPayloads.Set(Math.Max(0, count));
+    }
+
+    public static void RecordCommitteeSignaturesAggregation(TimeSpan elapsed)
+    {
+        CommitteeSignaturesAggregationTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
+    }
+
+    public static void SetIsAggregator(bool isAggregator)
+    {
+        IsAggregator.Set(isAggregator ? 1 : 0);
+    }
+
+    public static void SetAttestationCommitteeSubnet(int subnet)
+    {
+        AttestationCommitteeSubnet.Set(subnet);
+    }
+
+    public static void SetAttestationCommitteeCount(int count)
+    {
+        AttestationCommitteeCount.Set(Math.Max(0, count));
     }
 }

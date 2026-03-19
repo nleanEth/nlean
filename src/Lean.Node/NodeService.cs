@@ -58,6 +58,8 @@ public sealed class NodeService : BackgroundService
             _logger.LogInformation("NodeService startup: starting metrics service.");
             await _metricsService.StartAsync(stoppingToken);
             LeanMetrics.SetNodeInfo(_options.NodeName ?? string.Empty, ResolveNodeVersion());
+            LeanMetrics.SetIsAggregator(_options.Consensus.IsAggregator);
+            LeanMetrics.SetAttestationCommitteeCount(_options.Consensus.AttestationCommitteeCount);
         }
         catch (Exception ex)
         {
