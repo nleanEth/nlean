@@ -34,6 +34,14 @@ public static class NodeApp
                 {
                     logging.SetMinimumLevel(level);
                 }
+
+                logging.AddSimpleConsole(o =>
+                {
+                    o.IncludeScopes = true;
+                    o.SingleLine = true;
+                    o.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fff] ";
+                    o.UseUtcTimestamp = true;
+                });
             })
             .ConfigureServices(services =>
             {
