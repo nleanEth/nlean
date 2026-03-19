@@ -34,8 +34,14 @@ sudo apt-get update && sudo apt-get install -y libmsquic
 
 ## Quick Start
 
+### Build from Source
+
 ```bash
-# Build native crypto bindings
+# Clone with submodules
+git clone --recursive https://github.com/nleanEth/nlean.git
+cd nlean
+
+# Build native crypto bindings (requires Rust toolchain)
 ./scripts/build-native.sh
 
 # Build patched libp2p packages (required for gossip/quic compatibility)
@@ -51,11 +57,119 @@ dotnet test Lean.sln -c Release
 
 ## Running the Client
 
+There are three ways to run nlean: **Docker**, **release binary**, or **build from source**. Choose one below.
+
+### Option 1: Docker (Recommended)
+
+Everything is self-contained — no need to install libmsquic or .NET separately.
+
+```bash
+# Pull pre-built image
+docker pull ghcr.io/nleaneth/nlean:latest
+
+# Or build locally
+docker build -t nlean --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
+
+# Run
+docker run ghcr.io/nleaneth/nlean:latest \
+  --validator-config /path/to/validator-config.yaml \
+  --node nlean_0 \
+  --data-dir /data/nlean_0 \
+  --network devnet0 \
+  --node-key /path/to/nlean_0.key \
+  --socket-port 9101 \
+  --api-port 5052 \
+  --metrics-port 18081 \
+  --hash-sig-key-dir /path/to/hash-sig-keys \
+  --is-aggregator \
+  --log Information
+```
+
+### Option 2: Release Binary
+
+Download a release archive from [GitHub Releases](https://github.com/nleanEth/nlean/releases).
+
+**Linux (single-file or portable):**
+
+```bash
+# Download and extract (example: linux-x64 single-file)
+tar -xzf nlean-linux-x64.tar.gz
+
+# Install libmsquic (required)
+wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
+sudo apt-get update && sudo apt-get install -y libmsquic
+
+# Run (single-file binary — libmsquic is loaded from system path)
+./lean-client-linux-x64/Lean.Client --help
+```
+
+**macOS arm64 (multi-file only):**
+
+```bash
+# Download and extract
+tar -xzf nlean-osx-arm64.tar.gz
+
+# Install libmsquic via Homebrew
+brew install microsoft/msquic/libmsquic
+
+# Copy libmsquic next to the binary (required — macOS SIP strips DYLD_LIBRARY_PATH)
+cp /opt/homebrew/lib/libmsquic.dylib lean-client-osx-arm64-portable/
+
+# Run
+./lean-client-osx-arm64-portable/Lean.Client --help
+```
+
+### Option 3: Build and Publish from Source
+
+**Linux — framework-dependent (requires .NET 10 runtime installed):**
+
 ```bash
 # Publish
 dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
 
+# Install libmsquic (required)
+wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+sudo dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
+sudo apt-get update && sudo apt-get install -y libmsquic
+
 # Run
+./artifacts/lean-client/Lean.Client --help
+```
+
+**Linux — self-contained single-file:**
+
+```bash
+dotnet publish src/Lean.Client/Lean.Client.csproj \
+  -c Release -r linux-x64 --self-contained true \
+  -p:PublishSingleFile=true -p:IncludeAllContentForSelfExtract=true \
+  -o artifacts/lean-client
+
+# Install libmsquic (required)
+sudo apt-get install -y libmsquic
+
+# Run
+./artifacts/lean-client/Lean.Client --help
+```
+
+**macOS arm64 — self-contained multi-file:**
+
+```bash
+dotnet publish src/Lean.Client/Lean.Client.csproj \
+  -c Release -r osx-arm64 --self-contained true \
+  -o artifacts/lean-client
+
+# Install libmsquic and copy next to the binary
+brew install microsoft/msquic/libmsquic
+cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client/
+
+# Run
+./artifacts/lean-client/Lean.Client --help
+```
+
+### Running with Flags
+
+```bash
 ./artifacts/lean-client/Lean.Client \
   --validator-config /path/to/validator-config.yaml \
   --node nlean_0 \
@@ -111,8 +225,10 @@ dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" \
   /m:1 /nodeReuse:false
 
-# Integration tests (requires published binary)
+# Integration tests (requires published binary + libmsquic)
 dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
+# Linux: sudo apt-get install -y libmsquic
+# macOS: brew install microsoft/msquic/libmsquic && cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client/
 dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release
 
 # Format check
@@ -135,11 +251,7 @@ The `client-cmds/nlean-cmd.sh` script follows lean-quickstart's client-cmd contr
 
 ## Docker
 
-Build locally:
-
-```bash
-docker build -t nlean --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
-```
+See [Option 1: Docker](#option-1-docker-recommended) above for running via Docker.
 
 Pre-built multi-arch images are published to GitHub Container Registry on every tagged release:
 
@@ -178,7 +290,7 @@ Each tagged release publishes the following artifacts:
 | `nlean-linux-arm64-portable.tar.gz` | Linux arm64 | Multi-file | Self-contained publish with separate DLLs and native libs |
 | `nlean-osx-arm64.tar.gz` | macOS arm64 | Multi-file | Self-contained publish with separate DLLs and native libs |
 
-> **Note:** macOS releases are multi-file only. Single-file publish (`PublishSingleFile=true`) on macOS causes segfaults due to native library loading issues with `libmsquic`. The multi-file format works correctly on all platforms.
+> **Note:** macOS releases are multi-file only due to intermittent `libmsquic` crashes with single-file publish. On macOS, you must copy `libmsquic.dylib` next to the binary — see [Option 2: Release Binary](#option-2-release-binary) for details.
 
 ## License
 
