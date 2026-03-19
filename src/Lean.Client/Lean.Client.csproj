@@ -13,17 +13,34 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="runtimes/$(RuntimeIdentifier)/native/*" Condition="'$(RuntimeIdentifier)' != ''">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-      <Link>%(Filename)%(Extension)</Link>
-    </None>
+    <!-- Remove native libs from SDK default glob to avoid publish duplicates -->
+    <None Remove="runtimes/**/native/*" />
     <Content Include="runtimes/**" Condition="'$(RuntimeIdentifier)' == ''">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
 
-  <Target Name="CopyNativeLibsToPublish" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == ''">
+  <!--
+    Collect native libs AFTER dependency projects are built so that
+    liblean_crypto_ffi.so (produced by Lean.Crypto's BuildLeanCryptoNative
+    target during the build phase) is already on disk when the glob expands.
+    A static ItemGroup glob evaluates during the MSBuild evaluation phase
+    (before any targets run), which is too early on clean CI builds.
+  -->
+  <Target Name="CollectNativeLibsForOutput"
+          AfterTargets="ResolveProjectReferences"
+          Condition="'$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <None Remove="runtimes/$(RuntimeIdentifier)/native/*" />
+      <None Include="runtimes/$(RuntimeIdentifier)/native/*">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <Link>%(Filename)%(Extension)</Link>
+      </None>
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CopyNativeLibsToPublish" AfterTargets="Publish">
     <ItemGroup>
       <_NativeLibs Include="runtimes/*/native/*" />
     </ItemGroup>

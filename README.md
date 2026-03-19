@@ -155,15 +155,16 @@ sudo apt-get install -y libmsquic
 **macOS arm64 — self-contained multi-file:**
 
 ```bash
+# Install libmsquic (required before publish so it gets copied automatically)
+brew install microsoft/msquic/libmsquic
+mkdir -p src/Lean.Client/runtimes/osx-arm64/native
+cp /opt/homebrew/lib/libmsquic.dylib src/Lean.Client/runtimes/osx-arm64/native/
+
 dotnet publish src/Lean.Client/Lean.Client.csproj \
   -c Release -r osx-arm64 --self-contained true \
   -o artifacts/lean-client
 
-# Install libmsquic and copy next to the binary
-brew install microsoft/msquic/libmsquic
-cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client/
-
-# Run
+# Run (libmsquic.dylib and liblean_crypto_ffi.dylib are copied automatically)
 ./artifacts/lean-client/Lean.Client --help
 ```
 

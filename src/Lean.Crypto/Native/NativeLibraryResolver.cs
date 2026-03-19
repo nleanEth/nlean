@@ -29,8 +29,16 @@ internal static class NativeLibraryResolver
         var rid = GetRuntimeIdentifier();
         var fileName = GetLibraryFileName();
 
+        // Prefer runtimes/{rid}/native/ layout (framework-dependent / portable publish)
         var candidate = Path.Combine(baseDir, "runtimes", rid, "native", fileName);
         if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out var handle))
+        {
+            return handle;
+        }
+
+        // Fall back to base directory (single-file extraction puts native libs at root)
+        candidate = Path.Combine(baseDir, fileName);
+        if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out handle))
         {
             return handle;
         }
