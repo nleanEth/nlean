@@ -722,7 +722,7 @@ public sealed class ValidatorService : IValidatorService
 
         _validatorId = indices[0];
         _validatorCount = Math.Max(_consensusConfig.InitialValidatorCount, indices.Max() + 1);
-        LeanMetrics.SetValidatorsCount(_validatorCount);
+        LeanMetrics.SetValidatorsCount((ulong)indices.Count);
 
         LoadKnownValidatorPublicKeysFromGenesisConfig();
 
