@@ -5,6 +5,7 @@ public sealed class Libp2pConfig
     public List<string> ListenAddresses { get; set; } = new() { "/ip4/0.0.0.0/tcp/0" };
     public List<string> BootstrapPeers { get; set; } = new();
     public List<string> BootstrapNodeNames { get; set; } = new();
+    public Dictionary<string, string> PeerClientNames { get; set; } = new(StringComparer.Ordinal);
     public string? PrivateKeyPath { get; set; }
     public string? PrivateKeyHex { get; set; }
     public bool EnableMdns { get; set; } = true;

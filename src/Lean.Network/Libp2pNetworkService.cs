@@ -42,7 +42,7 @@ public sealed class Libp2pNetworkService : INetworkService
     private readonly object _statusProbeLock = new();
     private readonly Dictionary<string, DateTimeOffset> _lastStatusProbeAtUtc = new(StringComparer.Ordinal);
     private readonly object _connectedPeersLock = new();
-    private readonly HashSet<string> _connectedPeers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _connectedPeers = new(StringComparer.Ordinal);
     private readonly object _bootstrapSessionsLock = new();
     private readonly List<ISession> _bootstrapSessions = new();
     private readonly HashSet<string> _connectedBootstrapPeers = new(StringComparer.Ordinal);
@@ -77,7 +77,7 @@ public sealed class Libp2pNetworkService : INetworkService
         lock (_connectedPeersLock)
         {
             _connectedPeers.Clear();
-            LeanMetrics.SetConnectedPeers(0);
+            LeanMetrics.ResetConnectedPeers();
         }
 
         var identity = Libp2pIdentityFactory.Create(_config);
@@ -178,7 +178,7 @@ public sealed class Libp2pNetworkService : INetworkService
         lock (_connectedPeersLock)
         {
             _connectedPeers.Clear();
-            LeanMetrics.SetConnectedPeers(0);
+            LeanMetrics.ResetConnectedPeers();
         }
 
         if (_peer is not null && _onConnectedHandler is not null)
@@ -1282,6 +1282,11 @@ public sealed class Libp2pNetworkService : INetworkService
         return trimmed;
     }
 
+    private string ResolveClientName(string normalizedPeerKey)
+    {
+        return _config.PeerClientNames.TryGetValue(normalizedPeerKey, out var name) ? name : "unknown";
+    }
+
     private void RecordPeerConnected(string peerKey, string direction)
     {
         if (!TryNormalizePeerKey(peerKey, out var normalizedPeerKey))
@@ -1290,10 +1295,16 @@ public sealed class Libp2pNetworkService : INetworkService
         }
 
         var added = false;
+        string clientName;
         lock (_connectedPeersLock)
         {
-            added = _connectedPeers.Add(normalizedPeerKey);
-            LeanMetrics.SetConnectedPeers(_connectedPeers.Count);
+            if (!_connectedPeers.ContainsKey(normalizedPeerKey))
+            {
+                clientName = ResolveClientName(normalizedPeerKey);
+                _connectedPeers[normalizedPeerKey] = clientName;
+                added = true;
+                LeanMetrics.IncConnectedPeers(clientName);
+            }
         }
 
         if (added)
@@ -1313,8 +1324,10 @@ public sealed class Libp2pNetworkService : INetworkService
         {
             lock (_connectedPeersLock)
             {
-                _connectedPeers.Remove(normalizedPeerKey);
-                LeanMetrics.SetConnectedPeers(_connectedPeers.Count);
+                if (_connectedPeers.Remove(normalizedPeerKey, out var clientName))
+                {
+                    LeanMetrics.DecConnectedPeers(clientName);
+                }
             }
         }
 

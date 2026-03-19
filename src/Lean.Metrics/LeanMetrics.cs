@@ -225,7 +225,11 @@ public static class LeanMetrics
 
     public static readonly Gauge ConnectedPeers = Prometheus.Metrics.CreateGauge(
         "lean_connected_peers",
-        "Number of connected peers.");
+        "Number of connected peers.",
+        new GaugeConfiguration
+        {
+            LabelNames = new[] { "client" }
+        });
 
     public static readonly Counter PeerConnectionEventsTotal = Prometheus.Metrics.CreateCounter(
         "lean_peer_connection_events_total",
@@ -451,9 +455,25 @@ public static class LeanMetrics
         ValidatorsCount.Set(count);
     }
 
-    public static void SetConnectedPeers(int peerCount)
+    public static void IncConnectedPeers(string client)
     {
-        ConnectedPeers.Set(Math.Max(0, peerCount));
+        ConnectedPeers.WithLabels(client).Inc();
+    }
+
+    public static void DecConnectedPeers(string client)
+    {
+        var gauge = ConnectedPeers.WithLabels(client);
+        gauge.Dec();
+        // Clamp to zero (Dec can go negative with Prometheus gauges).
+        if (gauge.Value < 0)
+        {
+            gauge.Set(0);
+        }
+    }
+
+    public static void ResetConnectedPeers()
+    {
+        ConnectedPeers.Unpublish();
     }
 
     public static void SetGossipSignatures(int count)

@@ -39,6 +39,7 @@ public static class NodeApp
             {
                 var (validatorConfig, validatorNodeConfig, chainConfig) = TryLoadValidatorNodeConfig(options);
                 ApplyBootstrapPeersFromNodesYaml(options);
+                BuildPeerClientNameMap(options, validatorConfig);
                 ApplyLibp2pIdentityDefaults(options, validatorNodeConfig);
                 var validatorDutyConfig = BuildValidatorDutyConfig(options, validatorNodeConfig, chainConfig);
                 options.Consensus.IsAggregator = validatorDutyConfig.PublishAggregates;
@@ -252,6 +253,47 @@ public static class NodeApp
                 bootstrapPeers.Add(address);
             }
         }
+    }
+
+    private static void BuildPeerClientNameMap(NodeOptions options, ValidatorConfig? validatorConfig)
+    {
+        if (validatorConfig is null)
+        {
+            return;
+        }
+
+        var map = options.Libp2p.PeerClientNames;
+        foreach (var validator in validatorConfig.Validators)
+        {
+            if (string.IsNullOrWhiteSpace(validator.Privkey) || string.IsNullOrWhiteSpace(validator.Name))
+            {
+                continue;
+            }
+
+            try
+            {
+                var identity = Libp2pIdentityFactory.CreateFromHex(validator.Privkey, validator.Name);
+                var peerId = identity.PeerId.ToString();
+                var clientName = ExtractClientName(validator.Name);
+                map[peerId] = clientName;
+            }
+            catch
+            {
+                // Skip validators with invalid keys.
+            }
+        }
+    }
+
+    internal static string ExtractClientName(string nodeName)
+    {
+        var lastUnderscore = nodeName.LastIndexOf('_');
+        if (lastUnderscore > 0 && lastUnderscore < nodeName.Length - 1 &&
+            int.TryParse(nodeName.AsSpan(lastUnderscore + 1), out _))
+        {
+            return nodeName[..lastUnderscore];
+        }
+
+        return nodeName;
     }
 
     private static bool TryBuildBootstrapPeerFromEnr(string? rawEnr, out string address)

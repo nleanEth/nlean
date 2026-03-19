@@ -4,7 +4,7 @@ using Nethermind.Libp2p.Core.Dto;
 
 namespace Lean.Network;
 
-internal static class Libp2pIdentityFactory
+public static class Libp2pIdentityFactory
 {
     private const int Secp256k1PrivateKeySize = 32;
 
@@ -34,7 +34,7 @@ internal static class Libp2pIdentityFactory
         return new Identity(EncodeSecpPrivateKeyForLibp2p(generatedKeyBytes), KeyType.Secp256K1);
     }
 
-    internal static Identity CreateFromHex(string privateKeyHex, string source)
+    public static Identity CreateFromHex(string privateKeyHex, string source)
     {
         var normalizedHex = NormalizeHex(privateKeyHex, source);
         byte[] privateKeyBytes;
