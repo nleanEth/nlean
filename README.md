@@ -217,16 +217,19 @@ vendor/
 ## Testing
 
 ```bash
-# All unit tests
-dotnet test Lean.sln -c Release
+# Run all tests (unit + integration, works on both Linux and macOS)
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false && dotnet test Lean.sln -c Release
+
+# Unit tests only (no publish needed)
+dotnet test Lean.sln -c Release --filter "TestCategory!=Integration"
 
 # Consensus simulation (CI-aligned)
 dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   -c Release \
-  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" \
+  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationV2Tests" \
   /m:1 /nodeReuse:false
 
-# Integration tests (requires published binary + libmsquic)
+# Integration tests only (requires published binary + libmsquic)
 dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
 # Linux: sudo apt-get install -y libmsquic
 # macOS: brew install microsoft/msquic/libmsquic && cp /opt/homebrew/lib/libmsquic.dylib artifacts/lean-client/

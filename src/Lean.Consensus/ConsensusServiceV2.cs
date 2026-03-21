@@ -317,6 +317,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     _store.HeadRoot);
             }
 
+            var oldHeadRoot = _store.HeadRoot;
             result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
             if (result.Accepted)
             {
@@ -328,7 +329,16 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 _stateByRootStore?.Save(blockRoot, postState);
                 LeanMetrics.IncSyncBlocksProcessed();
                 if (result.HeadChanged)
-                    LeanMetrics.RecordForkChoiceReorg(1);
+                {
+                    var reorgDepth = _store.ProtoArray.ComputeReorgDepth(oldHeadRoot, result.HeadRoot);
+                    if (reorgDepth > 0)
+                    {
+                        LeanMetrics.RecordForkChoiceReorg(reorgDepth);
+                        _logger.LogInformation(
+                            "Fork choice reorg detected. OldHead: {OldHead}, NewHead: {NewHead}, Depth: {Depth}, Slot: {Slot}",
+                            oldHeadRoot, result.HeadRoot, reorgDepth, block.Slot.Value);
+                    }
+                }
                 _logger.LogInformation(
                     "V2 ProcessBlock accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, ParentRoot: {ParentRoot}, ResultHeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
                     block.Slot.Value,
@@ -827,12 +837,28 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             if (!_store.ContainsBlock(parentRoot))
                 return;
 
+            var oldHeadRoot = _store.HeadRoot;
             result = _store.OnBlock(signedBlock, postState.LatestJustified, postState.LatestFinalized, (ulong)postState.Validators.Count);
             if (result.Accepted)
             {
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
                 _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                _slotIndexStore?.Save(block.Slot.Value, blockRoot);
+                _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
+                _stateByRootStore?.Save(blockRoot, postState);
+                LeanMetrics.IncSyncBlocksProcessed();
+                if (result.HeadChanged)
+                {
+                    var reorgDepth = _store.ProtoArray.ComputeReorgDepth(oldHeadRoot, result.HeadRoot);
+                    if (reorgDepth > 0)
+                    {
+                        LeanMetrics.RecordForkChoiceReorg(reorgDepth);
+                        _logger.LogInformation(
+                            "Fork choice reorg detected (gossip). OldHead: {OldHead}, NewHead: {NewHead}, Depth: {Depth}, Slot: {Slot}",
+                            oldHeadRoot, result.HeadRoot, reorgDepth, block.Slot.Value);
+                    }
+                }
             }
         }
 

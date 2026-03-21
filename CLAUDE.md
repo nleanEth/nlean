@@ -41,14 +41,24 @@ Key source directories:
 
 ## Testing
 
-~368 tests total across 5 test projects:
-- `Lean.Consensus.Tests` (~291) — fork choice, sync, state transition, multi-node simulation
+~393 tests total across 5 test projects:
+- `Lean.Consensus.Tests` (~310) — fork choice, sync, state transition, multi-node simulation
 - `Lean.Network.Tests` (~40) — networking
-- `Lean.Validator.Tests` (~28) — validator service
+- `Lean.Validator.Tests` (~34) — validator service
 - `Lean.Crypto.Tests` (~5) — FFI round-trip
 - `Lean.Integration.Tests` (~4) — multi-node devnet (requires published binary first)
 
-Integration tests require:
+Run all tests (unit + integration, works on both Linux and macOS):
+```bash
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false && dotnet test Lean.sln -c Release
+```
+
+Run unit tests only (no publish needed):
+```bash
+dotnet test Lean.sln -c Release --filter "TestCategory!=Integration"
+```
+
+Run integration tests only:
 ```bash
 dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
 dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release
@@ -58,7 +68,7 @@ Consensus simulation (CI-aligned):
 ```bash
 dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   -c Release \
-  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" \
+  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationV2Tests" \
   /m:1 /nodeReuse:false
 ```
 

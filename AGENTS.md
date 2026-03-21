@@ -61,7 +61,10 @@ vendor/
 dotnet build Lean.sln -c Release
 
 # Run all unit tests (excludes integration)
-dotnet test Lean.sln -c Release
+dotnet test Lean.sln -c Release --filter "TestCategory!=Integration"
+
+# Run all tests (unit + integration, works on both Linux and macOS)
+dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false && dotnet test Lean.sln -c Release
 
 # Run format check
 dotnet tool install --tool-path ./.dotnet-tools dotnet-format
@@ -70,7 +73,7 @@ dotnet tool install --tool-path ./.dotnet-tools dotnet-format
 # Run consensus simulation tests
 dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
   -c Release \
-  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" \
+  --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationV2Tests" \
   /m:1 /nodeReuse:false
 
 # Run integration tests (publish binary first)
@@ -133,7 +136,7 @@ GitHub Actions (`.github/workflows/release.yml`) on tag `v*` push:
 - [ ] Format check: `./.dotnet-tools/dotnet-format Lean.sln --check --fix-whitespace --exclude vendor`
 - [ ] Unit tests: `dotnet test Lean.sln -c Release`
 - [ ] Publish: `dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r osx-arm64 --self-contained false`
-- [ ] If consensus changed: `dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj -c Release --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationTests" /m:1 /nodeReuse:false`
+- [ ] If consensus changed: `dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj -c Release --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationV2Tests" /m:1 /nodeReuse:false`
 - [ ] If integration-relevant: `dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj -c Release`
 
 ## Notes

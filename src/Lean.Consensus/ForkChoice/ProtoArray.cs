@@ -215,5 +215,45 @@ public sealed class ProtoArray
     // so it can serve as a dictionary key without the per-call hex allocation.
     // This touches 50+ call sites across ProtoArray, ProtoArrayForkChoiceStore, ChainStateCache,
     // ConsensusServiceV2, and tests — best done as a dedicated refactoring PR.
+    /// <summary>
+    /// Computes the reorg depth from <paramref name="oldHead"/> to the fork point
+    /// with <paramref name="newHead"/>. Returns 0 when no reorg occurred (i.e. the
+    /// old head is an ancestor of the new head) or when either root is unknown.
+    /// </summary>
+    public ulong ComputeReorgDepth(Bytes32 oldHead, Bytes32 newHead)
+    {
+        if (!_indices.TryGetValue(RootKey(oldHead), out var oldIdx))
+            return 0;
+        if (!_indices.TryGetValue(RootKey(newHead), out var newIdx))
+            return 0;
+
+        // Collect ancestors of newHead into a set for fast lookup.
+        // Safety bound: _nodes.Count prevents infinite walk on data corruption.
+        var newAncestors = new HashSet<int>();
+        var cur = newIdx;
+        for (var i = 0; i < _nodes.Count && cur >= 0; i++)
+        {
+            newAncestors.Add(cur);
+            var parent = _nodes[cur].ParentIndex;
+            if (!parent.HasValue) break;
+            cur = parent.Value;
+        }
+
+        // Walk back from oldHead until we hit a common ancestor.
+        cur = oldIdx;
+        ulong depth = 0;
+        for (var i = 0; i < _nodes.Count && cur >= 0; i++)
+        {
+            if (newAncestors.Contains(cur))
+                return depth;
+            var parent = _nodes[cur].ParentIndex;
+            if (!parent.HasValue) break;
+            cur = parent.Value;
+            depth++;
+        }
+
+        return depth;
+    }
+
     public static string RootKey(Bytes32 root) => Convert.ToHexString(root.AsSpan());
 }

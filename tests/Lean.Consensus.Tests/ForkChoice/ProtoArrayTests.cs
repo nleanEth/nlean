@@ -619,6 +619,138 @@ public sealed class ProtoArrayTests
         Assert.DoesNotThrow(() => FindHead(array, a));
     }
 
+    // ========== ComputeReorgDepth ==========
+
+    [Test]
+    public void ComputeReorgDepth_NormalExtension_ReturnsZero()
+    {
+        // genesis -> a -> b: oldHead=a, newHead=b (a is ancestor of b)
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(a, b), Is.EqualTo(0UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_SameRoot_ReturnsZero()
+    {
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(a, a), Is.EqualTo(0UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_UnknownRoot_ReturnsZero()
+    {
+        var genesis = MakeRoot(0x01);
+        var array = new ProtoArray(genesis, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(MakeRoot(0xFF), genesis), Is.EqualTo(0UL));
+        Assert.That(array.ComputeReorgDepth(genesis, MakeRoot(0xFF)), Is.EqualTo(0UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_SingleSlotReorg_ReturnsOne()
+    {
+        // genesis -> a (old head), genesis -> b (new head)
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, genesis, 1, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(a, b), Is.EqualTo(1UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_AsymmetricFork_ReturnsOldBranchLength()
+    {
+        // genesis -> a -> b -> c (old head)
+        // genesis -> d (new head)
+        // common ancestor = genesis, depth from oldHead = 3
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var c = MakeRoot(0x04);
+        var d = MakeRoot(0x05);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.RegisterBlock(c, b, 3, 0, 0);
+        array.RegisterBlock(d, genesis, 1, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(c, d), Is.EqualTo(3UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_DeepFork_ReturnsCorrectDepth()
+    {
+        // genesis -> a -> b (old head)
+        // genesis -> a -> c -> d (new head)
+        // common ancestor = a, depth from oldHead = 1
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var c = MakeRoot(0x04);
+        var d = MakeRoot(0x05);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.RegisterBlock(c, a, 2, 0, 0);
+        array.RegisterBlock(d, c, 3, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(b, d), Is.EqualTo(1UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_AfterPrune_StillWorks()
+    {
+        // genesis -> a -> b -> c (old), a -> d (new)
+        // prune to a, then check depth from c to d = 2 (c->b->a, a is common)
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var c = MakeRoot(0x04);
+        var d = MakeRoot(0x05);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.RegisterBlock(c, b, 3, 0, 0);
+        array.RegisterBlock(d, a, 2, 0, 0);
+
+        array.Prune(a);
+
+        Assert.That(array.ComputeReorgDepth(c, d), Is.EqualTo(2UL));
+    }
+
+    [Test]
+    public void ComputeReorgDepth_GenesisIsCommonAncestor_FullDepth()
+    {
+        // genesis -> a -> b (old head)
+        // genesis -> c -> d (new head)
+        // depth from oldHead to genesis = 2
+        var genesis = MakeRoot(0x01);
+        var a = MakeRoot(0x02);
+        var b = MakeRoot(0x03);
+        var c = MakeRoot(0x04);
+        var d = MakeRoot(0x05);
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(a, genesis, 1, 0, 0);
+        array.RegisterBlock(b, a, 2, 0, 0);
+        array.RegisterBlock(c, genesis, 1, 0, 0);
+        array.RegisterBlock(d, c, 2, 0, 0);
+
+        Assert.That(array.ComputeReorgDepth(b, d), Is.EqualTo(2UL));
+    }
+
     // ========== Helpers ==========
 
     /// <summary>
