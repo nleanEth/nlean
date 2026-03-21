@@ -46,6 +46,7 @@ public sealed class SyncService : ISyncService
                 _headSync!.CascadeChildren(root);
                 RecomputeState();
             },
+            shouldDeferBackfill: () => _state == SyncState.Synced,
             logger: backfillLogger);
         _headSync = new HeadSync(processor, cache, _backfillSync, headSyncLogger);
     }

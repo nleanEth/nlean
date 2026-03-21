@@ -251,15 +251,159 @@ public sealed class BackfillSyncTests
         Assert.That(processor.KnownRoots, Does.Not.Contain(childRoot));
     }
 
+    [Test]
+    public async Task RequestBackfill_WhenSynced_DefersEnqueue()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync(
+            shouldDeferBackfill: () => true);
+        peerMgr.AddPeer("peer-1");
+
+        var grandparentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
+
+        var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
+        var parentRoot = ComputeRoot(parentBlock);
+        network.BlocksByRoot[parentRoot] = parentBlock;
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        backfill.RequestBackfill(parentRoot);
+
+        // Should NOT be processed within 200ms (grace period is 500ms).
+        await Task.Delay(200);
+        Assert.That(processor.ProcessedBlocks, Is.Empty,
+            "Block should not be processed during grace period");
+
+        // Wait for grace period to expire + processing time.
+        for (var i = 0; i < 50 && processor.ProcessedBlocks.Count == 0; i++)
+            await Task.Delay(50);
+
+        Assert.That(processor.ProcessedBlocks, Has.Count.EqualTo(1),
+            "Block should be processed after grace period expires");
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+    }
+
+    [Test]
+    public async Task RequestBackfill_WhenSyncing_EnqueuesImmediately()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync(
+            shouldDeferBackfill: () => false);
+        peerMgr.AddPeer("peer-1");
+
+        var grandparentRoot = MakeRoot(0x00);
+        processor.KnownRoots.Add(grandparentRoot);
+        processor.StateReadyRoots.Add(grandparentRoot);
+
+        var parentBlock = MakeSignedBlock(grandparentRoot, slot: 1);
+        var parentRoot = ComputeRoot(parentBlock);
+        network.BlocksByRoot[parentRoot] = parentBlock;
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        backfill.RequestBackfill(parentRoot);
+
+        // Should be processed quickly (no grace period).
+        for (var i = 0; i < 20 && processor.ProcessedBlocks.Count == 0; i++)
+            await Task.Delay(50);
+
+        Assert.That(processor.ProcessedBlocks, Has.Count.EqualTo(1),
+            "Block should be processed immediately when not deferring");
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+    }
+
+    [Test]
+    public async Task RequestBackfill_Deferred_ParentArrivesViaGossip_SkipsRpc()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync(
+            shouldDeferBackfill: () => true);
+        peerMgr.AddPeer("peer-1");
+
+        var parentRoot = MakeRoot(0xBB);
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        backfill.RequestBackfill(parentRoot);
+
+        // Simulate parent arriving via gossip within the grace period.
+        await Task.Delay(100);
+        processor.KnownRoots.Add(parentRoot);
+
+        // Wait for grace period to expire + extra margin.
+        await Task.Delay(600);
+
+        Assert.That(network.RequestCount, Is.EqualTo(0),
+            "No RPC should be made when parent arrived via gossip during grace period");
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+    }
+
+    [Test]
+    public async Task RequestBackfill_Deferred_ParentDoesNotArrive_ProceedsWithRpc()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync(
+            shouldDeferBackfill: () => true);
+        peerMgr.AddPeer("peer-1");
+
+        var parentRoot = MakeRoot(0xCC);
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        backfill.RequestBackfill(parentRoot);
+
+        // Wait for grace period + consumer processing time.
+        for (var i = 0; i < 40 && network.RequestCount == 0; i++)
+            await Task.Delay(50);
+
+        Assert.That(network.RequestCount, Is.GreaterThan(0),
+            "RPC should be made when parent did not arrive during grace period");
+
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+    }
+
+    [Test]
+    public async Task RequestBackfill_Deferred_Shutdown_CleansUp()
+    {
+        var (backfill, network, _, _) = CreateBackfillSync(
+            shouldDeferBackfill: () => true);
+
+        var parentRoot = MakeRoot(0xDD);
+
+        using var cts = new CancellationTokenSource();
+        backfill.SetShutdownToken(cts.Token);
+
+        backfill.RequestBackfill(parentRoot);
+
+        // Cancel before grace period expires.
+        await Task.Delay(100);
+        await cts.CancelAsync();
+        await backfill.StopAsync();
+
+        Assert.That(network.RequestCount, Is.EqualTo(0),
+            "No RPC should be made when shutdown cancels before grace period");
+    }
+
     // --- Helpers ---
 
     private static (BackfillSync backfill, FakeNetworkRequester network,
-        FakeBackfillProcessor processor, SyncPeerManager peerMgr) CreateBackfillSync(int maxDepth = 512)
+        FakeBackfillProcessor processor, SyncPeerManager peerMgr) CreateBackfillSync(
+        int maxDepth = 512, Func<bool>? shouldDeferBackfill = null)
     {
         var network = new FakeNetworkRequester();
         var processor = new FakeBackfillProcessor();
         var peerMgr = new SyncPeerManager();
-        var backfill = new BackfillSync(network, processor, peerMgr, maxDepth);
+        var backfill = new BackfillSync(network, processor, peerMgr, maxDepth,
+            shouldDeferBackfill: shouldDeferBackfill);
         return (backfill, network, processor, peerMgr);
     }
 

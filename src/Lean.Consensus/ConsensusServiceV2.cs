@@ -787,6 +787,20 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var blockRoot = new Bytes32(block.HashTreeRoot());
         var parentRoot = block.ParentRoot;
 
+        // Future-slot guard: reject blocks too far ahead to prevent false orphans
+        // from clock skew. Tolerance of +1 slot handles normal proposer-ahead scenarios.
+        var currentSlot = _clock.CurrentSlot;
+        if (block.Slot.Value > currentSlot + 1)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "HandleGossipBlock: rejected future block. BlockSlot={BlockSlot}, CurrentSlot={CurrentSlot}, BlockRoot={Root}",
+                    block.Slot.Value, currentSlot, Convert.ToHexString(blockRoot.AsSpan())[..8]);
+            }
+            return;
+        }
+
         // Phase 1: Read parent state under lock (fast).
         State? parentState;
         lock (_storeLock)

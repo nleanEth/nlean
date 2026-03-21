@@ -14,12 +14,14 @@ public sealed class BackfillSync : IBackfillTrigger
     private const int PerRequestTimeoutMs = 30_000;
     private const int ChainTimeoutMs = 600_000;
     private const int QueueCapacity = 32;
+    internal const int GracePeriodMs = 500;
 
     private readonly INetworkRequester _network;
     private readonly IBlockProcessor _processor;
     private readonly SyncPeerManager _peerManager;
     private readonly int _maxDepth;
     private readonly Action<Bytes32>? _onBlockAccepted;
+    private readonly Func<bool>? _shouldDeferBackfill;
     private readonly ILogger<BackfillSync> _logger;
 
     private readonly Channel<Bytes32> _queue = Channel.CreateBounded<Bytes32>(
@@ -32,11 +34,13 @@ public sealed class BackfillSync : IBackfillTrigger
 
     private readonly object _pendingLock = new();
     private readonly Dictionary<Bytes32, string?> _pendingBackfills = new();
+    private CancellationToken _shutdownCt;
     private Task? _consumerTask;
 
     public BackfillSync(INetworkRequester network, IBlockProcessor processor,
         SyncPeerManager peerManager, int maxDepth = DefaultMaxBackfillDepth,
         Action<Bytes32>? onBlockAccepted = null,
+        Func<bool>? shouldDeferBackfill = null,
         ILogger<BackfillSync>? logger = null)
     {
         _network = network;
@@ -44,11 +48,13 @@ public sealed class BackfillSync : IBackfillTrigger
         _peerManager = peerManager;
         _maxDepth = maxDepth;
         _onBlockAccepted = onBlockAccepted;
+        _shouldDeferBackfill = shouldDeferBackfill;
         _logger = logger ?? NullLogger<BackfillSync>.Instance;
     }
 
     public void SetShutdownToken(CancellationToken ct)
     {
+        _shutdownCt = ct;
         // Start the single consumer when the sync service starts.
         // Use LongRunning to keep this off the ThreadPool — the consumer
         // loop runs for the entire node lifetime.
@@ -79,7 +85,49 @@ public sealed class BackfillSync : IBackfillTrigger
             _peerManager.PeerCount,
             preferredPeerId ?? "(none)");
 
-        // Non-blocking write; oldest entry dropped if queue is full.
+        // When synced (near head), defer the RPC to give gossip time to deliver
+        // the parent. When syncing (far behind), enqueue immediately.
+        if (_shouldDeferBackfill?.Invoke() == true)
+        {
+            _ = DeferredEnqueueAsync(parentRoot);
+        }
+        else
+        {
+            _queue.Writer.TryWrite(parentRoot);
+        }
+    }
+
+    private async Task DeferredEnqueueAsync(Bytes32 parentRoot)
+    {
+        try
+        {
+            await Task.Delay(GracePeriodMs, _shutdownCt);
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_pendingLock) { _pendingBackfills.Remove(parentRoot); }
+            return;
+        }
+
+        // If the parent arrived via gossip during the grace period, skip RPC.
+        if (_processor.IsBlockKnown(parentRoot))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Backfill deferred: parent {Root} arrived via gossip, skipping RPC",
+                    Convert.ToHexString(parentRoot.AsSpan()));
+            }
+            lock (_pendingLock) { _pendingBackfills.Remove(parentRoot); }
+            return;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Backfill deferred: parent {Root} not received after {GraceMs}ms, proceeding with RPC",
+                Convert.ToHexString(parentRoot.AsSpan()), GracePeriodMs);
+        }
         _queue.Writer.TryWrite(parentRoot);
     }
 
