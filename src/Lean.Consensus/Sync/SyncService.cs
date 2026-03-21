@@ -57,7 +57,7 @@ public sealed class SyncService : ISyncService
         _peerManager.AddPeer(peerId);
         RecomputeState();
         LeanMetrics.SetSyncPeersConnected(_peerManager.PeerCount);
-        _logger.LogInformation("SyncService: peer connected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
+        _logger.LogDebug("SyncService: peer connected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
             peerId, _peerManager.PeerCount, _state);
     }
 
@@ -66,7 +66,7 @@ public sealed class SyncService : ISyncService
         _peerManager.RemovePeer(peerId);
         RecomputeState();
         LeanMetrics.SetSyncPeersConnected(_peerManager.PeerCount);
-        _logger.LogInformation("SyncService: peer disconnected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
+        _logger.LogDebug("SyncService: peer disconnected. PeerId: {PeerId}, PeerCount: {PeerCount}, State: {State}",
             peerId, _peerManager.PeerCount, _state);
     }
 
@@ -117,31 +117,34 @@ public sealed class SyncService : ISyncService
 
     public void RecomputeState()
     {
+        var oldState = _state;
+
         if (_peerManager.PeerCount == 0)
         {
             _state = SyncState.Idle;
             LeanMetrics.SetSyncState(0);
-            return;
-        }
-
-        var networkHead = _peerManager.GetNetworkHeadSlot();
-
-        var localHead = _processor.HeadSlot;
-
-        // Synced when local head is within 2 slots of the network head.
-        // This tolerance avoids flip-flopping during normal gossip delay.
-        // Orphan blocks resolved via backfill in the background must NOT
-        // keep the node stuck in Syncing — otherwise validator duties are
-        // suppressed and the network loses quorum.
-        if (localHead + 2 >= networkHead)
-        {
-            _state = SyncState.Synced;
-            LeanMetrics.SetSyncState(2);
         }
         else
         {
-            _state = SyncState.Syncing;
-            LeanMetrics.SetSyncState(1);
+            var networkHead = _peerManager.GetNetworkHeadSlot();
+            var localHead = _processor.HeadSlot;
+
+            if (localHead + 2 >= networkHead)
+            {
+                _state = SyncState.Synced;
+                LeanMetrics.SetSyncState(2);
+            }
+            else
+            {
+                _state = SyncState.Syncing;
+                LeanMetrics.SetSyncState(1);
+            }
+        }
+
+        if (_state != oldState)
+        {
+            _logger.LogInformation("Sync state changed: {OldState} -> {NewState}, PeerCount: {PeerCount}",
+                oldState, _state, _peerManager.PeerCount);
         }
     }
 

@@ -271,7 +271,7 @@ public sealed class ValidatorService : IValidatorService
         var subnetId = new ValidatorIndex(validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
         await PublishToTopicAsync(_gossipTopics.AttestationSubnetTopic(subnetId), attestationPayload, cancellationToken);
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "Published attestation. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}",
             slot,
             validatorId,
@@ -281,7 +281,7 @@ public sealed class ValidatorService : IValidatorService
 
         if (!selfVerificationOk)
         {
-            _logger.LogWarning(
+            _logger.LogError(
                 "Local attestation signature self-verification failed. Slot: {Slot}, ValidatorId: {ValidatorId}",
                 slot,
                 validatorId);
@@ -447,7 +447,7 @@ public sealed class ValidatorService : IValidatorService
         }
 
         var parentRoot = new Bytes32(parentRootBytes);
-        _logger.LogInformation(
+        _logger.LogDebug(
             "Proposer checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
             slot,
             validatorId,
@@ -562,7 +562,7 @@ public sealed class ValidatorService : IValidatorService
             if (postJustified.Slot.Value <= currentSource.Slot.Value)
                 break; // Fixed point reached — justified did not advance.
 
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Fixed-point iteration {Iteration}: justified advanced {OldSlot} -> {NewSlot}",
                 iteration, currentSource.Slot.Value, postJustified.Slot.Value);
 

@@ -58,6 +58,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private int _started;
     private int _statusProbeInFlight;
     private long _lastPrunedFinalizedSlot;
+    private ulong _lastLoggedJustifiedSlot;
+    private ulong _lastLoggedFinalizedSlot;
     private int _pruneRunning;
 
     public ConsensusServiceV2(
@@ -334,7 +336,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     if (reorgDepth > 0)
                     {
                         LeanMetrics.RecordForkChoiceReorg(reorgDepth);
-                        _logger.LogInformation(
+                        _logger.LogWarning(
                             "Fork choice reorg detected. OldHead: {OldHead}, NewHead: {NewHead}, Depth: {Depth}, Slot: {Slot}",
                             oldHeadRoot, result.HeadRoot, reorgDepth, block.Slot.Value);
                     }
@@ -489,6 +491,22 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         LeanMetrics.SetSafeTargetSlot(_store.ProtoArray.GetSlot(_store.SafeTarget) ?? 0UL);
         LeanMetrics.SetProtoArrayNodes(_store.ProtoArray.NodeCount);
 
+        if (snap.JustifiedSlot > _lastLoggedJustifiedSlot)
+        {
+            _logger.LogInformation(
+                "Justified checkpoint advanced. OldSlot: {OldSlot}, NewSlot: {NewSlot}, Slot: {Slot}",
+                _lastLoggedJustifiedSlot, snap.JustifiedSlot, slot);
+            _lastLoggedJustifiedSlot = snap.JustifiedSlot;
+        }
+
+        if (snap.FinalizedSlot > _lastLoggedFinalizedSlot)
+        {
+            _logger.LogInformation(
+                "Finalized checkpoint advanced. OldSlot: {OldSlot}, NewSlot: {NewSlot}, Slot: {Slot}",
+                _lastLoggedFinalizedSlot, snap.FinalizedSlot, slot);
+            _lastLoggedFinalizedSlot = snap.FinalizedSlot;
+        }
+
         if (snap.FinalizedSlot > (ulong)Interlocked.Read(ref _lastPrunedFinalizedSlot))
         {
             Interlocked.Exchange(ref _lastPrunedFinalizedSlot, (long)snap.FinalizedSlot);
@@ -523,7 +541,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to save checkpoint state.");
+                    _logger.LogError(ex, "Failed to save checkpoint state.");
                 }
             }
 
@@ -532,7 +550,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
         if (intervalInSlot == ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
                 slot, snap.HeadSlot, snap.JustifiedSlot, snap.FinalizedSlot);
         }
@@ -712,7 +730,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to save final state on shutdown.");
+            _logger.LogError(ex, "Failed to save final state on shutdown.");
         }
     }
 
@@ -789,9 +807,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out parentState))
             {
-                if (_logger.IsEnabled(LogLevel.Debug))
+                if (_logger.IsEnabled(LogLevel.Warning))
                 {
-                    _logger.LogDebug(
+                    _logger.LogWarning(
                         "HandleGossipBlock: slot={Slot}, blockRoot={Root}, missing parent state for {Parent}",
                         block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8],
                         Convert.ToHexString(parentRoot.AsSpan())[..8]);
@@ -809,10 +827,10 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 out var postState,
                 out var reason))
         {
-            if (_logger.IsEnabled(LogLevel.Information))
+            if (_logger.IsEnabled(LogLevel.Warning))
             {
-                _logger.LogInformation(
-                    "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted=False, reason={Reason}",
+                _logger.LogWarning(
+                    "HandleGossipBlock: state transition failed. Slot={Slot}, BlockRoot={Root}, Reason={Reason}",
                     block.Slot.Value, Convert.ToHexString(blockRoot.AsSpan())[..8], reason);
             }
             return;
@@ -854,7 +872,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                     if (reorgDepth > 0)
                     {
                         LeanMetrics.RecordForkChoiceReorg(reorgDepth);
-                        _logger.LogInformation(
+                        _logger.LogWarning(
                             "Fork choice reorg detected (gossip). OldHead: {OldHead}, NewHead: {NewHead}, Depth: {Depth}, Slot: {Slot}",
                             oldHeadRoot, result.HeadRoot, reorgDepth, block.Slot.Value);
                     }
@@ -862,13 +880,21 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             }
         }
 
-        if (_logger.IsEnabled(LogLevel.Debug))
+        if (result.Accepted)
         {
-            _logger.LogDebug(
-                "HandleGossipBlock: slot={Slot}, blockRoot={Root}, accepted={Accepted}, reason={Reason}",
+            _logger.LogInformation(
+                "Gossip block accepted. Slot: {Slot}, BlockRoot: {BlockRoot}, HeadSlot: {HeadSlot}, HeadChanged: {HeadChanged}",
                 block.Slot.Value,
                 Convert.ToHexString(blockRoot.AsSpan())[..8],
-                result.Accepted,
+                result.HeadSlot,
+                result.HeadChanged);
+        }
+        else if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Gossip block rejected. Slot: {Slot}, BlockRoot: {BlockRoot}, Reason: {Reason}",
+                block.Slot.Value,
+                Convert.ToHexString(blockRoot.AsSpan())[..8],
                 result.Reason);
         }
 
@@ -935,7 +961,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private void HandleGossipBlock(byte[] payload)
     {
-        _logger.LogDebug(
+        _logger.LogTrace(
             "HandleGossipBlock: payloadLen={Len}",
             payload.Length);
 
@@ -959,15 +985,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var decode = _attestationDecoder.DecodeAndValidate(payload);
         if (!decode.IsSuccess || decode.Attestation is null)
         {
-            _logger.LogWarning(
+            _logger.LogDebug(
                 "Dropped gossip attestation. PayloadLen: {PayloadLen}, Failure: {Failure}, Reason: {Reason}",
                 payload.Length, decode.Failure, decode.Reason);
             return;
         }
 
-        if (_logger.IsEnabled(LogLevel.Debug))
+        if (_logger.IsEnabled(LogLevel.Trace))
         {
-            _logger.LogDebug(
+            _logger.LogTrace(
                 "Received gossip attestation. Validator: {ValidatorId}, Slot: {Slot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}",
                 decode.Attestation.ValidatorId, decode.Attestation.Message.Slot.Value,
                 Convert.ToHexString(decode.Attestation.Message.Head.Root.AsSpan())[..8],
@@ -982,7 +1008,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         var decode = _aggregatedAttestationDecoder.DecodeAndValidate(payload);
         if (!decode.IsSuccess || decode.Attestation is null)
+        {
+            _logger.LogDebug(
+                "Dropped gossip aggregated attestation. PayloadLen: {PayloadLen}",
+                payload.Length);
             return;
+        }
 
         _inbox.Writer.TryWrite(new GossipAggregatedAttestationMessage(decode.Attestation));
     }
@@ -1140,7 +1171,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "DB prune failed.");
+                logger.LogError(ex, "DB prune failed.");
             }
             finally
             {

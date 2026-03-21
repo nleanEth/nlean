@@ -338,14 +338,14 @@ public sealed class Libp2pNetworkService : INetworkService
         var candidateAddresses = SnapshotBlocksByRootPeerAddresses();
         ExcludeSelfFromCandidates(candidateAddresses);
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "blocks-by-root starting. Root={Root}, PreferredPeer={PreferredPeer}, CandidateCount={CandidateCount}",
             Convert.ToHexString(blockRoot.Span),
             preferredPeerKey ?? "none",
             candidateAddresses.Count);
         if (candidateAddresses.Count == 0)
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, Reason=no-candidates.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none");
@@ -355,7 +355,7 @@ public sealed class Libp2pNetworkService : INetworkService
         var peerKeys = BuildRequestOrder(candidateAddresses, preferredPeerKey);
         if (peerKeys.Count == 0)
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, Reason=no-request-order.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none");
@@ -468,14 +468,14 @@ public sealed class Libp2pNetworkService : INetworkService
 
         if (!attempted)
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, Reason=not-attempted.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none");
         }
         else
         {
-            _logger.LogInformation(
+            _logger.LogWarning(
                 "blocks-by-root miss. Root={Root}, PreferredPeer={PreferredPeer}, LastPeer={LastPeer}, DialFailures={DialFailures}, RpcFailures={RpcFailures}, EmptyResponses={EmptyResponses}, CandidateCount={CandidateCount}.",
                 Convert.ToHexString(blockRoot.Span),
                 preferredPeerKey ?? "none",
@@ -765,7 +765,7 @@ public sealed class Libp2pNetworkService : INetworkService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Bootstrap reconnect loop iteration failed.");
+                _logger.LogWarning(ex, "Bootstrap reconnect loop iteration failed.");
             }
         }
     }
@@ -834,7 +834,7 @@ public sealed class Libp2pNetworkService : INetworkService
             {
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
-                _logger.LogDebug("Timed out reconnecting to bootstrap peer {Address}", peerKey);
+                _logger.LogWarning("Timed out reconnecting to bootstrap peer {Address}", peerKey);
             }
             catch (OperationCanceledException)
             {
@@ -845,7 +845,7 @@ public sealed class Libp2pNetworkService : INetworkService
             {
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
-                _logger.LogDebug(ex, "Failed to reconnect to bootstrap peer {Address}", peerKey);
+                _logger.LogWarning(ex, "Failed to reconnect to bootstrap peer {Address}", peerKey);
             }
         }
     }
@@ -966,7 +966,7 @@ public sealed class Libp2pNetworkService : INetworkService
             return;
         }
 
-        _logger.LogInformation("Notifying PeerStore of peer {Peer} for gossipsub discovery", remoteAddress);
+        _logger.LogDebug("Notifying PeerStore of peer {Peer} for gossipsub discovery", remoteAddress);
         _peerStore.Discover([remoteAddress]);
     }
 
@@ -1026,7 +1026,7 @@ public sealed class Libp2pNetworkService : INetworkService
                 throw new OperationCanceledException("Status probe dial timed out via fallback");
             var remoteStatus = await statusDialTask;
             await _statusRpcRouter.HandlePeerStatusAsync(remoteStatus, peerKey, timeoutCts.Token);
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Proactive status probe succeeded. Peer: {Peer}, FinalizedSlot: {FinalizedSlot}, HeadSlot: {HeadSlot}",
                 peerKey,
                 remoteStatus.FinalizedSlot,

@@ -73,7 +73,7 @@ public sealed class BackfillSync : IBackfillTrigger
             _pendingBackfills[parentRoot] = preferredPeerId;
         }
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "Backfill queued for root {Root}. PeerCount: {PeerCount}, PreferredPeerId: {PreferredPeerId}",
             Convert.ToHexString(parentRoot.AsSpan()),
             _peerManager.PeerCount,
@@ -114,7 +114,7 @@ public sealed class BackfillSync : IBackfillTrigger
 
             if (batch.Count == 0)
             {
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Backfill: empty batch after filtering known blocks. Pending: {Pending}, Depth: {Depth}",
                     pending.Count, depth);
                 break;
@@ -126,7 +126,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 consecutiveFailures++;
                 if (consecutiveFailures >= maxConsecutiveFailures)
                 {
-                    _logger.LogInformation(
+                    _logger.LogWarning(
                         "Backfill giving up after {Failures} consecutive fetch failures. Fetched: {Fetched}, Accepted: {Accepted}",
                         consecutiveFailures, totalFetched, totalAccepted);
                     break;
@@ -192,7 +192,7 @@ public sealed class BackfillSync : IBackfillTrigger
         }
         else
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Backfill finished with 0 blocks fetched. Depth: {Depth}, Pending: {Pending}",
                 depth, pending.Count);
         }
@@ -234,7 +234,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 }
                 else
                 {
-                    _logger.LogInformation(
+                    _logger.LogWarning(
                         "Backfill: block rejected. Slot: {Slot}, Root: {Root}, ParentRoot: {ParentRoot}, Reason: {Reason}",
                         block.Message.Block.Slot.Value,
                         Convert.ToHexString(blockRoot.AsSpan()),
@@ -335,7 +335,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 attempt == 0 ? preferredPeerId : null);
             if (peerId is null)
             {
-                _logger.LogInformation(
+                _logger.LogWarning(
                     "Backfill: no eligible peers (attempt {Attempt}/{MaxRetries}, peers: {PeerCount})",
                     attempt + 1, MaxRetries, _peerManager.PeerCount);
                 continue;
@@ -355,7 +355,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     _peerManager.OnRequestFailure(peerId);
-                    _logger.LogInformation(
+                    _logger.LogWarning(
                         "Backfill: request to {PeerId} timed out after {TimeoutMs}ms (attempt {Attempt}/{MaxRetries})",
                         peerId, PerRequestTimeoutMs, attempt + 1, MaxRetries);
                     continue;
@@ -370,14 +370,14 @@ public sealed class BackfillSync : IBackfillTrigger
                 }
 
                 _peerManager.OnRequestFailure(peerId);
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Backfill: peer {PeerId} returned 0 blocks (attempt {Attempt}/{MaxRetries})",
                     peerId, attempt + 1, MaxRetries);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 _peerManager.OnRequestFailure(peerId);
-                _logger.LogInformation(
+                _logger.LogWarning(
                     "Backfill: request to {PeerId} timed out (attempt {Attempt}/{MaxRetries})",
                     peerId, attempt + 1, MaxRetries);
             }
@@ -385,7 +385,7 @@ public sealed class BackfillSync : IBackfillTrigger
             catch (Exception ex)
             {
                 _peerManager.OnRequestFailure(peerId);
-                _logger.LogInformation(ex,
+                _logger.LogWarning(ex,
                     "Backfill: request to {PeerId} failed (attempt {Attempt}/{MaxRetries})",
                     peerId, attempt + 1, MaxRetries);
             }
