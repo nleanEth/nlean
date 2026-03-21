@@ -383,9 +383,13 @@ public sealed class BackfillSync : IBackfillTrigger
                 attempt == 0 ? preferredPeerId : null);
             if (peerId is null)
             {
+                var baseDelay = BaseRetryDelayMs * (1 << Math.Min(attempt, 5));
+                var jitter = Random.Shared.Next(0, baseDelay / 2);
+                var delay = baseDelay + jitter;
                 _logger.LogWarning(
-                    "Backfill: no eligible peers (attempt {Attempt}/{MaxRetries}, peers: {PeerCount})",
-                    attempt + 1, MaxRetries, _peerManager.PeerCount);
+                    "Backfill: no eligible peers (attempt {Attempt}/{MaxRetries}, peers: {PeerCount}, retrying in {DelayMs}ms)",
+                    attempt + 1, MaxRetries, _peerManager.PeerCount, delay);
+                await Task.Delay(delay, ct);
                 continue;
             }
 
