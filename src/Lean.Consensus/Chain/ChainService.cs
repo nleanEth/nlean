@@ -23,28 +23,24 @@ public sealed class ChainService
     public void TickToCurrent()
     {
         var currentTotal = _clock.TotalIntervals;
-        if (currentTotal == 0 && !_initialized)
-        {
-            _initialized = true;
-            return;
-        }
 
         if (!_initialized)
         {
             _initialized = true;
-            var catchUpSlots = currentTotal / (ulong)_intervalsPerSlot;
-            _logger.LogInformation(
-                "ChainService catching up from interval 0 to {CurrentTotal} ({SlotCount} slots)",
-                currentTotal, catchUpSlots);
-            // Emit all intervals from 0 to currentTotal-1
-            for (ulong i = 0; i < currentTotal; i++)
-            {
-                var slot = i / (ulong)_intervalsPerSlot;
-                var interval = (int)(i % (ulong)_intervalsPerSlot);
-                _target.OnTick(slot, interval);
-            }
-
+            // Skip to current position — no historical replay.
+            // Other clients (Lighthouse, Prysm, Teku, Nimbus) all start from
+            // the current slot without replaying past intervals.
             _lastProcessedTotalInterval = currentTotal;
+
+            if (currentTotal == 0)
+                return;
+
+            var slot = (currentTotal - 1) / (ulong)_intervalsPerSlot;
+            var interval = (int)((currentTotal - 1) % (ulong)_intervalsPerSlot);
+            _logger.LogInformation(
+                "ChainService initialized at interval {CurrentTotal} (slot {Slot}, interval {Interval})",
+                currentTotal, slot, interval);
+            _target.OnTick(slot, interval);
             return;
         }
 

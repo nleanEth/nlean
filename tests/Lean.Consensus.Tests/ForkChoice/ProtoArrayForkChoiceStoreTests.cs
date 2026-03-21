@@ -68,34 +68,41 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void LoadedCheckpointAnchor_StartsIniting_AndBecomesReadyAfterNewerJustifiedBlock()
+    public void IsReadyForDuties_FalseWhenFarBehindPeers()
     {
-        var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x44, 32).ToArray());
-        var persisted = new ConsensusHeadState(
-            headSlot: 182,
-            headRoot: anchorRoot.AsSpan(),
-            latestJustifiedSlot: 182,
-            latestJustifiedRoot: anchorRoot.AsSpan(),
-            latestFinalizedSlot: 169,
-            latestFinalizedRoot: anchorRoot.AsSpan(),
-            safeTargetSlot: 169,
-            safeTargetRoot: anchorRoot.AsSpan());
-        var stateStore = new FakeConsensusStateStore(persisted);
+        var store = CreateStore(validatorCount: 4);
 
-        var config = new ConsensusConfig { InitialValidatorCount = 1 };
-        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+        // tolerance = max(8, 4*2/3) = 8
+        // Set currentSlot far ahead of headSlot (headSlot=0), with peers also ahead.
+        store.TickInterval(20, 0, maxPeerHeadSlot: 20);
 
+        // currentSlot(20) > headSlot(0) + tolerance(8) AND maxPeerHeadSlot(20) > headSlot(0) + 2
         Assert.That(store.IsReadyForDuties, Is.False);
+    }
 
-        var block = CreateBlock(slot: 183, parentRoot: anchorRoot, proposerIndex: 0);
-        var signed = WrapBlock(block);
-        var blockRoot = new Bytes32(block.HashTreeRoot());
-        var justified = new Checkpoint(blockRoot, new Slot(183));
-        var finalized = new Checkpoint(anchorRoot, new Slot(169));
+    [Test]
+    public void IsReadyForDuties_TrueWhenCloseToHead()
+    {
+        var store = CreateStore(validatorCount: 4);
 
-        var result = store.OnBlock(signed, justified, finalized, validatorCount: 1);
+        // tolerance = max(8, 4*2/3) = 8
+        // Set currentSlot only slightly ahead of headSlot (headSlot=0).
+        store.TickInterval(5, 0, maxPeerHeadSlot: 20);
 
-        Assert.That(result.Accepted, Is.True);
+        // currentSlot(5) <= headSlot(0) + tolerance(8) → ready
+        Assert.That(store.IsReadyForDuties, Is.True);
+    }
+
+    [Test]
+    public void IsReadyForDuties_TrueWhenPeersNotFarAhead()
+    {
+        var store = CreateStore(validatorCount: 4);
+
+        // tolerance = max(8, 4*2/3) = 8
+        // currentSlot far ahead, but peers not far ahead of headSlot.
+        store.TickInterval(20, 0, maxPeerHeadSlot: 1);
+
+        // currentSlot(20) > headSlot(0) + tolerance(8) BUT maxPeerHeadSlot(1) <= headSlot(0) + 2
         Assert.That(store.IsReadyForDuties, Is.True);
     }
 
@@ -444,7 +451,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
-    public void TickInterval_At3_ThrowsWhenSafeTargetWouldRegress()
+    public void TickInterval_At3_AllowsSafeTargetRegression()
     {
         var store = CreateStore(validatorCount: 1);
         var genesisRoot = store.HeadRoot;
@@ -457,9 +464,9 @@ public sealed class ProtoArrayForkChoiceStoreTests
             .GetField("_safeTarget", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(store, block1Root);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => store.TickInterval(1, 3));
-        Assert.That(ex!.Message, Does.Contain("Invalid safe target regression"));
-        Assert.That(store.SafeTarget, Is.EqualTo(block1Root));
+        Assert.DoesNotThrow(() => store.TickInterval(1, 3));
+        Assert.That(store.SafeTarget, Is.EqualTo(genesisRoot),
+            "Safe target should regress to genesis when no votes support block1.");
     }
 
     [Test]

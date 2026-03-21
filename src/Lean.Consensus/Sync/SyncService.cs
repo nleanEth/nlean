@@ -53,6 +53,11 @@ public sealed class SyncService : ISyncService
 
     public SyncState State => _state;
 
+    public ulong GetNetworkHeadSlot()
+    {
+        return _peerManager.GetNetworkHeadSlot();
+    }
+
     public void OnPeerConnected(string peerId)
     {
         _peerManager.AddPeer(peerId);

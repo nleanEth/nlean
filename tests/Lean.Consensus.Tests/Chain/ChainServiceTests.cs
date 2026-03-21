@@ -18,14 +18,14 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // Advance 1600ms = 2 intervals
+        // Advance 1600ms = 2 total intervals.
+        // First call skips to current and emits one tick at (totalIntervals-1).
         time.UtcNow = GenesisTime.AddMilliseconds(1600);
         chain.TickToCurrent();
 
-        // Should emit ticks for intervals 0 and 1 (total intervals 0 and 1)
-        Assert.That(target.Ticks.Count, Is.EqualTo(2));
-        Assert.That(target.Ticks[0], Is.EqualTo((0UL, 0)));
-        Assert.That(target.Ticks[1], Is.EqualTo((0UL, 1)));
+        // totalIntervals=2 → tick at slot=(2-1)/5=0, interval=(2-1)%5=1
+        Assert.That(target.Ticks.Count, Is.EqualTo(1));
+        Assert.That(target.Ticks[0], Is.EqualTo((0UL, 1)));
     }
 
     [Test]
@@ -36,20 +36,20 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // First advance: 1600ms = 2 intervals
+        // First advance: 1600ms = 2 total intervals → 1 init tick
         time.UtcNow = GenesisTime.AddMilliseconds(1600);
         chain.TickToCurrent();
-        Assert.That(target.Ticks.Count, Is.EqualTo(2));
+        Assert.That(target.Ticks.Count, Is.EqualTo(1));
 
         // Second advance: same time — no new ticks
         chain.TickToCurrent();
-        Assert.That(target.Ticks.Count, Is.EqualTo(2));
+        Assert.That(target.Ticks.Count, Is.EqualTo(1));
 
-        // Third advance: 2400ms = 3 intervals — only 1 new tick
+        // Third advance: 2400ms = 3 total intervals — 1 new tick
         time.UtcNow = GenesisTime.AddMilliseconds(2400);
         chain.TickToCurrent();
-        Assert.That(target.Ticks.Count, Is.EqualTo(3));
-        Assert.That(target.Ticks[2], Is.EqualTo((0UL, 2)));
+        Assert.That(target.Ticks.Count, Is.EqualTo(2));
+        Assert.That(target.Ticks[1], Is.EqualTo((0UL, 2)));
     }
 
     [Test]
@@ -60,14 +60,14 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // Jump to slot 1, interval 1 = 4800ms = 6 total intervals
+        // Jump to 4800ms = 6 total intervals.
+        // First call skips to current and emits one tick at (totalIntervals-1).
         time.UtcNow = GenesisTime.AddMilliseconds(4800);
         chain.TickToCurrent();
 
-        Assert.That(target.Ticks.Count, Is.EqualTo(6));
-        // Last tick should be slot 1, interval 0
-        Assert.That(target.Ticks[4], Is.EqualTo((0UL, 4))); // last interval of slot 0
-        Assert.That(target.Ticks[5], Is.EqualTo((1UL, 0))); // first interval of slot 1
+        // totalIntervals=6 → tick at slot=(6-1)/5=1, interval=(6-1)%5=0
+        Assert.That(target.Ticks.Count, Is.EqualTo(1));
+        Assert.That(target.Ticks[0], Is.EqualTo((1UL, 0)));
     }
 
     [Test]

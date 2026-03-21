@@ -30,7 +30,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Checkpoint _latestJustified;
     private Checkpoint _latestFinalized;
     private Bytes32 _safeTarget;
-    private bool _isReadyForDuties;
+    private ulong _maxPeerHeadSlot;
     private ulong _validatorCount;
     private readonly IReadOnlySet<ulong> _localValidatorIds;
     private readonly HashSet<int> _localValidatorSubnetIds;
@@ -86,11 +86,9 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                     loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
             }
 
-            _isReadyForDuties = false;
-
             _logger.LogInformation(
-                "Loaded checkpoint state. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}, ReadyForDuties={ReadyForDuties}",
-                loaded.HeadSlot, loaded.LatestFinalizedSlot, loaded.LatestJustifiedSlot, _isReadyForDuties);
+                "Loaded checkpoint state. HeadSlot={HeadSlot}, FinalizedSlot={FinalizedSlot}, JustifiedSlot={JustifiedSlot}",
+                loaded.HeadSlot, loaded.LatestFinalizedSlot, loaded.LatestJustifiedSlot);
         }
         else
         {
@@ -106,7 +104,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _currentSlot = 0;
             _protoArray = new ProtoArray(genesisRoot, 0, 0);
             _safeTarget = genesisRoot;
-            _isReadyForDuties = true;
         }
     }
 
@@ -116,7 +113,16 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public Bytes32 JustifiedRoot => _latestJustified.Root;
     public ulong FinalizedSlot => _latestFinalized.Slot.Value;
     public Bytes32 FinalizedRoot => _latestFinalized.Root;
-    public bool IsReadyForDuties => _isReadyForDuties;
+    public bool IsReadyForDuties
+    {
+        get
+        {
+            var tolerance = Math.Max(8UL, _validatorCount * 2 / 3);
+            if (_currentSlot > _headSlot + tolerance && _maxPeerHeadSlot > _headSlot + 2)
+                return false;
+            return true;
+        }
+    }
     public Bytes32 SafeTarget => _safeTarget;
     public ProtoArray ProtoArray => _protoArray;
     public bool ContainsBlock(Bytes32 root) => _protoArray.ContainsBlock(root);
@@ -307,16 +313,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         _validatorCount = Math.Max(_validatorCount, validatorCount);
 
-        var previousJustifiedSlot = _latestJustified.Slot.Value;
         UpdateStoreCheckpoints(canonicalJustified, canonicalFinalized);
-        if (!_isReadyForDuties && _latestJustified.Slot.Value > previousJustifiedSlot)
-        {
-            _isReadyForDuties = true;
-            _logger.LogInformation(
-                "Checkpoint-init complete: first justified checkpoint observed. JustifiedSlot={JustifiedSlot}, JustifiedRoot={JustifiedRoot}",
-                _latestJustified.Slot.Value,
-                Convert.ToHexString(_latestJustified.Root.AsSpan()));
-        }
 
         // Process block-body attestations: update tracker.LatestKnown (is_from_block=true).
         // Also store aggregated payloads as known for block building.
@@ -491,9 +488,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     ///   3 = update_safe_target
     ///   4 = accept_new_attestations (unconditional)
     /// </summary>
-    public void TickInterval(ulong slot, int intervalInSlot, bool hasProposal = false)
+    public void TickInterval(ulong slot, int intervalInSlot, bool hasProposal = false, ulong maxPeerHeadSlot = 0UL)
     {
         _currentSlot = slot;
+        _maxPeerHeadSlot = maxPeerHeadSlot;
 
         switch (intervalInSlot)
         {
@@ -614,12 +612,10 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var currentSafeSlot = _protoArray.GetSlot(_safeTarget) ?? 0UL;
         if (safeHead.Slot < currentSafeSlot)
         {
-            _logger.LogError(
-                "Invalid safe target regression. NewSafeTargetSlot: {NewSafeTargetSlot}, CurrentSafeTargetSlot: {CurrentSafeTargetSlot}",
+            _logger.LogDebug(
+                "Safe target regression (allowed). NewSafeTargetSlot: {NewSafeTargetSlot}, CurrentSafeTargetSlot: {CurrentSafeTargetSlot}",
                 safeHead.Slot,
                 currentSafeSlot);
-            throw new InvalidOperationException(
-                $"Invalid safe target regression: new={safeHead.Slot} current={currentSafeSlot}");
         }
 
         _safeTarget = safeHead.Root;

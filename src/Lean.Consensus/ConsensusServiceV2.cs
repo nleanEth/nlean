@@ -174,9 +174,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
     public ulong FinalizedSlot => _snapshot.FinalizedSlot;
 
-    // Validator duties stay deferred
-    // while forkchoice is still in its anchor/init phase, and only resume once
-    // the first real justified checkpoint is observed through block processing.
+    // Validator duties stay deferred while forkchoice detects the node
+    // is far behind the network (slot-distance + peer-head heuristic).
     public bool HasUnknownBlockRootsInFlight
     {
         get
@@ -479,7 +478,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             var hasProposal = intervalInSlot == 0 &&
                 _config.LocalValidatorIds.Any(vid =>
                     new Types.ValidatorIndex(vid).IsProposerFor(slot, validatorCount));
-            _store.TickInterval(slot, intervalInSlot, hasProposal);
+            var maxPeerHeadSlot = _syncService?.GetNetworkHeadSlot() ?? 0UL;
+            _store.TickInterval(slot, intervalInSlot, hasProposal, maxPeerHeadSlot);
             RefreshSnapshot();
         }
 

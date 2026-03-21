@@ -154,30 +154,16 @@ public sealed class ConsensusServiceV2Tests
     }
 
     [Test]
-    public void HasUnknownBlockRootsInFlight_ReturnsTrue_DuringCheckpointInitUntilReady()
+    public void HasUnknownBlockRootsInFlight_ReturnsTrue_WhenWallClockFarBehindWithPeersAhead()
     {
-        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
-        var persisted = new ConsensusHeadState(
-            headSlot: 335,
-            headRoot: headRoot.AsSpan(),
-            latestJustifiedSlot: 182,
-            latestJustifiedRoot: headRoot.AsSpan(),
-            latestFinalizedSlot: 169,
-            latestFinalizedRoot: headRoot.AsSpan(),
-            safeTargetSlot: 169,
-            safeTargetRoot: headRoot.AsSpan());
-        var stateStore = new FakeConsensusStateStore(persisted);
-        var config = new ConsensusConfig
-        {
-            InitialValidatorCount = 1,
-            SecondsPerSlot = 4,
-            GenesisTimeUnix = (ulong)GenesisTime.ToUnixTimeSeconds()
-        };
-        var store = new ProtoArrayForkChoiceStore(config, stateStore);
-        var time = new FakeTimeSource(GenesisTime);
-        var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
-            ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
-        var svc = new ConsensusServiceV2(store, clock, config, stateStore: stateStore);
+        // When the node's wall-clock slot is far ahead of its head AND peers
+        // report a head much further than our own, duties should be suppressed.
+        var syncService = new FakeSyncService(SyncState.Synced, networkHeadSlot: 30);
+        var (svc, time, store, clock) = CreateService(syncService);
+
+        // Advance the wall clock so currentSlot ≈ 20 (well beyond headSlot=0 + tolerance=8).
+        time.UtcNow = GenesisTime.AddSeconds(20 * 4);
+        svc.OnTick(20, 0);
 
         Assert.That(svc.HasUnknownBlockRootsInFlight, Is.True);
     }
@@ -371,8 +357,15 @@ public sealed class ConsensusServiceV2Tests
 
     private sealed class FakeSyncService : ISyncService
     {
-        public FakeSyncService(SyncState state) => State = state;
+        public FakeSyncService(SyncState state, ulong networkHeadSlot = 0UL)
+        {
+            State = state;
+            NetworkHeadSlot = networkHeadSlot;
+        }
+
         public SyncState State { get; }
+        public ulong NetworkHeadSlot { get; set; }
+        public ulong GetNetworkHeadSlot() => NetworkHeadSlot;
         public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId) => Task.CompletedTask;
         public Task OnGossipAttestationAsync(SignedAttestation attestation) => Task.CompletedTask;
         public Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot, Bytes32? headRoot = null) => Task.CompletedTask;

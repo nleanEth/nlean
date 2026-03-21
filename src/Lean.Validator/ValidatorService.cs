@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using Lean.Consensus;
+using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
@@ -12,7 +13,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Lean.Validator;
 
-public sealed class ValidatorService : IValidatorService
+public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 {
     // Keep block gossip payloads comfortably below 1 MiB across mixed-client devnets.
     // Individual aggregate proofs are often ~250 KiB, so 3 proofs keeps the full block SSZ size bounded.

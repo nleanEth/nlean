@@ -9,11 +9,11 @@ public sealed class BackfillSync : IBackfillTrigger
 {
     public const int DefaultMaxBackfillDepth = 512;
     public const int MaxBlocksPerRequest = 10;
-    private const int MaxRetries = 3;
+    private const int MaxRetries = 5;
     private const int BaseRetryDelayMs = 500;
     private const int PerRequestTimeoutMs = 30_000;
     private const int ChainTimeoutMs = 600_000;
-    private const int QueueCapacity = 32;
+    private const int QueueCapacity = 64;
     internal const int GracePeriodMs = 500;
 
     private readonly INetworkRequester _network;
