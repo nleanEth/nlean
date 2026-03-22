@@ -38,7 +38,7 @@ public static class NodeApp
                 logging.AddSimpleConsole(o =>
                 {
                     o.IncludeScopes = true;
-                    o.SingleLine = true;
+                    o.SingleLine = false;
                     o.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fff] ";
                     o.UseUtcTimestamp = true;
                 });
