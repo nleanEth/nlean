@@ -1,9 +1,16 @@
+using System.Reflection;
+
 namespace Lean.Consensus.Api;
 
-/// <summary>
-/// Placeholder for the fork choice HTML UI page.
-/// </summary>
-internal static class ForkChoiceHtml
+public static class ForkChoiceHtml
 {
-    internal static string Content => "<html><body><p>Fork choice UI placeholder</p></body></html>";
+    private static readonly Lazy<string> _html = new(() =>
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        using var stream = assembly.GetManifestResourceStream("Lean.Consensus.Api.fork_choice.html")!;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    });
+
+    public static string Content => _html.Value;
 }

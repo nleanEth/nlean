@@ -210,6 +210,17 @@ public sealed class ProtoArray
             yield return (node.Root, node.Slot, node.ParentRoot);
     }
 
+    /// <summary>
+    /// Returns all nodes as (root, slot, parentRoot, weight) tuples for snapshot export.
+    /// </summary>
+    public IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> GetAllNodes()
+    {
+        var result = new List<(Bytes32, ulong, Bytes32, long)>(_nodes.Count);
+        foreach (var node in _nodes)
+            result.Add((node.Root, node.Slot, node.ParentRoot, node.Weight));
+        return result;
+    }
+
     // TODO: Replace hex-string dictionary keys with Bytes32 directly.
     // Bytes32 implements IEquatable<Bytes32> and GetHashCode (4× int32 from positions 0,8,16,24),
     // so it can serve as a dictionary key without the per-call hex allocation.
