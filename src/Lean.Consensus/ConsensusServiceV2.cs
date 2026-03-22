@@ -133,27 +133,32 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ApiSnapshot GetApiSnapshot()
     {
         var snap = _snapshot;
-        ForkChoiceSnapshot? forkChoice = null;
 
+        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> rawNodes;
+        Bytes32 safeTarget;
+        ulong validatorCount;
         lock (_storeLock)
         {
-            var nodes = _store.ProtoArray.GetAllNodes();
-            var fcNodes = new List<ForkChoiceNode>(nodes.Count);
-            foreach (var (root, slot, parentRoot, weight) in nodes)
-            {
-                fcNodes.Add(new ForkChoiceNode(
-                    Convert.ToHexString(root.AsSpan()),
-                    slot,
-                    Convert.ToHexString(parentRoot.AsSpan()),
-                    weight));
-            }
-
-            forkChoice = new ForkChoiceSnapshot(
-                fcNodes,
-                Convert.ToHexString(snap.HeadRoot.AsSpan()),
-                Convert.ToHexString(_store.SafeTarget.AsSpan()),
-                _store.ValidatorCount);
+            rawNodes = _store.ProtoArray.GetAllNodes();
+            safeTarget = _store.SafeTarget;
+            validatorCount = _store.ValidatorCount;
         }
+
+        var fcNodes = new List<ForkChoiceNode>(rawNodes.Count);
+        foreach (var (root, slot, parentRoot, weight) in rawNodes)
+        {
+            fcNodes.Add(new ForkChoiceNode(
+                Convert.ToHexString(root.AsSpan()),
+                slot,
+                Convert.ToHexString(parentRoot.AsSpan()),
+                weight));
+        }
+
+        var forkChoice = new ForkChoiceSnapshot(
+            fcNodes,
+            Convert.ToHexString(snap.HeadRoot.AsSpan()),
+            Convert.ToHexString(safeTarget.AsSpan()),
+            validatorCount);
 
         return new ApiSnapshot(
             snap.JustifiedSlot,
@@ -580,12 +585,17 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             try
             {
                 IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> allNodes;
-                lock (_storeLock) { allNodes = _store.ProtoArray.GetAllNodes(); }
+                Bytes32 safeTarget;
+                lock (_storeLock)
+                {
+                    allNodes = _store.ProtoArray.GetAllNodes();
+                    safeTarget = _store.SafeTarget;
+                }
                 var tree = ForkChoiceTreeFormatter.Format(
                     allNodes, snap.HeadRoot,
                     snap.JustifiedRoot, snap.JustifiedSlot,
                     snap.FinalizedRoot, snap.FinalizedSlot,
-                    _store.SafeTarget);
+                    safeTarget);
                 _logger.LogInformation("\n{ForkChoiceTree}", tree);
             }
             catch (Exception ex)
