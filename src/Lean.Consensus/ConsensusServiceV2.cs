@@ -134,11 +134,34 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ApiSnapshot GetApiSnapshot()
     {
         var snap = _snapshot;
+        ForkChoiceSnapshot? forkChoice = null;
+
+        lock (_storeLock)
+        {
+            var nodes = _store.ProtoArray.GetAllNodes();
+            var fcNodes = new List<ForkChoiceNode>(nodes.Count);
+            foreach (var (root, slot, parentRoot, weight) in nodes)
+            {
+                fcNodes.Add(new ForkChoiceNode(
+                    Convert.ToHexString(root.AsSpan()),
+                    slot,
+                    Convert.ToHexString(parentRoot.AsSpan()),
+                    weight));
+            }
+
+            forkChoice = new ForkChoiceSnapshot(
+                fcNodes,
+                Convert.ToHexString(snap.HeadRoot.AsSpan()),
+                Convert.ToHexString(_store.SafeTarget.AsSpan()),
+                _store.ValidatorCount);
+        }
+
         return new ApiSnapshot(
             snap.JustifiedSlot,
             Convert.ToHexString(snap.JustifiedRoot.AsSpan()),
             snap.FinalizedSlot,
-            Convert.ToHexString(snap.FinalizedRoot.AsSpan()));
+            Convert.ToHexString(snap.FinalizedRoot.AsSpan()),
+            forkChoice);
     }
 
     public byte[]? GetFinalizedStateSsz()
@@ -557,6 +580,22 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _logger.LogDebug(
                 "Tick head election. Slot: {Slot}, HeadSlot: {HeadSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}",
                 slot, snap.HeadSlot, snap.JustifiedSlot, snap.FinalizedSlot);
+
+            try
+            {
+                IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> allNodes;
+                lock (_storeLock) { allNodes = _store.ProtoArray.GetAllNodes(); }
+                var tree = ForkChoiceTreeFormatter.Format(
+                    allNodes, snap.HeadRoot,
+                    snap.JustifiedRoot, snap.JustifiedSlot,
+                    snap.FinalizedRoot, snap.FinalizedSlot,
+                    _store.SafeTarget);
+                _logger.LogInformation("\n{ForkChoiceTree}", tree);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to format fork choice tree");
+            }
         }
 
         if (intervalInSlot == 0 && _networkService is not null)
