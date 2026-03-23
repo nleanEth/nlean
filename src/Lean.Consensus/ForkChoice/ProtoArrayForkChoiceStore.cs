@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Lean.Consensus.ForkChoice;
 
+public readonly record struct GossipSignatureEntry(ulong ValidatorId, XmssSignature Signature);
+
 public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 {
     public const int IntervalsPerSlot = 5;
@@ -16,10 +18,9 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     private readonly ProtoArray _protoArray;
     private readonly Dictionary<ulong, AttestationTracker> _attestationTrackers = new();
-    private readonly Dictionary<(ulong, string), XmssSignature> _gossipSignatures = new();
-    private readonly Dictionary<string, AttestationData> _attestationDataByRoot = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, List<AggregatedSignatureProof>> _newAggregatedPayloads = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, List<AggregatedSignatureProof>> _knownAggregatedPayloads = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (AttestationData Data, HashSet<GossipSignatureEntry> Entries)> _gossipSignatures = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (AttestationData Data, HashSet<AggregatedSignatureProof> Proofs)> _newAggregatedPayloads = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (AttestationData Data, HashSet<AggregatedSignatureProof> Proofs)> _knownAggregatedPayloads = new(StringComparer.Ordinal);
     private readonly ILogger _logger;
 
     private long[] _deltas = Array.Empty<long>();
@@ -131,8 +132,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         get
         {
             int count = 0;
-            foreach (var list in _newAggregatedPayloads.Values)
-                count += list.Count;
+            foreach (var (_, proofs) in _newAggregatedPayloads.Values)
+                count += proofs.Count;
             return count;
         }
     }
@@ -145,16 +146,24 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         return roots;
     }
 
-    public void OnGossipSignature(ulong validatorId, Bytes32 dataRoot, XmssSignature signature)
+    public void OnGossipSignature(ulong validatorId, AttestationData data, XmssSignature signature)
     {
-        var key = (validatorId, ProtoArray.RootKey(dataRoot));
-        _gossipSignatures[key] = signature;
-        LeanMetrics.SetGossipSignatures(_gossipSignatures.Count);
+        var dataRootKey = ToDataRootKey(data);
+        if (!_gossipSignatures.TryGetValue(dataRootKey, out var entry))
+        {
+            entry = (data, new HashSet<GossipSignatureEntry>());
+            _gossipSignatures[dataRootKey] = entry;
+        }
+        entry.Entries.Add(new GossipSignatureEntry(validatorId, signature));
+        LeanMetrics.SetGossipSignatures(_gossipSignatures.Values.Sum(v => v.Entries.Count));
     }
 
     public bool HasGossipSignature(ulong validatorId, Bytes32 dataRoot)
     {
-        return _gossipSignatures.ContainsKey((validatorId, ProtoArray.RootKey(dataRoot)));
+        var dataRootKey = ProtoArray.RootKey(dataRoot);
+        if (!_gossipSignatures.TryGetValue(dataRootKey, out var entry))
+            return false;
+        return entry.Entries.Any(e => e.ValidatorId == validatorId);
     }
 
     public void OnGossipAggregatedAttestation(SignedAggregatedAttestation signed)
@@ -171,16 +180,14 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
 
         var dataRootKey = ToDataRootKey(signed.Data);
-        _attestationDataByRoot[dataRootKey] = signed.Data;
-
-        if (!_newAggregatedPayloads.TryGetValue(dataRootKey, out var list))
+        if (!_newAggregatedPayloads.TryGetValue(dataRootKey, out var entry))
         {
-            list = new List<AggregatedSignatureProof>();
-            _newAggregatedPayloads[dataRootKey] = list;
+            entry = (signed.Data, new HashSet<AggregatedSignatureProof>());
+            _newAggregatedPayloads[dataRootKey] = entry;
         }
-        list.Add(signed.Proof);
+        entry.Proofs.Add(signed.Proof);
         LeanMetrics.SetLatestNewAggregatedPayloads(
-            _newAggregatedPayloads.Values.Sum(v => v.Count));
+            _newAggregatedPayloads.Values.Sum(v => v.Proofs.Count));
 
         reason = string.Empty;
         return true;
@@ -195,15 +202,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     {
         var perValidator = new Dictionary<ulong, AttestationData>();
 
-        foreach (var (dataRootKey, payloads) in _knownAggregatedPayloads)
+        foreach (var (dataRootKey, (data, proofs)) in _knownAggregatedPayloads)
         {
-            if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
-                continue;
-
             if (data.Slot.Value >= blockSlot)
                 continue;
 
-            foreach (var proof in payloads)
+            foreach (var proof in proofs)
             {
                 if (!proof.Participants.TryToValidatorIndices(out var pids))
                     continue;
@@ -228,14 +232,9 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     /// Returns the raw known aggregated payload pool keyed by data root hex.
     /// Used by the proof selection algorithm (greedy set cover).
     /// </summary>
-    public IReadOnlyDictionary<string, List<AggregatedSignatureProof>> GetKnownPayloadPool()
+    public IReadOnlyDictionary<string, (AttestationData Data, HashSet<AggregatedSignatureProof> Proofs)> GetKnownPayloadPool()
     {
         return _knownAggregatedPayloads;
-    }
-
-    public bool TryGetAttestationData(string dataRootKey, out AttestationData data)
-    {
-        return _attestationDataByRoot.TryGetValue(dataRootKey, out data!);
     }
 
     /// <summary>
@@ -321,14 +320,13 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             var attestation = aggregatedAttestations[i];
             var proof = attestationSignatures[i];
             var dataRootKey = ToDataRootKey(attestation.Data);
-            _attestationDataByRoot[dataRootKey] = attestation.Data;
 
-            if (!_knownAggregatedPayloads.TryGetValue(dataRootKey, out var knownProofs))
+            if (!_knownAggregatedPayloads.TryGetValue(dataRootKey, out var knownEntry))
             {
-                knownProofs = new List<AggregatedSignatureProof>();
-                _knownAggregatedPayloads[dataRootKey] = knownProofs;
+                knownEntry = (attestation.Data, new HashSet<AggregatedSignatureProof>());
+                _knownAggregatedPayloads[dataRootKey] = knownEntry;
             }
-            knownProofs.Add(proof);
+            knownEntry.Proofs.Add(proof);
 
             // Use AggregationBits to extract per-validator votes from block attestations.
             if (attestation.AggregationBits.TryToValidatorIndices(out var vids))
@@ -378,25 +376,35 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             return false;
         }
 
-        var dataRootKey = ToDataRootKey(attestation.Message);
-        _attestationDataByRoot[dataRootKey] = attestation.Message;
-
         // Tracker updates happen in AcceptNewAttestations.
         // Individual attestations feed into aggregation; the aggregated payloads
         // are unpacked into per-validator trackers at tick intervals 0/4.
 
         if (storeSignature)
         {
-            _gossipSignatures[(attestation.ValidatorId, dataRootKey)] = attestation.Signature;
+            var dataRootKey = ToDataRootKey(attestation.Message);
+            if (!_gossipSignatures.TryGetValue(dataRootKey, out var entry))
+            {
+                entry = (attestation.Message, new HashSet<GossipSignatureEntry>());
+                _gossipSignatures[dataRootKey] = entry;
+            }
+            entry.Entries.Add(new GossipSignatureEntry(attestation.ValidatorId, attestation.Signature));
             _logger.LogDebug(
                 "Stored gossip signature. ValidatorId: {ValidatorId}, Slot: {Slot}, GossipSigCount: {Count}",
-                attestation.ValidatorId, attestation.Message.Slot.Value, _gossipSignatures.Count);
+                attestation.ValidatorId, attestation.Message.Slot.Value,
+                _gossipSignatures.Values.Sum(v => v.Entries.Count));
         }
         else
         {
-            _gossipSignatures.Remove((attestation.ValidatorId, dataRootKey));
+            var dataRootKey = ToDataRootKey(attestation.Message);
+            if (_gossipSignatures.TryGetValue(dataRootKey, out var entry))
+            {
+                entry.Entries.RemoveWhere(e => e.ValidatorId == attestation.ValidatorId);
+                if (entry.Entries.Count == 0)
+                    _gossipSignatures.Remove(dataRootKey);
+            }
         }
-        LeanMetrics.SetGossipSignatures(_gossipSignatures.Count);
+        LeanMetrics.SetGossipSignatures(_gossipSignatures.Values.Sum(v => v.Entries.Count));
         reason = string.Empty;
         return true;
     }
@@ -417,50 +425,27 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
     {
         _logger.LogDebug(
-            "CollectAttestationsForAggregation. GossipSignatureCount: {Count}, AttestationDataCount: {DataCount}",
-            _gossipSignatures.Count, _attestationDataByRoot.Count);
+            "CollectAttestationsForAggregation. GossipSignatureCount: {Count}",
+            _gossipSignatures.Values.Sum(v => v.Entries.Count));
 
-        var groups = new Dictionary<string, (AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>(StringComparer.Ordinal);
-        var consumedKeys = new List<(ulong, string)>();
+        var result = new List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>();
+        var consumedKeys = new List<string>();
 
-        foreach (var (key, signature) in _gossipSignatures)
+        foreach (var (dataRootKey, (data, entries)) in _gossipSignatures)
         {
-            if (!_attestationDataByRoot.TryGetValue(key.Item2, out var data))
-                continue;
+            if (entries.Count == 0) continue;
 
-            if (!groups.TryGetValue(key.Item2, out var group))
-            {
-                group = (data, new List<ulong>(), new List<XmssSignature>());
-                groups[key.Item2] = group;
-            }
-
-            group.ValidatorIds.Add(key.Item1);
-            group.Signatures.Add(signature);
-            consumedKeys.Add(key);
+            // Sort by validatorId for deterministic aggregation
+            var sorted = entries.OrderBy(e => e.ValidatorId).ToList();
+            var ids = sorted.Select(e => e.ValidatorId).ToList();
+            var sigs = sorted.Select(e => e.Signature).ToList();
+            result.Add((data, ids, sigs));
+            consumedKeys.Add(dataRootKey);
         }
 
         foreach (var key in consumedKeys)
         {
             _gossipSignatures.Remove(key);
-        }
-
-        var result = new List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)>();
-        foreach (var group in groups.Values)
-        {
-            var ids = group.ValidatorIds;
-            var sigs = group.Signatures;
-            var indices = new int[ids.Count];
-            for (var i = 0; i < indices.Length; i++)
-                indices[i] = i;
-            Array.Sort(indices, (a, b) => ids[a].CompareTo(ids[b]));
-            var sortedIds = new List<ulong>(ids.Count);
-            var sortedSigs = new List<XmssSignature>(ids.Count);
-            foreach (var idx in indices)
-            {
-                sortedIds.Add(ids[idx]);
-                sortedSigs.Add(sigs[idx]);
-            }
-            result.Add((group.Data, sortedIds, sortedSigs));
         }
 
         return result;
@@ -507,11 +492,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         // Step 1: Unpack received aggregated payloads into per-validator latestNew.
         // This is the sole path for tracker updates from
         // aggregated attestations. Gossip receive only stores payloads.
-        foreach (var (dataRootKey, proofs) in _newAggregatedPayloads)
+        foreach (var (dataRootKey, (data, proofs)) in _newAggregatedPayloads)
         {
-            if (!_attestationDataByRoot.TryGetValue(dataRootKey, out var data))
-                continue;
-
             var headIndex = _protoArray.GetIndex(data.Head.Root);
             if (!headIndex.HasValue)
                 continue;
@@ -526,20 +508,20 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             }
         }
 
-        // Step 2: Migrate aggregated payloads new → known (for block building).
-        foreach (var (key, payloads) in _newAggregatedPayloads)
+        // Step 2: Migrate aggregated payloads new -> known (for block building).
+        foreach (var (key, (data, payloads)) in _newAggregatedPayloads)
         {
-            if (!_knownAggregatedPayloads.TryGetValue(key, out var knownList))
+            if (!_knownAggregatedPayloads.TryGetValue(key, out var knownEntry))
             {
-                knownList = new List<AggregatedSignatureProof>();
-                _knownAggregatedPayloads[key] = knownList;
+                knownEntry = (data, new HashSet<AggregatedSignatureProof>());
+                _knownAggregatedPayloads[key] = knownEntry;
             }
-            knownList.AddRange(payloads);
+            foreach (var p in payloads) knownEntry.Proofs.Add(p);
         }
         _newAggregatedPayloads.Clear();
         LeanMetrics.SetLatestNewAggregatedPayloads(0);
         LeanMetrics.SetLatestKnownAggregatedPayloads(
-            _knownAggregatedPayloads.Values.Sum(v => v.Count));
+            _knownAggregatedPayloads.Values.Sum(v => v.Proofs.Count));
 
         // Step 3: Promote latestNew → latestKnown for all validators.
         // Once a vote has been accepted, latestNew
@@ -574,14 +556,14 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             var payloadBytes = _knownAggregatedPayloads.Values
-                .Sum(list => list.Sum(p => (long)p.ProofData.Length));
+                .Sum(entry => entry.Proofs.Sum(p => (long)p.ProofData.Length));
             _logger.LogDebug(
                 "AcceptNewAttestations. Slot: {Slot}, HeadRoot: {HeadRoot}, HeadSlot: {HeadSlot}, JustifiedRoot: {JRoot}, JustifiedSlot: {JSlot}, FinalizedSlot: {FSlot}, ProtoNodeCount: {NodeCount}, PayloadPoolBytes: {PoolBytes}, PayloadPoolCount: {PoolCount}",
                 _currentSlot,
                 ProtoArray.RootKey(_headRoot)[..8], _headSlot,
                 ProtoArray.RootKey(_latestJustified.Root)[..8], _latestJustified.Slot.Value,
                 _latestFinalized.Slot.Value, _protoArray.NodeCount,
-                payloadBytes, _knownAggregatedPayloads.Values.Sum(v => v.Count));
+                payloadBytes, _knownAggregatedPayloads.Values.Sum(v => v.Proofs.Count));
         }
     }
 
@@ -842,48 +824,37 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
     private void PruneAttestationDataOlderThan(ulong cutoffSlot)
     {
-        var staleDataKeys = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var kv in _attestationDataByRoot)
-        {
-            if (kv.Value.Slot.Value <= cutoffSlot)
-                staleDataKeys.Add(kv.Key);
-        }
+        var staleKeys = new List<string>();
 
-        if (staleDataKeys.Count == 0)
-            return;
+        foreach (var (key, (data, _)) in _gossipSignatures)
+            if (data.Target.Slot.Value <= cutoffSlot) staleKeys.Add(key);
+        foreach (var key in staleKeys) _gossipSignatures.Remove(key);
 
-        var staleSignatureKeys = new List<(ulong, string)>();
-        foreach (var key in _gossipSignatures.Keys)
-        {
-            if (staleDataKeys.Contains(key.Item2))
-                staleSignatureKeys.Add(key);
-        }
-        foreach (var key in staleSignatureKeys)
-        {
-            _gossipSignatures.Remove(key);
-        }
+        staleKeys.Clear();
+        foreach (var (key, (data, _)) in _newAggregatedPayloads)
+            if (data.Target.Slot.Value <= cutoffSlot) staleKeys.Add(key);
+        foreach (var key in staleKeys) _newAggregatedPayloads.Remove(key);
 
-        foreach (var dataKey in staleDataKeys)
-        {
-            _attestationDataByRoot.Remove(dataKey);
-            _knownAggregatedPayloads.Remove(dataKey);
-            _newAggregatedPayloads.Remove(dataKey);
-        }
+        staleKeys.Clear();
+        foreach (var (key, (data, _)) in _knownAggregatedPayloads)
+            if (data.Target.Slot.Value <= cutoffSlot) staleKeys.Add(key);
+        foreach (var key in staleKeys) _knownAggregatedPayloads.Remove(key);
 
-        LeanMetrics.SetGossipSignatures(_gossipSignatures.Count);
+        LeanMetrics.SetGossipSignatures(_gossipSignatures.Values.Sum(v => v.Entries.Count));
         LeanMetrics.SetLatestKnownAggregatedPayloads(
-            _knownAggregatedPayloads.Values.Sum(v => v.Count));
+            _knownAggregatedPayloads.Values.Sum(v => v.Proofs.Count));
         LeanMetrics.SetLatestNewAggregatedPayloads(
-            _newAggregatedPayloads.Values.Sum(v => v.Count));
+            _newAggregatedPayloads.Values.Sum(v => v.Proofs.Count));
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             var payloadBytes = _knownAggregatedPayloads.Values
-                .Sum(list => list.Sum(p => (long)p.ProofData.Length));
+                .Sum(entry => entry.Proofs.Sum(p => (long)p.ProofData.Length));
             _logger.LogDebug(
-                "PruneAttestationData. CutoffSlot: {CutoffSlot}, PrunedDataKeys: {PrunedCount}, RemainingDataKeys: {RemainingDataKeys}, RemainingSignatures: {RemainingSigs}, RemainingPayloads: {RemainingPayloads}, PayloadBytes: {PayloadBytes}",
-                cutoffSlot, staleDataKeys.Count, _attestationDataByRoot.Count,
-                _gossipSignatures.Count, _knownAggregatedPayloads.Values.Sum(v => v.Count),
+                "PruneAttestationData. CutoffSlot: {CutoffSlot}, RemainingSignatures: {RemainingSigs}, RemainingPayloads: {RemainingPayloads}, PayloadBytes: {PayloadBytes}",
+                cutoffSlot,
+                _gossipSignatures.Values.Sum(v => v.Entries.Count),
+                _knownAggregatedPayloads.Values.Sum(v => v.Proofs.Count),
                 payloadBytes);
         }
     }

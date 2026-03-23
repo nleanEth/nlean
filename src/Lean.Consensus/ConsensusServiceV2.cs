@@ -411,7 +411,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         lock (_storeLock) { return _store.TryOnGossipAggregatedAttestation(signed, out reason); }
     }
 
-    public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, List<AggregatedSignatureProof>> PayloadPool)
+    public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, (AttestationData Data, HashSet<AggregatedSignatureProof> Proofs)> PayloadPool)
         GetAllAvailableAttestationsForBlock(ulong slot)
     {
         lock (_storeLock)
@@ -434,10 +434,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             var attestations = new List<AggregatedAttestation>();
             var proofs = new List<AggregatedSignatureProof>();
             var pool = _store.GetKnownPayloadPool();
-            foreach (var (dataRootKey, poolProofs) in pool)
+            foreach (var (dataRootKey, (data, poolProofs)) in pool)
             {
-                if (!_store.TryGetAttestationData(dataRootKey, out var data))
-                    continue;
                 if (data.Slot.Value >= slot)
                     continue;
                 if (!data.Source.Equals(requiredSource))
