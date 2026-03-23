@@ -13,6 +13,12 @@ using Microsoft.Extensions.Logging;
 
 namespace Lean.Validator;
 
+public sealed record ValidatorKeyMaterial(
+    byte[] AttestationPublicKey,
+    byte[] AttestationSecretKey,
+    byte[] ProposalPublicKey,
+    byte[] ProposalSecretKey);
+
 public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 {
     // Keep block gossip payloads comfortably below 1 MiB across mixed-client devnets.
@@ -47,7 +53,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
     private readonly object _dutyStateLock = new();
     private CancellationToken _shutdownToken;
     private int _started;
-    private readonly Dictionary<ulong, (byte[] PublicKey, byte[] SecretKey)> _localValidators = new();
+    private readonly Dictionary<ulong, ValidatorKeyMaterial> _localValidators = new();
     private byte[] _validatorPublicKey = Array.Empty<byte>();
     private byte[] _validatorSecretKey = Array.Empty<byte>();
     private ulong _validatorId;
@@ -155,14 +161,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 return;
             }
 
-            TryGetProposerForSlot(slot, out var slotProposer);
             foreach (var validatorId in _localValidators.Keys)
             {
-                if (validatorId == slotProposer && slotProposer != 0)
-                {
-                    continue;
-                }
-
                 await PublishStandaloneAttestationAsync(slot, validatorId, cancellationToken);
                 DutyRunsTotal.Add(1);
             }
@@ -220,7 +220,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private async Task PublishStandaloneAttestationAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
-        var (validatorPublicKey, validatorSecretKey) = _localValidators[validatorId];
+        var keys = _localValidators[validatorId];
         var attestationData = _consensusService.CreateAttestationData(slot);
         var headSlot = attestationData.Head.Slot.Value;
         var justifiedSlot = _consensusService.JustifiedSlot;
@@ -243,15 +243,15 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
         var messageRoot = attestationData.HashTreeRoot();
         var signingStopwatch = Stopwatch.StartNew();
-        var signatureBytes = _leanSig.Sign(validatorSecretKey, epoch, messageRoot);
+        var signatureBytes = _leanSig.Sign(keys.AttestationSecretKey, epoch, messageRoot);
         signingStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(signingStopwatch.Elapsed);
 
         var selfVerificationOk = true;
-        if (validatorPublicKey.Length > 0)
+        if (keys.AttestationPublicKey.Length > 0)
         {
             var verificationStopwatch = Stopwatch.StartNew();
-            selfVerificationOk = _leanSig.Verify(validatorPublicKey, epoch, messageRoot, signatureBytes);
+            selfVerificationOk = _leanSig.Verify(keys.AttestationPublicKey, epoch, messageRoot, signatureBytes);
             verificationStopwatch.Stop();
             LeanMetrics.RecordPqAttestationVerification(selfVerificationOk, verificationStopwatch.Elapsed);
         }
@@ -436,7 +436,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private async Task<bool> TryPublishProposerBlockAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
-        var (_, validatorSecretKey) = _localValidators[validatorId];
+        var keys = _localValidators[validatorId];
         var (parentRootBytes, baseAttestationData) = _consensusService.GetProposalContext(slot);
         if (parentRootBytes.Length != SszEncoding.Bytes32Length)
         {
@@ -477,21 +477,14 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         }
 
         var block = candidateBlock with { StateRoot = computedStateRoot };
-        var blockRoot = new Bytes32(block.HashTreeRoot());
+        var blockRoot = block.HashTreeRoot();
 
-        var proposerAttestationData = baseAttestationData with
-        {
-            Head = new Checkpoint(blockRoot, new Slot(slot)),
-        };
-
-        var proposerMessageRoot = proposerAttestationData.HashTreeRoot();
+        // Sign hash_tree_root(block) with PROPOSAL key
         var proposerSigningStopwatch = Stopwatch.StartNew();
-        var proposerSignatureBytes = _leanSig.Sign(validatorSecretKey, ToSignatureEpoch(slot), proposerMessageRoot);
+        var proposerSignatureBytes = _leanSig.Sign(keys.ProposalSecretKey, ToSignatureEpoch(slot), blockRoot);
         proposerSigningStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(proposerSigningStopwatch.Elapsed);
         var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
-        var proposerAttestation = new Attestation(validatorId, proposerAttestationData);
-        var signedProposerAttestation = new SignedAttestation(validatorId, proposerAttestationData, proposerSignature);
 
         var signedBlock = new SignedBlock(
             block,
@@ -508,7 +501,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         }
 
         var payload = SszEncoding.Encode(signedBlock);
-        TryDumpProposerBlock(slot, payload, parentRoot, blockRoot, signedBlock);
+        var blockRootBytes32 = new Bytes32(blockRoot);
+        TryDumpProposerBlock(slot, payload, parentRoot, blockRootBytes32, signedBlock);
         await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
 
         _logger.LogInformation(
@@ -516,7 +510,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             slot,
             validatorId,
             Convert.ToHexString(parentRoot.AsSpan()),
-            Convert.ToHexString(blockRoot.AsSpan()),
+            Convert.ToHexString(blockRoot),
             aggregatedAttestations.Count,
             aggregatedProofs.Count);
         return true;
@@ -733,57 +727,106 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         for (var i = 0; i < indices.Count; i++)
         {
             var validatorId = indices[i];
-            var publicKeyPath = i < _validatorDutyConfig.AllPublicKeyPaths.Count
+
+            // Try attestation-specific key paths first, then fall back to legacy paths
+            var attestPublicKeyPath = i < _validatorDutyConfig.AllAttestationPublicKeyPaths.Count
+                ? _validatorDutyConfig.AllAttestationPublicKeyPaths[i]
+                : null;
+            var attestSecretKeyPath = i < _validatorDutyConfig.AllAttestationSecretKeyPaths.Count
+                ? _validatorDutyConfig.AllAttestationSecretKeyPaths[i]
+                : null;
+            var proposalPublicKeyPath = i < _validatorDutyConfig.AllProposalPublicKeyPaths.Count
+                ? _validatorDutyConfig.AllProposalPublicKeyPaths[i]
+                : null;
+            var proposalSecretKeyPath = i < _validatorDutyConfig.AllProposalSecretKeyPaths.Count
+                ? _validatorDutyConfig.AllProposalSecretKeyPaths[i]
+                : null;
+
+            // Fall back to legacy single-key paths
+            var legacyPublicKeyPath = i < _validatorDutyConfig.AllPublicKeyPaths.Count
                 ? _validatorDutyConfig.AllPublicKeyPaths[i]
                 : null;
-            var secretKeyPath = i < _validatorDutyConfig.AllSecretKeyPaths.Count
+            var legacySecretKeyPath = i < _validatorDutyConfig.AllSecretKeyPaths.Count
                 ? _validatorDutyConfig.AllSecretKeyPaths[i]
                 : null;
 
-            var configuredPublic = (i == 0 ? ParseHex(_validatorDutyConfig.PublicKeyHex) : null)
-                ?? ReadKeyFile(publicKeyPath, "public");
-            var derivedPublic = configuredPublic;
-            if (derivedPublic is null)
+            attestPublicKeyPath ??= legacyPublicKeyPath;
+            attestSecretKeyPath ??= legacySecretKeyPath;
+            proposalPublicKeyPath ??= legacyPublicKeyPath;
+            proposalSecretKeyPath ??= legacySecretKeyPath;
+
+            // Try attestation-specific hex config first, then fall back to legacy hex
+            var attestPublicHex = (i == 0 ? ParseHex(_validatorDutyConfig.AttestationPublicKeyHex) : null)
+                ?? (i == 0 ? ParseHex(_validatorDutyConfig.PublicKeyHex) : null);
+            var attestSecretHex = (i == 0 ? ParseHex(_validatorDutyConfig.AttestationSecretKeyHex) : null)
+                ?? (i == 0 ? ParseHex(_validatorDutyConfig.SecretKeyHex) : null);
+            var proposalPublicHex = (i == 0 ? ParseHex(_validatorDutyConfig.ProposalPublicKeyHex) : null);
+            var proposalSecretHex = (i == 0 ? ParseHex(_validatorDutyConfig.ProposalSecretKeyHex) : null);
+
+            // Resolve attestation public key
+            var configuredAttestPublic = attestPublicHex ?? ReadKeyFile(attestPublicKeyPath, "attestation public");
+            var derivedAttestPublic = configuredAttestPublic;
+            if (derivedAttestPublic is null)
             {
                 lock (_dutyStateLock)
                 {
                     if (_validatorPublicKeys.TryGetValue(validatorId, out var knownPublic) && knownPublic.Length > 0)
                     {
-                        derivedPublic = knownPublic.ToArray();
+                        derivedAttestPublic = knownPublic.ToArray();
                     }
                 }
             }
 
-            var configuredSecret = (i == 0 ? ParseHex(_validatorDutyConfig.SecretKeyHex) : null)
-                ?? ReadKeyFile(secretKeyPath, "secret");
-            if (derivedPublic is not null && configuredSecret is not null)
+            // Resolve attestation secret key
+            var configuredAttestSecret = attestSecretHex ?? ReadKeyFile(attestSecretKeyPath, "attestation secret");
+
+            // Resolve proposal public key
+            var configuredProposalPublic = proposalPublicHex ?? ReadKeyFile(proposalPublicKeyPath, "proposal public");
+
+            // Resolve proposal secret key
+            var configuredProposalSecret = proposalSecretHex ?? ReadKeyFile(proposalSecretKeyPath, "proposal secret");
+
+            if (configuredAttestSecret is not null)
             {
-                _localValidators[validatorId] = (derivedPublic, configuredSecret);
-            }
-            else if (configuredSecret is not null)
-            {
-                _localValidators[validatorId] = (Array.Empty<byte>(), configuredSecret);
-                _logger.LogWarning(
-                    "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
-                    validatorId);
+                // We have at least attestation keys from config/files.
+                // Use same keys for proposal if proposal keys not separately configured.
+                var attestPub = derivedAttestPublic ?? Array.Empty<byte>();
+                var proposalPub = configuredProposalPublic ?? attestPub;
+                var proposalSec = configuredProposalSecret ?? configuredAttestSecret;
+
+                _localValidators[validatorId] = new ValidatorKeyMaterial(
+                    attestPub, configuredAttestSecret, proposalPub, proposalSec);
+
+                if (attestPub.Length == 0)
+                {
+                    _logger.LogWarning(
+                        "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
+                        validatorId);
+                }
             }
             else
             {
-                var keyPair = _leanSig.GenerateKeyPair(
+                // Generate fresh key pairs for both attestation and proposal
+                var attestKeyPair = _leanSig.GenerateKeyPair(
                     _validatorDutyConfig.ActivationEpoch,
                     _validatorDutyConfig.NumActiveEpochs);
-                _localValidators[validatorId] = (keyPair.PublicKey, keyPair.SecretKey);
+                var proposalKeyPair = _leanSig.GenerateKeyPair(
+                    _validatorDutyConfig.ActivationEpoch,
+                    _validatorDutyConfig.NumActiveEpochs);
+                _localValidators[validatorId] = new ValidatorKeyMaterial(
+                    attestKeyPair.PublicKey, attestKeyPair.SecretKey,
+                    proposalKeyPair.PublicKey, proposalKeyPair.SecretKey);
             }
 
             if (i == 0)
             {
-                _validatorPublicKey = _localValidators[validatorId].PublicKey;
-                _validatorSecretKey = _localValidators[validatorId].SecretKey;
+                _validatorPublicKey = _localValidators[validatorId].AttestationPublicKey;
+                _validatorSecretKey = _localValidators[validatorId].AttestationSecretKey;
             }
 
             lock (_dutyStateLock)
             {
-                var publicKey = _localValidators[validatorId].PublicKey;
+                var publicKey = _localValidators[validatorId].AttestationPublicKey;
                 if (publicKey.Length > 0)
                 {
                     _validatorPublicKeys[validatorId] = publicKey.ToArray();
@@ -819,23 +862,60 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private void LoadKnownValidatorPublicKeysFromDirectory()
     {
-        if (string.IsNullOrWhiteSpace(_validatorDutyConfig.PublicKeyPath))
+        var keyPath = _validatorDutyConfig.PublicKeyPath;
+        if (string.IsNullOrWhiteSpace(keyPath))
+        {
+            // Try attestation-specific path
+            keyPath = _validatorDutyConfig.AttestationPublicKeyPath;
+        }
+
+        if (string.IsNullOrWhiteSpace(keyPath))
         {
             return;
         }
 
-        var directory = Path.GetDirectoryName(_validatorDutyConfig.PublicKeyPath);
+        var directory = Path.GetDirectoryName(keyPath);
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
             return;
         }
 
+        // Load attestation public keys from new naming convention first
+        foreach (var filePath in Directory.EnumerateFiles(directory, "validator_*_attest_pk.ssz"))
+        {
+            var fileName = Path.GetFileNameWithoutExtension(filePath);
+            if (!TryParseValidatorIndexFromAttestPublicKeyFileName(fileName, out var validatorId))
+            {
+                continue;
+            }
+
+            var publicKeyBytes = File.ReadAllBytes(filePath);
+            if (publicKeyBytes.Length == 0)
+            {
+                continue;
+            }
+
+            lock (_dutyStateLock)
+            {
+                _validatorPublicKeys[validatorId] = publicKeyBytes;
+            }
+        }
+
+        // Fall back to legacy naming convention for validators not already loaded
         foreach (var filePath in Directory.EnumerateFiles(directory, "validator_*_pk.ssz"))
         {
             var fileName = Path.GetFileNameWithoutExtension(filePath);
             if (!TryParseValidatorIndexFromPublicKeyFileName(fileName, out var validatorId))
             {
                 continue;
+            }
+
+            lock (_dutyStateLock)
+            {
+                if (_validatorPublicKeys.ContainsKey(validatorId))
+                {
+                    continue;
+                }
             }
 
             var publicKeyBytes = File.ReadAllBytes(filePath);
@@ -879,6 +959,21 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         validatorId = 0;
         const string prefix = "validator_";
         const string suffix = "_pk";
+        if (!fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var span = fileName.AsSpan(prefix.Length, fileName.Length - prefix.Length - suffix.Length);
+        return ulong.TryParse(span, out validatorId);
+    }
+
+    private static bool TryParseValidatorIndexFromAttestPublicKeyFileName(string fileName, out ulong validatorId)
+    {
+        validatorId = 0;
+        const string prefix = "validator_";
+        const string suffix = "_attest_pk";
         if (!fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
             !fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
         {
