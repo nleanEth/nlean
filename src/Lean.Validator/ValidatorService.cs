@@ -288,19 +288,22 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 validatorId);
         }
 
-        _logger.LogDebug(
-            "Attestation signed. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}, MessageRoot: {MessageRoot}, SignatureBytes: {SignatureBytes}, SelfVerified: {SelfVerified}",
-            slot,
-            validatorId,
-            attestationData.Head.Slot.Value,
-            attestationData.Target.Slot.Value,
-            attestationData.Source.Slot.Value,
-            Convert.ToHexString(attestationData.Head.Root.AsSpan()),
-            Convert.ToHexString(attestationData.Target.Root.AsSpan()),
-            Convert.ToHexString(attestationData.Source.Root.AsSpan()),
-            Convert.ToHexString(messageRoot),
-            signatureBytes.Length,
-            selfVerificationOk);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Attestation signed. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}, MessageRoot: {MessageRoot}, SignatureBytes: {SignatureBytes}, SelfVerified: {SelfVerified}",
+                slot,
+                validatorId,
+                attestationData.Head.Slot.Value,
+                attestationData.Target.Slot.Value,
+                attestationData.Source.Slot.Value,
+                Convert.ToHexString(attestationData.Head.Root.AsSpan()),
+                Convert.ToHexString(attestationData.Target.Root.AsSpan()),
+                Convert.ToHexString(attestationData.Source.Root.AsSpan()),
+                Convert.ToHexString(messageRoot),
+                signatureBytes.Length,
+                selfVerificationOk);
+        }
 
         TryDumpAttestation(slot, attestationPayload, messageRoot, signatureBytes, selfVerificationOk);
 
