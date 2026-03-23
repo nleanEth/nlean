@@ -1075,6 +1075,19 @@ public sealed class ValidatorServiceTests
             return new byte[] { 0xAA, 0xBB, 0xCC };
         }
 
+        public byte[] Aggregate(
+            IReadOnlyList<bool> xmssParticipants,
+            IReadOnlyList<byte[]> children,
+            IReadOnlyList<(ReadOnlyMemory<byte> PublicKey, ReadOnlyMemory<byte> Signature)> rawXmss,
+            ReadOnlySpan<byte> message,
+            uint epoch,
+            bool recursive = false)
+        {
+            AggregateCalls++;
+            AggregatePublicKeyHistory.Add(rawXmss.Select(x => x.PublicKey.ToArray()).ToList());
+            return new byte[] { 0xAA, 0xBB, 0xCC };
+        }
+
         public bool VerifyAggregate(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
             ReadOnlySpan<byte> message,
             ReadOnlySpan<byte> aggregateSignature,

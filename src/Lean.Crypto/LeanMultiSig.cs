@@ -11,6 +11,13 @@ public interface ILeanMultiSig
         IReadOnlyList<ReadOnlyMemory<byte>> signatures,
         ReadOnlySpan<byte> message,
         uint epoch);
+    byte[] Aggregate(
+        IReadOnlyList<bool> xmssParticipants,
+        IReadOnlyList<byte[]> children,
+        IReadOnlyList<(ReadOnlyMemory<byte> PublicKey, ReadOnlyMemory<byte> Signature)> rawXmss,
+        ReadOnlySpan<byte> message,
+        uint epoch,
+        bool recursive = false);
     bool VerifyAggregate(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
         ReadOnlySpan<byte> message,
         ReadOnlySpan<byte> aggregateSignature,
@@ -74,6 +81,33 @@ public sealed class RustLeanMultiSig : ILeanMultiSig
                 return CopyAndFree(aggPtr, aggLen);
             }
         }
+    }
+
+    public byte[] Aggregate(
+        IReadOnlyList<bool> xmssParticipants,
+        IReadOnlyList<byte[]> children,
+        IReadOnlyList<(ReadOnlyMemory<byte> PublicKey, ReadOnlyMemory<byte> Signature)> rawXmss,
+        ReadOnlySpan<byte> message,
+        uint epoch,
+        bool recursive = false)
+    {
+        if (recursive)
+        {
+            throw new NotSupportedException(
+                "Recursive aggregation requires upstream lean-multisig crate support. " +
+                "Use recursive=false for flat aggregation.");
+        }
+
+        if (children.Count > 0)
+        {
+            throw new NotSupportedException(
+                "Children proof aggregation requires upstream lean-multisig crate support. " +
+                "Pass empty children list for flat aggregation.");
+        }
+
+        var publicKeys = rawXmss.Select(x => x.PublicKey).ToList();
+        var signatures = rawXmss.Select(x => x.Signature).ToList();
+        return AggregateSignatures(publicKeys, signatures, message, epoch);
     }
 
     public bool VerifyAggregate(
