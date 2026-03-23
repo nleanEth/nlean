@@ -41,7 +41,7 @@ public sealed class ReamGenesisParityTests
             .Select(index =>
             {
                 var value = (byte)(keySeedStart + index);
-                return new Validator(new Bytes52(Enumerable.Repeat(value, SszEncoding.Bytes52Length).ToArray()), (ulong)index);
+                return new Validator(new Bytes52(Enumerable.Repeat(value, SszEncoding.Bytes52Length).ToArray()), new Bytes52(Enumerable.Repeat(value, SszEncoding.Bytes52Length).ToArray()), (ulong)index);
             })
             .ToArray();
 

@@ -466,7 +466,7 @@ internal sealed class ChainStateTransition
                 bytes = new byte[SszEncoding.Bytes52Length];
             }
 
-            validators.Add(new Validator(new Bytes52(bytes), (ulong)index));
+            validators.Add(new Validator(new Bytes52(bytes), new Bytes52(bytes), (ulong)index));
         }
 
         var targetCount = validators.Count > 0
@@ -474,7 +474,7 @@ internal sealed class ChainStateTransition
             : Math.Max(1UL, initialValidatorCount);
         while ((ulong)validators.Count < targetCount)
         {
-            validators.Add(new Validator(Bytes52.Zero(), (ulong)validators.Count));
+            validators.Add(new Validator(Bytes52.Zero(), Bytes52.Zero(), (ulong)validators.Count));
         }
 
         return validators;

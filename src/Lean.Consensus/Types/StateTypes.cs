@@ -10,12 +10,13 @@ public sealed record Config(ulong GenesisTime)
     }
 }
 
-public sealed record Validator(Bytes52 Pubkey, ulong Index)
+public sealed record Validator(Bytes52 AttestationPubkey, Bytes52 ProposalPubkey, ulong Index)
 {
     public byte[] HashTreeRoot()
     {
         return SszInterop.HashContainer(
-            SszInterop.HashBytesVector(Pubkey.AsSpan()),
+            SszInterop.HashBytesVector(AttestationPubkey.AsSpan()),
+            SszInterop.HashBytesVector(ProposalPubkey.AsSpan()),
             SszInterop.HashUInt64(Index));
     }
 }

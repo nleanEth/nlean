@@ -58,7 +58,7 @@ public sealed class CheckpointSync
             for (var i = 0; i < state.Validators.Count; i++)
             {
                 var expectedHex = config.GenesisValidatorPublicKeys[i];
-                var actualHex = Convert.ToHexString(state.Validators[i].Pubkey.AsSpan());
+                var actualHex = Convert.ToHexString(state.Validators[i].AttestationPubkey.AsSpan());
                 if (!string.Equals(actualHex, NormalizeHex(expectedHex), StringComparison.OrdinalIgnoreCase))
                     return $"Validator pubkey mismatch at index {i}.";
             }

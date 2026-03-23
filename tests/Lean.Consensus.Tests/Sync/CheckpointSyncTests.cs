@@ -182,7 +182,7 @@ public sealed class CheckpointSyncTests
         for (int i = 0; i < validatorCount; i++)
         {
             var pubkey = new Bytes52(Enumerable.Repeat((byte)(i + 1), 52).ToArray());
-            validators.Add(new Validator(pubkey, (ulong)i));
+            validators.Add(new Validator(pubkey, pubkey, (ulong)i));
         }
 
         return new State(
@@ -219,7 +219,7 @@ public sealed class CheckpointSyncTests
     private static ConsensusConfig MakeMatchingConfig(State state)
     {
         var pubkeys = state.Validators
-            .Select(v => Convert.ToHexString(v.Pubkey.AsSpan()))
+            .Select(v => Convert.ToHexString(v.AttestationPubkey.AsSpan()))
             .ToList();
         return new ConsensusConfig
         {

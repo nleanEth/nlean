@@ -185,10 +185,11 @@ public static class SszDecoding
         for (var i = 0; i < count; i++)
         {
             var offset = i * SszEncoding.ValidatorLength;
-            var pubkey = new Bytes52(data.Slice(offset, SszEncoding.Bytes52Length).ToArray());
+            var attestationPubkey = new Bytes52(data.Slice(offset, SszEncoding.Bytes52Length).ToArray());
+            var proposalPubkey = new Bytes52(data.Slice(offset + SszEncoding.Bytes52Length, SszEncoding.Bytes52Length).ToArray());
             var index = BinaryPrimitives.ReadUInt64LittleEndian(
-                data.Slice(offset + SszEncoding.Bytes52Length, SszEncoding.UInt64Length));
-            result.Add(new Validator(pubkey, index));
+                data.Slice(offset + SszEncoding.Bytes52Length + SszEncoding.Bytes52Length, SszEncoding.UInt64Length));
+            result.Add(new Validator(attestationPubkey, proposalPubkey, index));
         }
 
         return result;
