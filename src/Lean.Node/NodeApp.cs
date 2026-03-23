@@ -67,7 +67,7 @@ public static class NodeApp
                 services.AddSingleton<IStateByRootStore, StateByRootStore>();
                 services.AddSingleton<IBlocksByRootRpcRouter, BlocksByRootRpcRouter>();
                 services.AddSingleton<IStatusRpcRouter, StatusRpcRouter>();
-                services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
+                services.AddSingleton<SignedBlockGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
                 services.AddSingleton<SignedAggregatedAttestationGossipDecoder>();
                 services.AddSingleton(sp => new ProtoArrayForkChoiceStore(

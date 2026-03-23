@@ -99,7 +99,7 @@ public sealed class SyncService : ISyncService
         LeanMetrics.SetSyncOrphanCount(_cache.OrphanCount);
     }
 
-    public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId)
+    public Task OnGossipBlockAsync(SignedBlock block, Bytes32 blockRoot, string? peerId)
     {
         _headSync.OnGossipBlock(block, blockRoot, peerId);
         DrainPendingAttestations();

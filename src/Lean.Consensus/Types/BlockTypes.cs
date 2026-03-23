@@ -47,16 +47,6 @@ public sealed record Block(
     }
 }
 
-public sealed record BlockWithAttestation(Block Block, Attestation ProposerAttestation)
-{
-    public byte[] HashTreeRoot()
-    {
-        return SszInterop.HashContainer(
-            Block.HashTreeRoot(),
-            ProposerAttestation.HashTreeRoot());
-    }
-}
-
 public sealed record BlockSignatures(
     IReadOnlyList<AggregatedSignatureProof> AttestationSignatures,
     XmssSignature ProposerSignature)
@@ -70,12 +60,12 @@ public sealed record BlockSignatures(
     }
 }
 
-public sealed record SignedBlockWithAttestation(BlockWithAttestation Message, BlockSignatures Signature)
+public sealed record SignedBlock(Block Block, BlockSignatures Signature)
 {
     public byte[] HashTreeRoot()
     {
         return SszInterop.HashContainer(
-            Message.HashTreeRoot(),
+            Block.HashTreeRoot(),
             Signature.HashTreeRoot());
     }
 }

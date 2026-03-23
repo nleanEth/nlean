@@ -26,7 +26,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly ChainService _chainService;
     private readonly ISyncService? _syncService;
     private readonly INetworkService? _networkService;
-    private readonly SignedBlockWithAttestationGossipDecoder _blockDecoder;
+    private readonly SignedBlockGossipDecoder _blockDecoder;
     private readonly SignedAttestationGossipDecoder _attestationDecoder;
     private readonly SignedAggregatedAttestationGossipDecoder _aggregatedAttestationDecoder;
     private readonly IStatusRpcRouter? _statusRpcRouter;
@@ -68,7 +68,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         ConsensusConfig config,
         ISyncService? syncService = null,
         INetworkService? networkService = null,
-        SignedBlockWithAttestationGossipDecoder? blockDecoder = null,
+        SignedBlockGossipDecoder? blockDecoder = null,
         SignedAttestationGossipDecoder? attestationDecoder = null,
         SignedAggregatedAttestationGossipDecoder? aggregatedAttestationDecoder = null,
         IStatusRpcRouter? statusRpcRouter = null,
@@ -91,7 +91,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _config = config;
         _syncService = syncService;
         _networkService = networkService;
-        _blockDecoder = blockDecoder ?? new SignedBlockWithAttestationGossipDecoder();
+        _blockDecoder = blockDecoder ?? new SignedBlockGossipDecoder();
         _attestationDecoder = attestationDecoder ?? new SignedAttestationGossipDecoder();
         _aggregatedAttestationDecoder = aggregatedAttestationDecoder ?? new SignedAggregatedAttestationGossipDecoder();
         _statusRpcRouter = statusRpcRouter;
@@ -236,12 +236,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         }
     }
 
-    public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+    public ForkChoiceApplyResult ProcessBlock(SignedBlock signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
         var forkChoiceTimer = Stopwatch.StartNew();
 
-        var block = signedBlock.Message.Block;
+        var block = signedBlock.Block;
         var blockRoot = new Bytes32(block.HashTreeRoot());
         var parentRoot = block.ParentRoot;
 
@@ -389,7 +389,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         return success;
     }
 
-    public bool TryApplyLocalBlock(SignedBlockWithAttestation signedBlock, out string reason)
+    public bool TryApplyLocalBlock(SignedBlock signedBlock, out string reason)
     {
         var result = ProcessBlock(signedBlock);
         reason = result.Accepted ? string.Empty : result.Reason;
@@ -781,7 +781,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private void ProcessGossipBlockFromInbox(GossipBlockMessage msg)
     {
         var signedBlock = msg.Block;
-        var block = signedBlock.Message.Block;
+        var block = signedBlock.Block;
         // Compute blockRoot from the block itself — must match the key used by
         // the proto-array and chain state cache (not the gossip decoder's MessageRoot).
         var blockRoot = new Bytes32(block.HashTreeRoot());
@@ -989,7 +989,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         }
 
         var signedBlock = decode.SignedBlock;
-        var blockRoot = decode.BlockMessageRoot ?? new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+        var blockRoot = decode.BlockMessageRoot ?? new Bytes32(signedBlock.Block.HashTreeRoot());
 
         _inbox.Writer.TryWrite(new GossipBlockMessage(signedBlock, blockRoot));
     }
@@ -1195,7 +1195,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     }
 
     private abstract record ConsensusInboxMessage;
-    private sealed record GossipBlockMessage(SignedBlockWithAttestation Block, Bytes32 BlockRoot) : ConsensusInboxMessage;
+    private sealed record GossipBlockMessage(SignedBlock Block, Bytes32 BlockRoot) : ConsensusInboxMessage;
     private sealed record GossipAttestationMessage(SignedAttestation Attestation) : ConsensusInboxMessage;
     private sealed record GossipAggregatedAttestationMessage(SignedAggregatedAttestation Attestation) : ConsensusInboxMessage;
 

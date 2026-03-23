@@ -13,7 +13,7 @@ public sealed class Libp2pNetworkRequesterTests
     {
         var block = CreateSignedBlock(slot: 1);
         var encoded = SszEncoding.Encode(block);
-        var root = new Bytes32(block.Message.HashTreeRoot());
+        var root = new Bytes32(block.Block.HashTreeRoot());
 
         var network = new FakeNetworkService();
         network.SetResponse(root, encoded);
@@ -22,7 +22,7 @@ public sealed class Libp2pNetworkRequesterTests
         var results = await requester.RequestBlocksByRootAsync("peer1", [root], CancellationToken.None);
 
         Assert.That(results, Has.Count.EqualTo(1));
-        Assert.That(results[0].Message.Block.Slot, Is.EqualTo(new Slot(1)));
+        Assert.That(results[0].Block.Slot, Is.EqualTo(new Slot(1)));
     }
 
     [Test]
@@ -75,7 +75,7 @@ public sealed class Libp2pNetworkRequesterTests
         Assert.That(ex!.Message, Does.Contain("hard deadline"));
     }
 
-    private static SignedBlockWithAttestation CreateSignedBlock(ulong slot)
+    private static SignedBlock CreateSignedBlock(ulong slot)
     {
         var attData = new AttestationData(
             new Slot(slot),
@@ -88,9 +88,8 @@ public sealed class Libp2pNetworkRequesterTests
             Bytes32.Zero(), Bytes32.Zero(),
             new BlockBody(Array.Empty<AggregatedAttestation>()));
 
-        var message = new BlockWithAttestation(block, new Attestation(0, attData));
         var sigs = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
-        return new SignedBlockWithAttestation(message, sigs);
+        return new SignedBlock(block, sigs);
     }
 
     private sealed class FakeNetworkService : INetworkService

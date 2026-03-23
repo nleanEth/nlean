@@ -99,20 +99,6 @@ public static class SszEncoding
         return buffer;
     }
 
-    public static byte[] Encode(BlockWithAttestation value)
-    {
-        var blockBytes = Encode(value.Block);
-        var fixedSize = UInt32Length + AttestationLength;
-        var buffer = new byte[fixedSize + blockBytes.Length];
-        WriteOffset(buffer, 0, fixedSize);
-        var attestationOffset = UInt32Length;
-        Ssz.Encode(buffer.AsSpan(attestationOffset, UInt64Length), value.ProposerAttestation.ValidatorId);
-        attestationOffset += UInt64Length;
-        EncodeInto(buffer, attestationOffset, value.ProposerAttestation.Data);
-        blockBytes.CopyTo(buffer.AsSpan(fixedSize));
-        return buffer;
-    }
-
     public static byte[] Encode(BlockSignatures value)
     {
         var attestationSignaturesBytes = Encode(value.AttestationSignatures);
@@ -127,16 +113,16 @@ public static class SszEncoding
         return buffer;
     }
 
-    public static byte[] Encode(SignedBlockWithAttestation value)
+    public static byte[] Encode(SignedBlock value)
     {
-        var messageBytes = Encode(value.Message);
+        var blockBytes = Encode(value.Block);
         var signatureBytes = Encode(value.Signature);
         var fixedSize = UInt32Length + UInt32Length;
-        var buffer = new byte[fixedSize + messageBytes.Length + signatureBytes.Length];
+        var buffer = new byte[fixedSize + blockBytes.Length + signatureBytes.Length];
         WriteOffset(buffer, 0, fixedSize);
-        WriteOffset(buffer, UInt32Length, fixedSize + messageBytes.Length);
-        messageBytes.CopyTo(buffer.AsSpan(fixedSize));
-        signatureBytes.CopyTo(buffer.AsSpan(fixedSize + messageBytes.Length));
+        WriteOffset(buffer, UInt32Length, fixedSize + blockBytes.Length);
+        blockBytes.CopyTo(buffer.AsSpan(fixedSize));
+        signatureBytes.CopyTo(buffer.AsSpan(fixedSize + blockBytes.Length));
         return buffer;
     }
 

@@ -42,7 +42,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
     private readonly ILeanSig _leanSig;
     private readonly ILeanMultiSig _leanMultiSig;
     private readonly ISyncService? _syncService;
-    private readonly SignedBlockWithAttestationGossipDecoder _signedBlockDecoder = new();
+    private readonly SignedBlockGossipDecoder _signedBlockDecoder = new();
     private readonly Dictionary<ulong, byte[]> _validatorPublicKeys = new();
     private readonly object _dutyStateLock = new();
     private CancellationToken _shutdownToken;
@@ -493,8 +493,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         var proposerAttestation = new Attestation(validatorId, proposerAttestationData);
         var signedProposerAttestation = new SignedAttestation(validatorId, proposerAttestationData, proposerSignature);
 
-        var signedBlock = new SignedBlockWithAttestation(
-            new BlockWithAttestation(block, proposerAttestation),
+        var signedBlock = new SignedBlock(
+            block,
             new BlockSignatures(aggregatedProofs, proposerSignature));
 
         if (!_consensusService.TryApplyLocalBlock(signedBlock, out var applyReason))
@@ -1042,7 +1042,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         ReadOnlyMemory<byte> payload,
         Bytes32 parentRoot,
         Bytes32 blockRoot,
-        SignedBlockWithAttestation signedBlock)
+        SignedBlock signedBlock)
     {
         if (!DumpBlocksEnabled)
         {
@@ -1064,13 +1064,13 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 $"validator_id={_validatorId}",
                 $"parent_root={Convert.ToHexString(parentRoot.AsSpan())}",
                 $"block_root={Convert.ToHexString(blockRoot.AsSpan())}",
-                $"attestation_count={signedBlock.Message.Block.Body.Attestations.Count}",
+                $"attestation_count={signedBlock.Block.Body.Attestations.Count}",
                 $"proof_count={signedBlock.Signature.AttestationSignatures.Count}",
                 $"proposer_signature_length={signedBlock.Signature.ProposerSignature.Bytes.Length}",
                 $"proposer_signature_hash={Convert.ToHexString(SHA256.HashData(signedBlock.Signature.ProposerSignature.Bytes))}"
             };
 
-            var attestations = signedBlock.Message.Block.Body.Attestations;
+            var attestations = signedBlock.Block.Body.Attestations;
             var proofs = signedBlock.Signature.AttestationSignatures;
             var limit = Math.Min(attestations.Count, proofs.Count);
             for (var i = 0; i < limit; i++)
@@ -1128,7 +1128,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
             if (decodeResult.IsSuccess && decodeResult.SignedBlock is not null)
             {
-                var block = decodeResult.SignedBlock.Message.Block;
+                var block = decodeResult.SignedBlock.Block;
                 lines.Add($"block_slot={block.Slot.Value}");
                 lines.Add($"block_root={Convert.ToHexString(block.HashTreeRoot())}");
                 lines.Add($"attestation_count={block.Body.Attestations.Count}");

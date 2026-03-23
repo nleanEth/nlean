@@ -67,12 +67,12 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         return _chainStateCache.TryGet(ChainStateCache.RootKey(root), out _);
     }
 
-    public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+    public ForkChoiceApplyResult ProcessBlock(SignedBlock signedBlock)
     {
         ArgumentNullException.ThrowIfNull(signedBlock);
         var forkChoiceTimer = Stopwatch.StartNew();
 
-        var block = signedBlock.Message.Block;
+        var block = signedBlock.Block;
         var blockRoot = new Bytes32(block.HashTreeRoot());
         var parentKey = ChainStateCache.RootKey(block.ParentRoot);
 

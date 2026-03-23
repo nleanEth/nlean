@@ -9,7 +9,7 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_ReturnsSuccess_ForValidSignedBlockPayload()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
         var payload = SszEncoding.Encode(signedBlock);
 
@@ -18,18 +18,18 @@ public sealed class BlockGossipDecoderTests
         Assert.That(result.IsSuccess, Is.True);
         Assert.That(result.Failure, Is.EqualTo(BlockGossipDecodeFailure.None));
         Assert.That(result.SignedBlock, Is.Not.Null);
-        Assert.That(result.SignedBlock!.Message.Block.Slot.Value, Is.EqualTo(signedBlock.Message.Block.Slot.Value));
-        Assert.That(result.SignedBlock.Message.Block.Body.Attestations.Count, Is.EqualTo(1));
+        Assert.That(result.SignedBlock!.Block.Slot.Value, Is.EqualTo(signedBlock.Block.Slot.Value));
+        Assert.That(result.SignedBlock.Block.Body.Attestations.Count, Is.EqualTo(1));
         Assert.That(result.SignedBlock.Signature.AttestationSignatures.Count, Is.EqualTo(1));
 
-        var expectedMessageRoot = new Bytes32(signedBlock.Message.HashTreeRoot());
+        var expectedMessageRoot = new Bytes32(signedBlock.Block.HashTreeRoot());
         Assert.That(result.BlockMessageRoot, Is.EqualTo(expectedMessageRoot));
     }
 
     [Test]
     public void DecodeAndValidate_ReturnsFailure_ForEmptyPayload()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
 
         var result = decoder.DecodeAndValidate(Array.Empty<byte>());
 
@@ -42,7 +42,7 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_ReturnsFailure_ForInvalidSignedBlockOffsets()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var payload = SszEncoding.Encode(CreateSignedBlock());
         BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(0, SszEncoding.UInt32Length), 12);
 
@@ -56,7 +56,7 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_ReturnsFailure_ForTruncatedPayload()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var payload = SszEncoding.Encode(CreateSignedBlock());
         // Truncate a few bytes from the end to corrupt the signature container
         var truncated = payload[..(payload.Length - 4)];
@@ -71,9 +71,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_RejectsLegacySignatureListWithSingleXmssSignature()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlockWithoutAggregatedAttestations();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var messageBytes = SszEncoding.Encode(signedBlock.Block);
         var legacySignatureListBytes = XmssSignature.Empty().EncodeBytes();
 
         var payload = BuildSignedBlockPayload(messageBytes, legacySignatureListBytes);
@@ -87,9 +87,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_RejectsLegacySignatureList_WhenCountMatchesAttestationsPlusProposer()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var messageBytes = SszEncoding.Encode(signedBlock.Block);
         var singleSignatureBytes = XmssSignature.Empty().EncodeBytes();
 
         var legacySignatureListBytes = new byte[singleSignatureBytes.Length * 2];
@@ -106,9 +106,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_RejectsDualOffsetBlockSignatures_WithProposerFirstLayout()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var messageBytes = SszEncoding.Encode(signedBlock.Block);
         var dualOffsetSignatures = EncodeDualOffsetSignatures(signedBlock.Signature, attestationSignaturesFirst: false);
         var payload = BuildSignedBlockPayload(messageBytes, dualOffsetSignatures);
 
@@ -121,9 +121,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_AcceptsFixedProposerBlockSignaturesLayout()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var messageBytes = SszEncoding.Encode(signedBlock.Block);
         var fixedProposerSignatures = EncodeLegacyFixedProposerSignatures(signedBlock.Signature);
         var payload = BuildSignedBlockPayload(messageBytes, fixedProposerSignatures);
 
@@ -136,7 +136,7 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_AcceptsDualOffsetBlockSignatures_WithAttestationsFirstLayout()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
         var payload = SszEncoding.Encode(signedBlock);
 
@@ -150,9 +150,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_RejectsLegacySignatureList_WhenCountDoesNotMatchAttestationsPlusProposer()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var messageBytes = SszEncoding.Encode(signedBlock.Block);
         var singleSignatureBytes = XmssSignature.Empty().EncodeBytes();
         var legacySignatureListBytes = new byte[singleSignatureBytes.Length * 3];
         singleSignatureBytes.CopyTo(legacySignatureListBytes.AsSpan(0, singleSignatureBytes.Length));
@@ -169,9 +169,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_RejectsLegacy3028ProposerSignatureInContainer()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var messageBytes = SszEncoding.Encode(signedBlock.Block);
         const int legacySignatureLength = 3028;
         var signatureContainer = new byte[4 + legacySignatureLength];
         BinaryPrimitives.WriteUInt32LittleEndian(signatureContainer.AsSpan(0, 4), (uint)signatureContainer.Length);
@@ -191,9 +191,9 @@ public sealed class BlockGossipDecoderTests
     [Test]
     public void DecodeAndValidate_RejectsLegacyValidatorAttestationListInBlockBody()
     {
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var signedBlock = CreateSignedBlock();
-        var legacyAttestation = new Attestation(1, signedBlock.Message.Block.Body.Attestations[0].Data);
+        var legacyAttestation = new Attestation(1, signedBlock.Block.Body.Attestations[0].Data);
         var payload = BuildPayloadWithLegacyBodyAttestations(signedBlock, new[] { legacyAttestation });
 
         var result = decoder.DecodeAndValidate(payload);
@@ -202,7 +202,7 @@ public sealed class BlockGossipDecoderTests
         Assert.That(result.Failure, Is.EqualTo(BlockGossipDecodeFailure.InvalidSsz));
     }
 
-    private static SignedBlockWithAttestation CreateSignedBlock(XmssSignature? proposerSignature = null)
+    private static SignedBlock CreateSignedBlock(XmssSignature? proposerSignature = null)
     {
         var proposerAttestationData = new AttestationData(
             new Slot(11),
@@ -221,10 +221,6 @@ public sealed class BlockGossipDecoderTests
             new Bytes32(Enumerable.Repeat((byte)5, 32).ToArray()),
             new BlockBody(new[] { aggregatedAttestation }));
 
-        var blockWithAttestation = new BlockWithAttestation(
-            block,
-            new Attestation(42, proposerAttestationData));
-
         var signatures = new BlockSignatures(
             new[]
             {
@@ -234,17 +230,11 @@ public sealed class BlockGossipDecoderTests
             },
             proposerSignature ?? XmssSignature.Empty());
 
-        return new SignedBlockWithAttestation(blockWithAttestation, signatures);
+        return new SignedBlock(block, signatures);
     }
 
-    private static SignedBlockWithAttestation CreateSignedBlockWithoutAggregatedAttestations()
+    private static SignedBlock CreateSignedBlockWithoutAggregatedAttestations()
     {
-        var proposerAttestationData = new AttestationData(
-            new Slot(11),
-            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)1, 32).ToArray()), new Slot(9)),
-            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)2, 32).ToArray()), new Slot(10)),
-            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)3, 32).ToArray()), new Slot(8)));
-
         var block = new Block(
             new Slot(12),
             7,
@@ -252,22 +242,17 @@ public sealed class BlockGossipDecoderTests
             new Bytes32(Enumerable.Repeat((byte)5, 32).ToArray()),
             new BlockBody(Array.Empty<AggregatedAttestation>()));
 
-        var blockWithAttestation = new BlockWithAttestation(
+        return new SignedBlock(
             block,
-            new Attestation(42, proposerAttestationData));
-
-        return new SignedBlockWithAttestation(
-            blockWithAttestation,
             new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
     }
 
     private static byte[] BuildPayloadWithLegacyBodyAttestations(
-        SignedBlockWithAttestation signedBlock,
+        SignedBlock signedBlock,
         IReadOnlyList<Attestation> legacyAttestations)
     {
         var messageBytes = EncodeBlockWithLegacyBody(
-            signedBlock.Message.Block,
-            signedBlock.Message.ProposerAttestation,
+            signedBlock.Block,
             legacyAttestations);
         var signatureBytes = SszEncoding.Encode(signedBlock.Signature);
         return BuildSignedBlockPayload(messageBytes, signatureBytes);
@@ -334,7 +319,6 @@ public sealed class BlockGossipDecoderTests
 
     private static byte[] EncodeBlockWithLegacyBody(
         Block block,
-        Attestation proposerAttestation,
         IReadOnlyList<Attestation> legacyAttestations)
     {
         var blockBodyBytes = EncodeLegacyBlockBody(legacyAttestations);
@@ -350,13 +334,7 @@ public sealed class BlockGossipDecoderTests
             (uint)blockFixedLength);
         blockBodyBytes.CopyTo(blockBytes.AsSpan(blockFixedLength));
 
-        var blockWithAttestationFixedLength = SszEncoding.UInt32Length + SszEncoding.AttestationLength;
-        var proposerBytes = SszEncoding.Encode(proposerAttestation);
-        var messageBytes = new byte[blockWithAttestationFixedLength + blockBytes.Length];
-        BinaryPrimitives.WriteUInt32LittleEndian(messageBytes.AsSpan(0, 4), (uint)blockWithAttestationFixedLength);
-        proposerBytes.CopyTo(messageBytes.AsSpan(SszEncoding.UInt32Length, proposerBytes.Length));
-        blockBytes.CopyTo(messageBytes.AsSpan(blockWithAttestationFixedLength));
-        return messageBytes;
+        return blockBytes;
     }
 
     private static byte[] EncodeLegacyBlockBody(IReadOnlyList<Attestation> legacyAttestations)

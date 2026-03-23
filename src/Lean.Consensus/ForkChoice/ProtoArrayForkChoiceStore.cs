@@ -270,14 +270,13 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     /// canonical state transition.
     /// </summary>
     public ForkChoiceApplyResult OnBlock(
-        SignedBlockWithAttestation signedBlock,
+        SignedBlock signedBlock,
         Checkpoint canonicalJustified,
         Checkpoint canonicalFinalized,
         ulong validatorCount)
     {
-        var block = signedBlock.Message.Block;
+        var block = signedBlock.Block;
         var blockRoot = new Bytes32(block.HashTreeRoot());
-        var proposerAttestation = signedBlock.Message.ProposerAttestation;
         var aggregatedAttestations = block.Body.Attestations;
         var attestationSignatures = signedBlock.Signature.AttestationSignatures;
 
@@ -341,18 +340,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                         UpdateTrackerFromBlock(vid, headIndex.Value, attestation.Data.Slot.Value, attestation.Data);
                 }
             }
-        }
-
-        // Proposer attestation: store for future aggregation, but do NOT add to fork choice votes.
-        var proposerDataRootKey = ToDataRootKey(proposerAttestation.Data);
-        _attestationDataByRoot[proposerDataRootKey] = proposerAttestation.Data;
-
-        var proposerSubnetId = new Types.ValidatorIndex(proposerAttestation.ValidatorId)
-            .ComputeSubnetId(_attestationCommitteeCount);
-        if (_localValidatorSubnetIds.Contains(proposerSubnetId))
-        {
-            _gossipSignatures[(proposerAttestation.ValidatorId, proposerDataRootKey)] =
-                signedBlock.Signature.ProposerSignature;
         }
 
         // Compute head using full delta rebuild.

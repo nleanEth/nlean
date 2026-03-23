@@ -40,7 +40,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            var blockOneRoot = new Bytes32(blockOne.Block.HashTreeRoot());
             await PublishBlockToAll(bus, nodes, blockOne);
 
             var atSlotTwo = await WaitUntilAsync(
@@ -57,7 +57,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            var blockTwoRoot = new Bytes32(blockTwo.Block.HashTreeRoot());
             await PublishBlockToAll(bus, nodes, blockTwo);
 
             var atSlotThree = await WaitUntilAsync(
@@ -112,7 +112,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             [0] = canonicalGenesisRoot
         };
 
-        SignedBlockWithAttestation BuildChainBlock(ConsensusServiceV2 referenceNode, ulong slot, ulong proposerIndex)
+        SignedBlock BuildChainBlock(ConsensusServiceV2 referenceNode, ulong slot, ulong proposerIndex)
         {
             if (slot == 0)
                 throw new ArgumentOutOfRangeException(nameof(slot));
@@ -135,7 +135,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
         async Task<Bytes32> PublishBlockAsync(ConsensusServiceV2 referenceNode, TestNodeV2[] targetNodes, ulong slot, ulong proposerIndex)
         {
             var block = BuildChainBlock(referenceNode, slot, proposerIndex);
-            var root = new Bytes32(block.Message.Block.HashTreeRoot());
+            var root = new Bytes32(block.Block.HashTreeRoot());
             rootsBySlot[slot] = root;
             // Publish to bus and deliver directly to target nodes
             bus.StoreBlock(block);
@@ -264,7 +264,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            var blockOneRoot = new Bytes32(blockOne.Block.HashTreeRoot());
             await PublishBlockToAll(bus, earlyNodes, blockOne);
 
             var earlyHeadOne = await WaitUntilAsync(
@@ -281,7 +281,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            var blockTwoRoot = new Bytes32(blockTwo.Block.HashTreeRoot());
             await PublishBlockToAll(bus, earlyNodes, blockTwo);
 
             var earlyHeadTwo = await WaitUntilAsync(
@@ -321,7 +321,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 headRoot: blockTwoRoot, headSlot: 2,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockThreeRoot = new Bytes32(blockThree.Message.Block.HashTreeRoot());
+            var blockThreeRoot = new Bytes32(blockThree.Block.HashTreeRoot());
             await PublishBlockToAll(bus, allNodes, blockThree);
 
             // Late joiner should finalize
@@ -370,7 +370,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            var blockOneRoot = new Bytes32(blockOne.Block.HashTreeRoot());
             bus.StoreBlock(blockOne);
 
             // Simulate message loss: skip delivery of block 1 to n4 and n5
@@ -387,7 +387,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            var blockTwoRoot = new Bytes32(blockTwo.Block.HashTreeRoot());
             bus.StoreBlock(blockTwo);
 
             // Simulate message loss: skip delivery of block 2 to n0 and n2
@@ -470,7 +470,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 proposerAttesterId: 1, proposerIndex: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockOneRoot = new Bytes32(blockOne.Message.Block.HashTreeRoot());
+            var blockOneRoot = new Bytes32(blockOne.Block.HashTreeRoot());
             bus.StoreBlock(blockOne);
             foreach (var node in partitionA)
                 await node.SyncService.OnGossipBlockAsync(blockOne, blockOneRoot, "external");
@@ -484,7 +484,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
                 headRoot: blockOneRoot, headSlot: 1,
                 aggregationBits: Enumerable.Repeat(true, validatorCount).ToArray(),
                 canonicalGenesisRoot: canonicalGenesisRoot);
-            var blockTwoRoot = new Bytes32(blockTwo.Message.Block.HashTreeRoot());
+            var blockTwoRoot = new Bytes32(blockTwo.Block.HashTreeRoot());
             bus.StoreBlock(blockTwo);
             foreach (var node in partitionA)
                 await node.SyncService.OnGossipBlockAsync(blockTwo, blockTwoRoot, "external");
@@ -571,10 +571,10 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
         return new TestNodeV2(nodeId, serviceWithSync, syncService, store);
     }
 
-    private static Task PublishBlockToAll(InMemoryGossipBus bus, TestNodeV2[] nodes, SignedBlockWithAttestation block)
+    private static Task PublishBlockToAll(InMemoryGossipBus bus, TestNodeV2[] nodes, SignedBlock block)
     {
         bus.StoreBlock(block);
-        var root = new Bytes32(block.Message.Block.HashTreeRoot());
+        var root = new Bytes32(block.Block.HashTreeRoot());
         foreach (var node in nodes)
             node.SyncService.OnGossipBlockAsync(block, root, "publisher");
         return Task.CompletedTask;
@@ -587,7 +587,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
         return store.HeadRoot;
     }
 
-    private static SignedBlockWithAttestation CreateSignedBlock(
+    private static SignedBlock CreateSignedBlock(
         ulong blockSlot,
         Bytes32 parentRoot,
         ulong parentSlot,
@@ -628,10 +628,6 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             stateRoot ?? Bytes32.Zero(),
             new BlockBody(new[] { aggregatedAttestation }));
 
-        var blockWithAttestation = new BlockWithAttestation(
-            block,
-            new Attestation(proposerAttesterId, proposerAttestationData));
-
         var signatures = new BlockSignatures(
             new[]
             {
@@ -641,14 +637,14 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             },
             XmssSignature.Empty());
 
-        return new SignedBlockWithAttestation(blockWithAttestation, signatures);
+        return new SignedBlock(block, signatures);
     }
 
     /// <summary>
     /// Creates a signed block with the correct state root computed via state transition.
     /// Uses a reference node to compute the post-state root, ensuring the block is valid.
     /// </summary>
-    private static SignedBlockWithAttestation CreateSignedBlockForNode(
+    private static SignedBlock CreateSignedBlockForNode(
         ConsensusServiceV2 referenceNode,
         ulong blockSlot,
         Bytes32 parentRoot,
@@ -672,7 +668,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
 
         // Compute correct state root from reference node
         Assert.That(
-            referenceNode.TryComputeBlockStateRoot(draft.Message.Block, out var computedStateRoot, out var reason),
+            referenceNode.TryComputeBlockStateRoot(draft.Block, out var computedStateRoot, out var reason),
             Is.True,
             $"Failed to compute state root for slot {blockSlot}: {reason}");
 
@@ -731,10 +727,10 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             _nodeId = nodeId;
         }
 
-        public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
+        public Task<List<SignedBlock>> RequestBlocksByRootAsync(
             string peerId, List<Bytes32> roots, CancellationToken ct)
         {
-            var results = new List<SignedBlockWithAttestation>();
+            var results = new List<SignedBlock>();
             foreach (var root in roots)
             {
                 var block = _bus.GetBlockByRoot(root);
@@ -753,11 +749,11 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
     private sealed class InMemoryGossipBus
     {
         private readonly object _lock = new();
-        private readonly Dictionary<string, SignedBlockWithAttestation> _blocksByRoot = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, SignedBlock> _blocksByRoot = new(StringComparer.Ordinal);
 
-        public void StoreBlock(SignedBlockWithAttestation block)
+        public void StoreBlock(SignedBlock block)
         {
-            var root = new Bytes32(block.Message.Block.HashTreeRoot());
+            var root = new Bytes32(block.Block.HashTreeRoot());
             var key = Convert.ToHexString(root.AsSpan());
             lock (_lock)
             {
@@ -765,7 +761,7 @@ public sealed class ConsensusMultiNodeFinalizationV2Tests
             }
         }
 
-        public SignedBlockWithAttestation? GetBlockByRoot(Bytes32 root)
+        public SignedBlock? GetBlockByRoot(Bytes32 root)
         {
             var key = Convert.ToHexString(root.AsSpan());
             lock (_lock)

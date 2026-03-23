@@ -195,18 +195,15 @@ public sealed class HeadSyncTests
     private static Bytes32 MakeRoot(byte fill) =>
         new(Enumerable.Repeat(fill, 32).ToArray());
 
-    private static Bytes32 ComputeRoot(SignedBlockWithAttestation signedBlock) =>
-        new(signedBlock.Message.Block.HashTreeRoot());
+    private static Bytes32 ComputeRoot(SignedBlock signedBlock) =>
+        new(signedBlock.Block.HashTreeRoot());
 
-    private static SignedBlockWithAttestation MakeSignedBlock(Bytes32 parentRoot, ulong slot)
+    private static SignedBlock MakeSignedBlock(Bytes32 parentRoot, ulong slot)
     {
         var body = new BlockBody(Array.Empty<AggregatedAttestation>());
         var block = new Block(new Slot(slot), 0, parentRoot, Bytes32.Zero(), body);
-        var attestation = new Attestation(0, new AttestationData(
-            block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
-        return new SignedBlockWithAttestation(blockWithAttestation, sig);
+        return new SignedBlock(block, sig);
     }
 
     private sealed class FakeBlockProcessor : IBlockProcessor
@@ -220,10 +217,10 @@ public sealed class HeadSyncTests
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
         public bool HasState(Bytes32 root) => StateReadyRoots.Contains(root);
 
-        public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+        public ForkChoiceApplyResult ProcessBlock(SignedBlock signedBlock)
         {
             ProcessedCount++;
-            var root = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+            var root = new Bytes32(signedBlock.Block.HashTreeRoot());
             if (RejectRoots.Contains(root))
                 return ForkChoiceApplyResult.Rejected(
                     ForkChoiceRejectReason.StateTransitionFailed, "rejected", 0, Bytes32.Zero());
