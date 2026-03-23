@@ -29,9 +29,9 @@ public sealed class SszStateRoundTripTests
             new[] { true, false, true, true, false, true, false, false, true },
             new[]
             {
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x60, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x60, 52).ToArray()), 0),
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x61, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x61, 52).ToArray()), 1),
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x62, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x62, 52).ToArray()), 2)
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x60, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0xA0, 52).ToArray()), 0),
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x61, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0xA1, 52).ToArray()), 1),
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x62, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0xA2, 52).ToArray()), 2)
             },
             new[]
             {
@@ -75,6 +75,8 @@ public sealed class SszStateRoundTripTests
         {
             Assert.That(decoded.Validators[i].AttestationPubkey.AsSpan().ToArray(),
                 Is.EqualTo(state.Validators[i].AttestationPubkey.AsSpan().ToArray()));
+            Assert.That(decoded.Validators[i].ProposalPubkey.AsSpan().ToArray(),
+                Is.EqualTo(state.Validators[i].ProposalPubkey.AsSpan().ToArray()));
             Assert.That(decoded.Validators[i].Index, Is.EqualTo(state.Validators[i].Index));
         }
 

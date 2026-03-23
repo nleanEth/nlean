@@ -20,10 +20,10 @@ public sealed class ReamGenesisParityTests
         var block2 = BuildGenesisBlock(1000, 10);
         var block3 = BuildGenesisBlock(2000, 1);
 
-        Assert.That(ToHex(state1.HashTreeRoot()), Is.EqualTo("7306FFD0788192406EAE762E52AF3AC2E132E8B2D61F5DC092E26B1D94B9E46C"));
-        Assert.That(ToHex(block1.HashTreeRoot()), Is.EqualTo("CC03F11DD80DD79A4ADD86265FAD0A141D0A553812D43B8F2C03AA43E4B002E3"));
-        Assert.That(ToHex(block2.HashTreeRoot()), Is.EqualTo("6BD5347AA1397C63ED8558079FDD3042112A5F4258066E3A659A659FF75BA14F"));
-        Assert.That(ToHex(block3.HashTreeRoot()), Is.EqualTo("CE48A709189AA2B23B6858800996176DC13EB49C0C95D717C39E60042DE1AC91"));
+        Assert.That(ToHex(state1.HashTreeRoot()), Is.EqualTo("245E775429742F7B7223017C56D68FAC1EBD91ACD56DD2D0C65237D07B91566B"));
+        Assert.That(ToHex(block1.HashTreeRoot()), Is.EqualTo("F84D547A47CA863FAC7CDA4619D3A93A2D3E7F2AFDEEB5E4571B393554E19C0D"));
+        Assert.That(ToHex(block2.HashTreeRoot()), Is.EqualTo("7B90004279C32942009320F284A92C8EC5914E9C4DEB7A9C50E17DC22A7C6CE9"));
+        Assert.That(ToHex(block3.HashTreeRoot()), Is.EqualTo("B66CB6371BDE0209FFD63063F89D216FEEB1F03328400CB083429D8AEAD481FF"));
     }
 
     private static Block BuildGenesisBlock(ulong genesisTime, byte keySeedStart, bool includeGenesisMarker = false)

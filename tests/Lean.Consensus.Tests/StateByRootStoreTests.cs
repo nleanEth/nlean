@@ -29,8 +29,8 @@ public sealed class StateByRootStoreTests
             new[] { true, false, true, true, false },
             new[]
             {
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), 0),
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), 1)
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0xC1, 52).ToArray()), 0),
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0xC2, 52).ToArray()), 1)
             },
             new[]
             {
@@ -71,6 +71,7 @@ public sealed class StateByRootStoreTests
         for (var i = 0; i < state.Validators.Count; i++)
         {
             Assert.That(reloaded.Validators[i].AttestationPubkey.AsSpan().ToArray(), Is.EqualTo(state.Validators[i].AttestationPubkey.AsSpan().ToArray()));
+            Assert.That(reloaded.Validators[i].ProposalPubkey.AsSpan().ToArray(), Is.EqualTo(state.Validators[i].ProposalPubkey.AsSpan().ToArray()));
             Assert.That(reloaded.Validators[i].Index, Is.EqualTo(state.Validators[i].Index));
         }
         Assert.That(reloaded.JustificationsRoots.Count, Is.EqualTo(state.JustificationsRoots.Count));
