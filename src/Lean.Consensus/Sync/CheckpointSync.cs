@@ -50,17 +50,21 @@ public sealed class CheckpointSync
         if (state.LatestBlockHeader.Slot.Value > state.Slot.Value)
             return $"Block header slot {state.LatestBlockHeader.Slot.Value} exceeds state slot {state.Slot.Value}.";
 
-        if (config.GenesisValidatorPublicKeys.Count > 0)
+        if (config.GenesisValidatorKeys.Count > 0)
         {
-            if (state.Validators.Count != config.GenesisValidatorPublicKeys.Count)
-                return $"Validator count mismatch: state has {state.Validators.Count}, expected {config.GenesisValidatorPublicKeys.Count}.";
+            if (state.Validators.Count != config.GenesisValidatorKeys.Count)
+                return $"Validator count mismatch: state has {state.Validators.Count}, expected {config.GenesisValidatorKeys.Count}.";
 
             for (var i = 0; i < state.Validators.Count; i++)
             {
-                var expectedHex = config.GenesisValidatorPublicKeys[i];
-                var actualHex = Convert.ToHexString(state.Validators[i].AttestationPubkey.AsSpan());
-                if (!string.Equals(actualHex, NormalizeHex(expectedHex), StringComparison.OrdinalIgnoreCase))
-                    return $"Validator pubkey mismatch at index {i}.";
+                var (expectedAttestHex, expectedProposalHex) = config.GenesisValidatorKeys[i];
+                var actualAttestHex = Convert.ToHexString(state.Validators[i].AttestationPubkey.AsSpan());
+                if (!string.Equals(actualAttestHex, NormalizeHex(expectedAttestHex), StringComparison.OrdinalIgnoreCase))
+                    return $"Validator attestation pubkey mismatch at index {i}.";
+
+                var actualProposalHex = Convert.ToHexString(state.Validators[i].ProposalPubkey.AsSpan());
+                if (!string.Equals(actualProposalHex, NormalizeHex(expectedProposalHex), StringComparison.OrdinalIgnoreCase))
+                    return $"Validator proposal pubkey mismatch at index {i}.";
             }
         }
 

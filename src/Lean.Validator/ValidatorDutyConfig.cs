@@ -6,7 +6,8 @@ public sealed class ValidatorDutyConfig
     public string? SecretKeyHex { get; init; }
     public string? PublicKeyPath { get; init; }
     public string? SecretKeyPath { get; init; }
-    public IReadOnlyList<string> GenesisValidatorPublicKeys { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<(string AttestationPubkey, string ProposalPubkey)> GenesisValidatorKeys { get; init; }
+        = Array.Empty<(string, string)>();
     public ulong ValidatorIndex { get; init; }
     public IReadOnlyList<ulong> ValidatorIndices { get; init; } = Array.Empty<ulong>();
     public IReadOnlyList<string> AllPublicKeyPaths { get; init; } = Array.Empty<string>();

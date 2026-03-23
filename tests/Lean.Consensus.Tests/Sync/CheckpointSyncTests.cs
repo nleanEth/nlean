@@ -148,7 +148,7 @@ public sealed class CheckpointSyncTests
     {
         var state = MakeValidStateWithCorrectRoot(validatorCount: 4);
         var config = MakeMatchingConfig(state);
-        config.GenesisValidatorPublicKeys = new[] { "00" };
+        config.GenesisValidatorKeys = new[] { ("00", "00") };
         var error = CheckpointSync.ValidateState(state, config);
         Assert.That(error, Does.Contain("Validator count mismatch"));
     }
@@ -158,9 +158,9 @@ public sealed class CheckpointSyncTests
     {
         var state = MakeValidStateWithCorrectRoot(validatorCount: 2);
         var config = MakeMatchingConfig(state);
-        var keys = config.GenesisValidatorPublicKeys.ToList();
-        keys[1] = "0x" + new string('F', 104);
-        config.GenesisValidatorPublicKeys = keys;
+        var keys = config.GenesisValidatorKeys.ToList();
+        keys[1] = ("0x" + new string('F', 104), keys[1].ProposalPubkey);
+        config.GenesisValidatorKeys = keys;
         var error = CheckpointSync.ValidateState(state, config);
         Assert.That(error, Does.Contain("pubkey mismatch"));
     }
@@ -218,13 +218,15 @@ public sealed class CheckpointSyncTests
 
     private static ConsensusConfig MakeMatchingConfig(State state)
     {
-        var pubkeys = state.Validators
-            .Select(v => Convert.ToHexString(v.AttestationPubkey.AsSpan()))
+        var keys = state.Validators
+            .Select(v => (
+                Convert.ToHexString(v.AttestationPubkey.AsSpan()),
+                Convert.ToHexString(v.ProposalPubkey.AsSpan())))
             .ToList();
         return new ConsensusConfig
         {
             GenesisTimeUnix = state.Config.GenesisTime,
-            GenesisValidatorPublicKeys = pubkeys
+            GenesisValidatorKeys = keys
         };
     }
 

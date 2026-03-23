@@ -853,16 +853,17 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private void LoadKnownValidatorPublicKeysFromGenesisConfig()
     {
-        if (_validatorDutyConfig.GenesisValidatorPublicKeys.Count == 0)
+        if (_validatorDutyConfig.GenesisValidatorKeys.Count == 0)
         {
             return;
         }
 
         lock (_dutyStateLock)
         {
-            for (var i = 0; i < _validatorDutyConfig.GenesisValidatorPublicKeys.Count; i++)
+            for (var i = 0; i < _validatorDutyConfig.GenesisValidatorKeys.Count; i++)
             {
-                var parsed = ParseHex(_validatorDutyConfig.GenesisValidatorPublicKeys[i]);
+                var (attestKeyHex, _) = _validatorDutyConfig.GenesisValidatorKeys[i];
+                var parsed = ParseHex(attestKeyHex);
                 if (parsed is null || parsed.Length == 0)
                 {
                     continue;

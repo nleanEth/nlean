@@ -307,11 +307,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 1,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -355,11 +355,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 1,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -585,11 +585,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 0,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -647,11 +647,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 0,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -731,11 +731,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 0,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),

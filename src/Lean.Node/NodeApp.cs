@@ -17,6 +17,7 @@ using Nethermind.Libp2p.Core.Dto;
 using Nethermind.Libp2p;
 using Nethermind.Libp2p.Protocols;
 using Nethermind.Libp2p.Protocols.Pubsub;
+using System.Linq;
 using System.Net;
 using System.Text;
 using ConsensusService = Lean.Consensus.ConsensusServiceV2;
@@ -730,7 +731,9 @@ public static class NodeApp
     {
         if (chainConfig?.GenesisValidators is { Count: > 0 } genesisValidators)
         {
-            options.Consensus.GenesisValidatorPublicKeys = genesisValidators;
+            options.Consensus.GenesisValidatorKeys = genesisValidators
+                .Select(v => (v.AttestationPubkey, v.ProposalPubkey))
+                .ToList();
         }
 
         var configuredValidatorCount = chainConfig?.ValidatorCount
@@ -825,7 +828,8 @@ public static class NodeApp
             AllSecretKeyPaths = allSecretKeyPaths,
             ActivationEpoch = options.Validator.ActivationEpoch,
             NumActiveEpochs = options.Validator.NumActiveEpochs,
-            GenesisValidatorPublicKeys = chainConfig?.GenesisValidators ?? (IReadOnlyList<string>)Array.Empty<string>(),
+            GenesisValidatorKeys = chainConfig?.GenesisValidators?.Select(v => (v.AttestationPubkey, v.ProposalPubkey)).ToList()
+                ?? (IReadOnlyList<(string, string)>)Array.Empty<(string, string)>(),
             PublishAggregates = options.Validator.PublishAggregates
         };
     }
