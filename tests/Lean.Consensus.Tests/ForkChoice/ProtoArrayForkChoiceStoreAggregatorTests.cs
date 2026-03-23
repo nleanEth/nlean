@@ -17,7 +17,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var dataRoot = new Bytes32(data.HashTreeRoot());
         var sig = XmssSignature.Empty();
 
-        store.OnGossipSignature(0, dataRoot, sig);
+        store.OnGossipSignature(0, data, sig);
 
         Assert.That(store.HasGossipSignature(0, dataRoot), Is.True);
         Assert.That(store.HasGossipSignature(1, dataRoot), Is.False);
@@ -95,8 +95,8 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var pool = store.GetKnownPayloadPool();
         var dataRootKey = Convert.ToHexString(data.HashTreeRoot());
         Assert.That(pool.ContainsKey(dataRootKey), Is.True);
-        Assert.That(pool[dataRootKey], Has.Count.EqualTo(1));
-        Assert.That(pool[dataRootKey][0], Is.EqualTo(proof));
+        Assert.That(pool[dataRootKey].Proofs, Has.Count.EqualTo(1));
+        Assert.That(pool[dataRootKey].Proofs.First(), Is.EqualTo(proof));
     }
 
     [Test]
@@ -159,8 +159,8 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var dataRootKey = Convert.ToHexString(data.HashTreeRoot());
 
         Assert.That(pool.ContainsKey(dataRootKey), Is.True);
-        Assert.That(pool[dataRootKey], Has.Count.EqualTo(1));
-        Assert.That(pool[dataRootKey][0], Is.EqualTo(proof));
+        Assert.That(pool[dataRootKey].Proofs, Has.Count.EqualTo(1));
+        Assert.That(pool[dataRootKey].Proofs.First(), Is.EqualTo(proof));
     }
 
     [Test]
@@ -175,10 +175,10 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         store.TryOnAttestation(att, storeSignature: false, out _);
 
         // Insert signatures in descending order to test sorting
-        store.OnGossipSignature(3, dataRoot, XmssSignature.Empty());
-        store.OnGossipSignature(1, dataRoot, XmssSignature.Empty());
-        store.OnGossipSignature(0, dataRoot, XmssSignature.Empty());
-        store.OnGossipSignature(2, dataRoot, XmssSignature.Empty());
+        store.OnGossipSignature(3, data, XmssSignature.Empty());
+        store.OnGossipSignature(1, data, XmssSignature.Empty());
+        store.OnGossipSignature(0, data, XmssSignature.Empty());
+        store.OnGossipSignature(2, data, XmssSignature.Empty());
 
         var groups = store.CollectAttestationsForAggregation();
 
