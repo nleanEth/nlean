@@ -335,6 +335,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             postState.Validators.Count);
 
         // Phase 3: Apply to store under lock (fast).
+        var encodedBlock = SszEncoding.Encode(signedBlock);
         ForkChoiceApplyResult result;
         lock (_storeLock)
         {
@@ -353,7 +354,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             {
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
-                _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                _blockStore.Save(blockRoot, encodedBlock);
                 _slotIndexStore?.Save(block.Slot.Value, blockRoot);
                 _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
                 _stateByRootStore?.Save(blockRoot, postState);
@@ -915,6 +916,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         }
 
         // Phase 3: Apply to store under lock (fast).
+        var encodedBlock = SszEncoding.Encode(signedBlock);
         ForkChoiceApplyResult result;
         lock (_storeLock)
         {
@@ -928,7 +930,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             {
                 _chainStateCache.Set(ChainStateCache.RootKey(blockRoot), postState);
                 RefreshSnapshot();
-                _blockStore.Save(blockRoot, SszEncoding.Encode(signedBlock));
+                _blockStore.Save(blockRoot, encodedBlock);
                 _slotIndexStore?.Save(block.Slot.Value, blockRoot);
                 _stateRootIndexStore?.Save(block.StateRoot, blockRoot);
                 _stateByRootStore?.Save(blockRoot, postState);
