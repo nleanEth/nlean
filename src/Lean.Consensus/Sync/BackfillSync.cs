@@ -144,6 +144,7 @@ public sealed class BackfillSync : IBackfillTrigger
         const int maxConsecutiveFailures = 10;
         var totalAccepted = 0;
         var totalFetched = 0;
+        var finalizedSlot = _processor.FinalizedSlot;
 
         // Fetch blocks backwards and process incrementally as parents become known.
         // Unlike the old collect-all-then-process approach, this persists progress
@@ -189,6 +190,8 @@ public sealed class BackfillSync : IBackfillTrigger
 
             consecutiveFailures = 0;
 
+            var hitFinalizedFloor = false;
+
             foreach (var block in fetched)
             {
                 var blockRoot = new Bytes32(block.Block.HashTreeRoot());
@@ -196,9 +199,29 @@ public sealed class BackfillSync : IBackfillTrigger
                 fetchedRoots.Add(blockRoot);
                 totalFetched++;
 
+                // Stop walking back past the finalized slot — no ancestor
+                // will be "known" below the finalized anchor, so further
+                // fetches would be wasted.
+                if (block.Block.Slot.Value <= finalizedSlot)
+                {
+                    hitFinalizedFloor = true;
+                    continue;
+                }
+
                 var parentRoot = block.Block.ParentRoot;
                 if (!_processor.IsBlockKnown(parentRoot) && !fetchedRoots.Contains(parentRoot))
                     pending.Enqueue(parentRoot);
+            }
+
+            if (hitFinalizedFloor)
+            {
+                _logger.LogInformation(
+                    "Backfill: reached finalized floor (slot {FinalizedSlot}), stopping chain walk. Fetched: {Fetched}, Accepted: {Accepted}",
+                    finalizedSlot, totalFetched, totalAccepted);
+                // Still try to process what we have before stopping.
+                var floorAccepted = TryProcessReady(unprocessed);
+                totalAccepted += floorAccepted;
+                break;
             }
 
             // Re-enqueue any batch roots that were not returned (partial response).

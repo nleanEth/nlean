@@ -213,6 +213,7 @@ public sealed class HeadSyncTests
         public HashSet<Bytes32> RejectRoots { get; } = new();
         public int ProcessedCount { get; private set; }
         public ulong HeadSlot { get; private set; }
+        public ulong FinalizedSlot { get; set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
         public bool HasState(Bytes32 root) => StateReadyRoots.Contains(root);
