@@ -54,6 +54,17 @@ public sealed class ProtoArrayBlockProcessor : IBlockProcessor
         }
     }
 
+    public ulong FinalizedSlot
+    {
+        get
+        {
+            lock (_store.SyncRoot)
+            {
+                return _store.FinalizedSlot;
+            }
+        }
+    }
+
     public bool IsBlockKnown(Bytes32 root)
     {
         lock (_store.SyncRoot)

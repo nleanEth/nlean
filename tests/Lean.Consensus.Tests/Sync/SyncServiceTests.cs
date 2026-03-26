@@ -262,6 +262,7 @@ public sealed class SyncServiceTests
         public int ProcessedCount { get; private set; }
         public ulong CurrentHeadSlot { get; set; }
         public ulong HeadSlot => CurrentHeadSlot;
+        public ulong FinalizedSlot { get; set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
         public bool HasState(Bytes32 root) => KnownRoots.Contains(root);
