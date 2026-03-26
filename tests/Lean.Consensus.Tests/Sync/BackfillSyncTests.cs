@@ -85,6 +85,43 @@ public sealed class BackfillSyncTests
     }
 
     [Test]
+    public async Task RequestParents_StopsAtFinalizedFloor()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync();
+        peerMgr.AddPeer("peer-1");
+
+        // Finalized at slot 100 — backfill should not walk past this.
+        processor.FinalizedSlot = 100;
+
+        // Create a chain: slot 102 -> slot 101 -> slot 100 -> slot 99 (below finalized)
+        var root99 = MakeRoot(0x99);
+        var block100 = MakeSignedBlock(root99, slot: 100);
+        var root100 = ComputeRoot(block100);
+        network.BlocksByRoot[root100] = block100;
+
+        var block101 = MakeSignedBlock(root100, slot: 101);
+        var root101 = ComputeRoot(block101);
+        network.BlocksByRoot[root101] = block101;
+
+        var block102 = MakeSignedBlock(root101, slot: 102);
+        var root102 = ComputeRoot(block102);
+        network.BlocksByRoot[root102] = block102;
+
+        // Also provide block99 on the network (should NOT be fetched)
+        var root98 = MakeRoot(0x98);
+        var block99 = MakeSignedBlock(root98, slot: 99);
+        network.BlocksByRoot[root99] = block99;
+
+        await backfill.RequestParentsAsync(new List<Bytes32> { root102 }, CancellationToken.None);
+
+        // block100 is at the finalized floor — its parent (root99) should NOT be enqueued.
+        // Without the fix this would walk to root99, root98, etc. for up to maxDepth.
+        // With the fix, we stop at block100 and never fetch block99.
+        Assert.That(network.RequestCount, Is.LessThanOrEqualTo(3),
+            "Backfill should stop at finalized floor, not walk past it");
+    }
+
+    [Test]
     public async Task RequestParents_UpdatesPeerScoreOnSuccess()
     {
         var (backfill, network, processor, peerMgr) = CreateBackfillSync();
@@ -452,6 +489,7 @@ public sealed class BackfillSyncTests
         public HashSet<Bytes32> StateReadyRoots { get; } = new();
         public List<SignedBlockWithAttestation> ProcessedBlocks { get; } = new();
         public ulong HeadSlot { get; private set; }
+        public ulong FinalizedSlot { get; set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
         public bool HasState(Bytes32 root) => StateReadyRoots.Contains(root);
