@@ -178,7 +178,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
         if (!_chainStateCache.TryGet(ChainStateCache.RootKey(snap.FinalizedRoot), out var state))
         {
-            return null;
+            if (_stateByRootStore is null || !_stateByRootStore.TryLoad(snap.FinalizedRoot, out state))
+                return null;
         }
 
         // Fill in zeroed LatestBlockHeader.StateRoot before encoding.
