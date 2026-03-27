@@ -255,14 +255,14 @@ public sealed class ProtoArrayTests
         Assert.That(array.NodeCount, Is.EqualTo(1));
     }
 
-    // ========== Tie-breaking: weight → slot → root ==========
+    // ========== Tie-breaking: weight → root (lexicographic hex) ==========
 
     [Test]
-    public void TieBreak_EqualWeight_HigherSlotWins()
+    public void TieBreak_EqualWeight_HigherRootWins_DifferentSlots()
     {
         var genesis = MakeRoot(0x01);
-        var low = MakeRoot(0x02);   // slot 1
-        var high = MakeRoot(0x03);  // slot 2
+        var low = MakeRoot(0x02);   // slot 1, hex 0202...
+        var high = MakeRoot(0x03);  // slot 2, hex 0303... > 0202...
         var array = new ProtoArray(genesis, 0, 0);
         array.RegisterBlock(low, genesis, 1, 0, 0);
         array.RegisterBlock(high, genesis, 2, 0, 0);
@@ -273,7 +273,28 @@ public sealed class ProtoArrayTests
             [ProtoArray.RootKey(high)] = 1
         });
 
+        // Equal weight — tiebreaker is root only (slot is irrelevant)
         Assert.That(FindHead(array, genesis), Is.EqualTo(high));
+    }
+
+    [Test]
+    public void TieBreak_EqualWeight_HigherRootWins_EvenAtLowerSlot()
+    {
+        var genesis = MakeRoot(0x01);
+        var lowSlotHighRoot = MakeRoot(0xAA);  // slot 1, hex AAAA...
+        var highSlotLowRoot = MakeRoot(0x02);  // slot 2, hex 0202...
+        var array = new ProtoArray(genesis, 0, 0);
+        array.RegisterBlock(lowSlotHighRoot, genesis, 1, 0, 0);
+        array.RegisterBlock(highSlotLowRoot, genesis, 2, 0, 0);
+
+        ApplyDeltasFromDict(array, new Dictionary<string, long>
+        {
+            [ProtoArray.RootKey(lowSlotHighRoot)] = 1,
+            [ProtoArray.RootKey(highSlotLowRoot)] = 1
+        });
+
+        // Equal weight — higher root wins, regardless of slot
+        Assert.That(FindHead(array, genesis), Is.EqualTo(lowSlotHighRoot));
     }
 
     [Test]
@@ -296,7 +317,7 @@ public sealed class ProtoArrayTests
     }
 
     [Test]
-    public void FindHead_ZeroWeightEverywhere_TieBreakBySlotThenRoot()
+    public void FindHead_ZeroWeightEverywhere_TieBreakByRoot()
     {
         var genesis = MakeRoot(0x01);
         var a = MakeRoot(0x02);
