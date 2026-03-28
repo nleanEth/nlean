@@ -110,7 +110,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _gossipTopics,
             _config.AttestationCommitteeCount,
             _config.IsAggregator,
-            _config.LocalValidatorIds);
+            _config.LocalValidatorIds,
+            _config.AggregateSubnetIds);
         _chainService = new ChainService(_clock, this, ProtoArrayForkChoiceStore.IntervalsPerSlot);
 
         State? initialState = null;
@@ -409,6 +410,11 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
     {
         lock (_storeLock) { return _store.TryOnGossipAggregatedAttestation(signed, out reason); }
+    }
+
+    public bool ApplyLocalAggregationResult(SignedAggregatedAttestation signed, out string reason)
+    {
+        lock (_storeLock) { return _store.ApplyLocalAggregationResult(signed, out reason); }
     }
 
     public (IReadOnlyList<Attestation> Attestations, IReadOnlyDictionary<string, (AttestationData Data, HashSet<AggregatedSignatureProof> Proofs)> PayloadPool)
@@ -1124,7 +1130,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _statusRpcRouter?.SetPeerDisconnectedHandler(null);
     }
 
-    private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, IReadOnlySet<ulong> localValidatorIds)
+    private static string[] BuildAttestationSubnetTopics(IGossipTopicProvider gossipTopics, int attestationCommitteeCount, bool isAggregator, IReadOnlySet<ulong> localValidatorIds, IReadOnlyList<int> aggregateSubnetIds)
     {
         // Each validator subscribes only to its own subnet
         // (validator_id % committee_count). Non-validators subscribe to subnet 0.
@@ -1133,6 +1139,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         foreach (var vid in localValidatorIds)
         {
             subnets.Add((int)(vid % (ulong)committeeCount));
+        }
+
+        // Aggregators additionally subscribe to explicitly configured subnets.
+        if (isAggregator && aggregateSubnetIds.Count > 0)
+        {
+            foreach (var subnetId in aggregateSubnetIds)
+            {
+                subnets.Add(subnetId);
+            }
         }
 
         return subnets.Select(s => gossipTopics.AttestationSubnetTopic(s)).ToArray();

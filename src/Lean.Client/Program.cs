@@ -55,6 +55,12 @@ internal static class Program
             return 0;
         }
 
+        if (cliOptions.AggregateSubnetIds is not null && !cliOptions.IsAggregator)
+        {
+            Console.Error.WriteLine("Error: --aggregate-subnet-ids requires --is-aggregator to be set.");
+            return 1;
+        }
+
         var overrides = new NodeOptionsOverrides(
             cliOptions.ConfigPath,
             cliOptions.DataDir,
@@ -71,7 +77,8 @@ internal static class Program
             cliOptions.IsAggregator,
             cliOptions.AttestationCommitteeCount,
             cliOptions.ApiPort,
-            cliOptions.HashSigKeyDir);
+            cliOptions.HashSigKeyDir,
+            cliOptions.AggregateSubnetIds);
 
         var nodeOptions = NodeOptions.Load(overrides);
 
@@ -110,6 +117,8 @@ internal static class Program
         Console.WriteLine("  --socket-port PORT        QUIC transport port");
         Console.WriteLine("  --api-port PORT           HTTP API port");
         Console.WriteLine("  --is-aggregator           Enable aggregate publishing");
+        Console.WriteLine("  --aggregate-subnet-ids IDs");
+        Console.WriteLine("                            Comma-separated extra subnet IDs for aggregators (requires --is-aggregator)");
         Console.WriteLine("  --attestation-committee-count N");
         Console.WriteLine("                            Committee count override");
         Console.WriteLine("  --hash-sig-key-dir DIR    Hash-sig key directory (auto-resolves by validator index)");

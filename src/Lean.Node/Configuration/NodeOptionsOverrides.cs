@@ -16,4 +16,5 @@ public sealed record NodeOptionsOverrides(
     bool IsAggregator = false,
     int? AttestationCommitteeCount = null,
     int? ApiPort = null,
-    string? HashSigKeyDir = null);
+    string? HashSigKeyDir = null,
+    int[]? AggregateSubnetIds = null);

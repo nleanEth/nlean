@@ -1026,6 +1026,12 @@ public sealed class ValidatorServiceTests
             return true;
         }
 
+        public bool ApplyLocalAggregationResult(SignedAggregatedAttestation signed, out string reason)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
         public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
         {
             GetKnownAggregatedPayloadsCalls++;

@@ -60,7 +60,16 @@ public sealed class HeadSync
         foreach (var child in children)
         {
             if (child.SignedBlock is not null)
-                ProcessAndCascade(child.SignedBlock, child.Root);
+            {
+                try
+                {
+                    ProcessAndCascade(child.SignedBlock, child.Root);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to process cached descendant: root={Root}, slot={Slot}", child.Root, child.SignedBlock.Block.Slot.Value);
+                }
+            }
         }
     }
 
@@ -87,7 +96,16 @@ public sealed class HeadSync
         foreach (var child in children)
         {
             if (child.SignedBlock is not null)
-                ProcessAndCascade(child.SignedBlock, child.Root);
+            {
+                try
+                {
+                    ProcessAndCascade(child.SignedBlock, child.Root);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to process cached descendant: root={Root}, slot={Slot}", child.Root, child.SignedBlock.Block.Slot.Value);
+                }
+            }
         }
     }
 }

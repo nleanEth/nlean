@@ -15,6 +15,7 @@ internal sealed class CliOptions
     public int? MetricsPort { get; set; }
     public string? MetricsAddress { get; set; }
     public bool IsAggregator { get; set; }
+    public int[]? AggregateSubnetIds { get; set; }
     public int? AttestationCommitteeCount { get; set; }
     public int? ApiPort { get; set; }
     public string? HashSigKeyDir { get; set; }
@@ -112,6 +113,19 @@ internal sealed class CliOptions
                     break;
                 case "hash-sig-key-dir":
                     options.HashSigKeyDir = value;
+                    break;
+                case "aggregate-subnet-ids":
+                    if (value is not null)
+                    {
+                        var subnetParts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                        var ids = new List<int>();
+                        foreach (var part in subnetParts)
+                        {
+                            if (int.TryParse(part, out var id))
+                                ids.Add(id);
+                        }
+                        options.AggregateSubnetIds = ids.ToArray();
+                    }
                     break;
             }
         }
