@@ -19,10 +19,10 @@ public sealed class HeadSync
         _logger = logger ?? NullLogger<HeadSync>.Instance;
     }
 
-    public void OnGossipBlock(SignedBlockWithAttestation signedBlock, Bytes32 blockRoot, string? peerId)
+    public void OnGossipBlock(SignedBlock signedBlock, Bytes32 blockRoot, string? peerId)
     {
-        var slot = signedBlock.Message.Block.Slot.Value;
-        var parentRoot = signedBlock.Message.Block.ParentRoot;
+        var slot = signedBlock.Block.Slot.Value;
+        var parentRoot = signedBlock.Block.ParentRoot;
 
         if (_processor.IsBlockKnown(blockRoot))
         {
@@ -60,14 +60,23 @@ public sealed class HeadSync
         foreach (var child in children)
         {
             if (child.SignedBlock is not null)
-                ProcessAndCascade(child.SignedBlock, child.Root);
+            {
+                try
+                {
+                    ProcessAndCascade(child.SignedBlock, child.Root);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to process cached descendant: root={Root}, slot={Slot}", child.Root, child.SignedBlock.Block.Slot.Value);
+                }
+            }
         }
     }
 
-    private void ProcessAndCascade(SignedBlockWithAttestation signedBlock, Bytes32 blockRoot)
+    private void ProcessAndCascade(SignedBlock signedBlock, Bytes32 blockRoot)
     {
         var result = _processor.ProcessBlock(signedBlock);
-        var slot = signedBlock.Message.Block.Slot.Value;
+        var slot = signedBlock.Block.Slot.Value;
 
         _logger.LogDebug(
             "HeadSync ProcessAndCascade: slot={Slot}, accepted={Accepted}, reason={Reason}",
@@ -77,7 +86,7 @@ public sealed class HeadSync
         // A rejected block must not linger in the cache or keep an orphan marker alive,
         // otherwise OrphanCount stays > 0 and SyncService remains in Syncing state.
         _cache.Remove(blockRoot);
-        _cache.UnmarkOrphan(signedBlock.Message.Block.ParentRoot);
+        _cache.UnmarkOrphan(signedBlock.Block.ParentRoot);
 
         if (!result.Accepted)
             return;
@@ -87,7 +96,16 @@ public sealed class HeadSync
         foreach (var child in children)
         {
             if (child.SignedBlock is not null)
-                ProcessAndCascade(child.SignedBlock, child.Root);
+            {
+                try
+                {
+                    ProcessAndCascade(child.SignedBlock, child.Root);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to process cached descendant: root={Root}, slot={Slot}", child.Root, child.SignedBlock.Block.Slot.Value);
+                }
+            }
         }
     }
 }

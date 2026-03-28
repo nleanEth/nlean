@@ -3,10 +3,9 @@ using Lean.Consensus.Types;
 
 namespace Lean.Consensus;
 
-public sealed class SignedBlockWithAttestationGossipDecoder
+public sealed class SignedBlockGossipDecoder
 {
     private const int SignedBlockFixedLength = SszEncoding.UInt32Length * 2;
-    private const int BlockWithAttestationFixedLength = SszEncoding.UInt32Length + SszEncoding.AttestationLength;
     private const int BlockFixedLength = (SszEncoding.UInt64Length * 2) + (SszEncoding.Bytes32Length * 2) + SszEncoding.UInt32Length;
     private const int BlockBodyFixedLength = SszEncoding.UInt32Length;
     private const int AggregatedAttestationFixedLength = SszEncoding.UInt32Length + SszEncoding.AttestationDataLength;
@@ -27,14 +26,14 @@ public sealed class SignedBlockWithAttestationGossipDecoder
                 "Gossip payload must be non-empty.");
         }
 
-        if (!TryDecodeSignedBlockWithAttestation(payload, out var signedBlock, out var reason))
+        if (!TryDecodeSignedBlock(payload, out var signedBlock, out var reason))
         {
             return BlockGossipDecodeResult.Fail(BlockGossipDecodeFailure.InvalidSsz, reason);
         }
 
         try
         {
-            var messageRootBytes = signedBlock.Message.HashTreeRoot();
+            var messageRootBytes = signedBlock.Block.HashTreeRoot();
             if (messageRootBytes.Length != SszEncoding.Bytes32Length)
             {
                 return BlockGossipDecodeResult.Fail(
@@ -53,9 +52,9 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         }
     }
 
-    private static bool TryDecodeSignedBlockWithAttestation(
+    private static bool TryDecodeSignedBlock(
         ReadOnlySpan<byte> bytes,
-        out SignedBlockWithAttestation value,
+        out SignedBlock value,
         out string reason)
     {
         value = null!;
@@ -63,28 +62,28 @@ public sealed class SignedBlockWithAttestationGossipDecoder
 
         if (bytes.Length < SignedBlockFixedLength)
         {
-            reason = $"SignedBlockWithAttestation payload is too short: {bytes.Length} bytes.";
+            reason = $"SignedBlock payload is too short: {bytes.Length} bytes.";
             return false;
         }
 
-        var messageOffset = ReadOffset(bytes, 0);
+        var blockOffset = ReadOffset(bytes, 0);
         var signatureOffset = ReadOffset(bytes, SszEncoding.UInt32Length);
 
-        if (messageOffset != SignedBlockFixedLength)
+        if (blockOffset != SignedBlockFixedLength)
         {
-            reason = $"Signed block message offset must be {SignedBlockFixedLength}, got {messageOffset}.";
+            reason = $"Signed block message offset must be {SignedBlockFixedLength}, got {blockOffset}.";
             return false;
         }
 
-        if (signatureOffset < messageOffset || signatureOffset > bytes.Length)
+        if (signatureOffset < blockOffset || signatureOffset > bytes.Length)
         {
             reason = $"Signed block signature offset {signatureOffset} is outside payload bounds.";
             return false;
         }
 
-        var messageBytes = bytes.Slice(messageOffset, signatureOffset - messageOffset);
+        var blockBytes = bytes.Slice(blockOffset, signatureOffset - blockOffset);
         var signatureBytes = bytes[signatureOffset..];
-        if (messageBytes.Length == 0)
+        if (blockBytes.Length == 0)
         {
             reason = "Signed block message section is empty.";
             return false;
@@ -96,7 +95,7 @@ public sealed class SignedBlockWithAttestationGossipDecoder
             return false;
         }
 
-        if (!TryDecodeBlockWithAttestation(messageBytes, out var message, out reason))
+        if (!TryDecodeBlock(blockBytes, out var block, out reason))
         {
             reason = $"Invalid signed block message: {reason}";
             return false;
@@ -108,58 +107,7 @@ public sealed class SignedBlockWithAttestationGossipDecoder
             return false;
         }
 
-        value = new SignedBlockWithAttestation(message, signatures);
-        return true;
-    }
-
-    private static bool TryDecodeBlockWithAttestation(
-        ReadOnlySpan<byte> bytes,
-        out BlockWithAttestation value,
-        out string reason)
-    {
-        value = null!;
-        reason = string.Empty;
-
-        if (bytes.Length < BlockWithAttestationFixedLength)
-        {
-            reason = $"BlockWithAttestation payload is too short: {bytes.Length} bytes.";
-            return false;
-        }
-
-        var blockOffset = ReadOffset(bytes, 0);
-        if (blockOffset != BlockWithAttestationFixedLength)
-        {
-            reason = $"Block offset must be {BlockWithAttestationFixedLength}, got {blockOffset}.";
-            return false;
-        }
-
-        if (blockOffset > bytes.Length)
-        {
-            reason = $"Block offset {blockOffset} exceeds payload length {bytes.Length}.";
-            return false;
-        }
-
-        var attestationBytes = bytes.Slice(SszEncoding.UInt32Length, SszEncoding.AttestationLength);
-        var blockBytes = bytes[blockOffset..];
-        if (blockBytes.Length == 0)
-        {
-            reason = "Block section is empty.";
-            return false;
-        }
-
-        if (!TryDecodeAttestation(attestationBytes, out var proposerAttestation, out reason))
-        {
-            reason = $"Invalid proposer attestation: {reason}";
-            return false;
-        }
-
-        if (!TryDecodeBlock(blockBytes, out var block, out reason))
-        {
-            reason = $"Invalid block: {reason}";
-            return false;
-        }
-
-        value = new BlockWithAttestation(block, proposerAttestation);
+        value = new SignedBlock(block, signatures);
         return true;
     }
 
@@ -296,84 +244,6 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         return true;
     }
 
-    private static bool TryDecodeAttestation(ReadOnlySpan<byte> bytes, out Attestation value, out string reason)
-    {
-        value = null!;
-        reason = string.Empty;
-
-        if (bytes.Length != SszEncoding.AttestationLength)
-        {
-            reason = $"Attestation must be exactly {SszEncoding.AttestationLength} bytes, got {bytes.Length}.";
-            return false;
-        }
-
-        var validatorId = ReadUInt64(bytes, 0);
-        var dataBytes = bytes.Slice(SszEncoding.UInt64Length, SszEncoding.AttestationDataLength);
-        if (!TryDecodeAttestationData(dataBytes, out var data, out reason))
-        {
-            reason = $"Invalid attestation data: {reason}";
-            return false;
-        }
-
-        value = new Attestation(validatorId, data);
-        return true;
-    }
-
-    private static bool TryDecodeAttestationData(ReadOnlySpan<byte> bytes, out AttestationData value, out string reason)
-    {
-        value = null!;
-        reason = string.Empty;
-
-        if (bytes.Length != SszEncoding.AttestationDataLength)
-        {
-            reason = $"AttestationData must be exactly {SszEncoding.AttestationDataLength} bytes, got {bytes.Length}.";
-            return false;
-        }
-
-        var slot = new Slot(ReadUInt64(bytes, 0));
-        var headBytes = bytes.Slice(SszEncoding.UInt64Length, SszEncoding.CheckpointLength);
-        var targetBytes = bytes.Slice(SszEncoding.UInt64Length + SszEncoding.CheckpointLength, SszEncoding.CheckpointLength);
-        var sourceBytes = bytes.Slice(SszEncoding.UInt64Length + (SszEncoding.CheckpointLength * 2), SszEncoding.CheckpointLength);
-
-        if (!TryDecodeCheckpoint(headBytes, out var head, out reason))
-        {
-            reason = $"Invalid head checkpoint: {reason}";
-            return false;
-        }
-
-        if (!TryDecodeCheckpoint(targetBytes, out var target, out reason))
-        {
-            reason = $"Invalid target checkpoint: {reason}";
-            return false;
-        }
-
-        if (!TryDecodeCheckpoint(sourceBytes, out var source, out reason))
-        {
-            reason = $"Invalid source checkpoint: {reason}";
-            return false;
-        }
-
-        value = new AttestationData(slot, head, target, source);
-        return true;
-    }
-
-    private static bool TryDecodeCheckpoint(ReadOnlySpan<byte> bytes, out Checkpoint value, out string reason)
-    {
-        value = null!;
-        reason = string.Empty;
-
-        if (bytes.Length != SszEncoding.CheckpointLength)
-        {
-            reason = $"Checkpoint must be exactly {SszEncoding.CheckpointLength} bytes, got {bytes.Length}.";
-            return false;
-        }
-
-        var root = new Bytes32(bytes[..SszEncoding.Bytes32Length].ToArray());
-        var slot = new Slot(ReadUInt64(bytes, SszEncoding.Bytes32Length));
-        value = new Checkpoint(root, slot);
-        return true;
-    }
-
     private static bool TryDecodeAggregatedAttestationList(
         ReadOnlySpan<byte> bytes,
         out IReadOnlyList<AggregatedAttestation> value,
@@ -460,6 +330,61 @@ public sealed class SignedBlockWithAttestationGossipDecoder
         }
 
         value = new AggregatedAttestation(new AggregationBits(bits), data);
+        return true;
+    }
+
+    private static bool TryDecodeAttestationData(ReadOnlySpan<byte> bytes, out AttestationData value, out string reason)
+    {
+        value = null!;
+        reason = string.Empty;
+
+        if (bytes.Length != SszEncoding.AttestationDataLength)
+        {
+            reason = $"AttestationData must be exactly {SszEncoding.AttestationDataLength} bytes, got {bytes.Length}.";
+            return false;
+        }
+
+        var slot = new Slot(ReadUInt64(bytes, 0));
+        var headBytes = bytes.Slice(SszEncoding.UInt64Length, SszEncoding.CheckpointLength);
+        var targetBytes = bytes.Slice(SszEncoding.UInt64Length + SszEncoding.CheckpointLength, SszEncoding.CheckpointLength);
+        var sourceBytes = bytes.Slice(SszEncoding.UInt64Length + (SszEncoding.CheckpointLength * 2), SszEncoding.CheckpointLength);
+
+        if (!TryDecodeCheckpoint(headBytes, out var head, out reason))
+        {
+            reason = $"Invalid head checkpoint: {reason}";
+            return false;
+        }
+
+        if (!TryDecodeCheckpoint(targetBytes, out var target, out reason))
+        {
+            reason = $"Invalid target checkpoint: {reason}";
+            return false;
+        }
+
+        if (!TryDecodeCheckpoint(sourceBytes, out var source, out reason))
+        {
+            reason = $"Invalid source checkpoint: {reason}";
+            return false;
+        }
+
+        value = new AttestationData(slot, head, target, source);
+        return true;
+    }
+
+    private static bool TryDecodeCheckpoint(ReadOnlySpan<byte> bytes, out Checkpoint value, out string reason)
+    {
+        value = null!;
+        reason = string.Empty;
+
+        if (bytes.Length != SszEncoding.CheckpointLength)
+        {
+            reason = $"Checkpoint must be exactly {SszEncoding.CheckpointLength} bytes, got {bytes.Length}.";
+            return false;
+        }
+
+        var root = new Bytes32(bytes[..SszEncoding.Bytes32Length].ToArray());
+        var slot = new Slot(ReadUInt64(bytes, SszEncoding.Bytes32Length));
+        value = new Checkpoint(root, slot);
         return true;
     }
 

@@ -15,7 +15,7 @@ public sealed class Libp2pNetworkRequester : INetworkRequester
 
     private readonly INetworkService _network;
     private readonly int _hardDeadlineMs;
-    private readonly SignedBlockWithAttestationGossipDecoder _decoder = new();
+    private readonly SignedBlockGossipDecoder _decoder = new();
 
     public Libp2pNetworkRequester(INetworkService network, int hardDeadlineMs = DefaultHardDeadlineMs)
     {
@@ -23,7 +23,7 @@ public sealed class Libp2pNetworkRequester : INetworkRequester
         _hardDeadlineMs = hardDeadlineMs;
     }
 
-    public async Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
+    public async Task<List<SignedBlock>> RequestBlocksByRootAsync(
         string peerId, List<Bytes32> roots, CancellationToken ct)
     {
         var rawRoots = roots.Select(r => r.AsSpan().ToArray()).ToList();
@@ -41,7 +41,7 @@ public sealed class Libp2pNetworkRequester : INetworkRequester
 
         var batchResults = await networkTask; // propagate exceptions
 
-        var results = new List<SignedBlockWithAttestation>();
+        var results = new List<SignedBlock>();
         foreach (var payload in batchResults)
         {
             var decodeResult = _decoder.DecodeAndValidate(payload);

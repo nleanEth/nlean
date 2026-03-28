@@ -307,11 +307,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 1,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -327,7 +327,7 @@ public sealed class ValidatorServiceTests
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
 
         var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Blocks).Payload;
-        var decodeResult = new SignedBlockWithAttestationGossipDecoder().DecodeAndValidate(payload);
+        var decodeResult = new SignedBlockGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.SignedBlock, Is.Not.Null);
 
@@ -355,11 +355,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 1,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -550,7 +550,7 @@ public sealed class ValidatorServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var fallbackProofIncluded = false;
         foreach (var payload in network.PublishedMessages.Where(message => message.Topic == GossipTopics.Blocks).Select(message => message.Payload))
         {
@@ -559,7 +559,7 @@ public sealed class ValidatorServiceTests
             Assert.That(decodeResult.SignedBlock, Is.Not.Null);
 
             var published = decodeResult.SignedBlock!;
-            Assert.That(published.Message.Block.Body.Attestations.Count, Is.EqualTo(published.Signature.AttestationSignatures.Count));
+            Assert.That(published.Block.Body.Attestations.Count, Is.EqualTo(published.Signature.AttestationSignatures.Count));
             if (published.Signature.AttestationSignatures.Any(
                     proof => proof.ProofData.AsSpan().SequenceEqual(fallbackProof.ProofData)))
             {
@@ -585,11 +585,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 0,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -618,14 +618,14 @@ public sealed class ValidatorServiceTests
         Assert.That(consensus.GetKnownAggregatedPayloadsCalls, Is.GreaterThan(0));
         Assert.That(multiSig.AggregateCalls, Is.EqualTo(0));
 
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var proposedPayload = network.PublishedMessages
             .Where(message => message.Topic == GossipTopics.Blocks)
             .Select(message => message.Payload)
             .First(payload =>
             {
                 var decode = decoder.DecodeAndValidate(payload);
-                return decode.IsSuccess && decode.SignedBlock?.Message.Block.Slot.Value == 3;
+                return decode.IsSuccess && decode.SignedBlock?.Block.Slot.Value == 3;
             });
         var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
         Assert.That(
@@ -647,11 +647,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 0,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -692,7 +692,7 @@ public sealed class ValidatorServiceTests
 
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
 
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var sawProposedBlock = false;
         foreach (var payload in network.PublishedMessages
                      .Where(message => message.Topic == GossipTopics.Blocks)
@@ -703,13 +703,13 @@ public sealed class ValidatorServiceTests
             Assert.That(decodeResult.SignedBlock, Is.Not.Null);
 
             var published = decodeResult.SignedBlock!;
-            if (published.Message.Block.Slot.Value != 3)
+            if (published.Block.Slot.Value != 3)
             {
                 continue;
             }
 
             sawProposedBlock = true;
-            var dataRoots = published.Message.Block.Body.Attestations
+            var dataRoots = published.Block.Body.Attestations
                 .Select(attestation => Convert.ToHexString(attestation.Data.HashTreeRoot()))
                 .ToList();
             Assert.That(dataRoots.Count, Is.EqualTo(dataRoots.Distinct(StringComparer.Ordinal).Count()));
@@ -731,11 +731,11 @@ public sealed class ValidatorServiceTests
             new ValidatorDutyConfig
             {
                 ValidatorIndex = 0,
-                GenesisValidatorPublicKeys = new[]
+                GenesisValidatorKeys = new (string, string)[]
                 {
-                    HexRepeat(0x11, 52),
-                    HexRepeat(0x22, 52),
-                    HexRepeat(0x33, 52)
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
                 }
             },
             new FakeLeanSig(),
@@ -768,19 +768,19 @@ public sealed class ValidatorServiceTests
 
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
 
-        var decoder = new SignedBlockWithAttestationGossipDecoder();
+        var decoder = new SignedBlockGossipDecoder();
         var proposedPayload = network.PublishedMessages
             .Where(message => message.Topic == GossipTopics.Blocks)
             .Select(message => message.Payload)
             .First(payload =>
             {
                 var decode = decoder.DecodeAndValidate(payload);
-                return decode.IsSuccess && decode.SignedBlock?.Message.Block.Slot.Value == 3;
+                return decode.IsSuccess && decode.SignedBlock?.Block.Slot.Value == 3;
             });
         var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
 
         var expectedDataRoot = slotTwoData.HashTreeRoot();
-        var matchingDataRoots = proposed.Message.Block.Body.Attestations
+        var matchingDataRoots = proposed.Block.Body.Attestations
             .Count(attestation => attestation.Data.HashTreeRoot().AsSpan().SequenceEqual(expectedDataRoot));
         Assert.That(matchingDataRoots, Is.EqualTo(2));
         Assert.That(
@@ -868,7 +868,7 @@ public sealed class ValidatorServiceTests
         Assert.That(network.PublishedMessages.Count, Is.EqualTo(0));
     }
 
-    private static SignedBlockWithAttestation BuildSignedBlockWithAggregateProof(
+    private static SignedBlock BuildSignedBlockWithAggregateProof(
         AttestationData attestationData,
         AggregatedSignatureProof proof)
     {
@@ -884,10 +884,8 @@ public sealed class ValidatorServiceTests
                     attestationData)
             }));
 
-        return new SignedBlockWithAttestation(
-            new BlockWithAttestation(
-                block,
-                new Attestation(2, attestationData)),
+        return new SignedBlock(
+            block,
             new BlockSignatures(
                 new[] { proof },
                 XmssSignature.Empty()));
@@ -1008,7 +1006,7 @@ public sealed class ValidatorServiceTests
             return true;
         }
 
-        public bool TryApplyLocalBlock(SignedBlockWithAttestation signedBlock, out string reason)
+        public bool TryApplyLocalBlock(SignedBlock signedBlock, out string reason)
         {
             TryApplyLocalBlockCalls++;
             reason = LocalBlockApplyResult ? string.Empty : "rejected";
@@ -1023,6 +1021,12 @@ public sealed class ValidatorServiceTests
         }
 
         public bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        public bool ApplyLocalAggregationResult(SignedAggregatedAttestation signed, out string reason)
         {
             reason = string.Empty;
             return true;
@@ -1074,6 +1078,19 @@ public sealed class ValidatorServiceTests
         {
             AggregateCalls++;
             AggregatePublicKeyHistory.Add(publicKeys.Select(key => key.ToArray()).ToList());
+            return new byte[] { 0xAA, 0xBB, 0xCC };
+        }
+
+        public byte[] Aggregate(
+            IReadOnlyList<bool> xmssParticipants,
+            IReadOnlyList<byte[]> children,
+            IReadOnlyList<(ReadOnlyMemory<byte> PublicKey, ReadOnlyMemory<byte> Signature)> rawXmss,
+            ReadOnlySpan<byte> message,
+            uint epoch,
+            bool recursive = false)
+        {
+            AggregateCalls++;
+            AggregatePublicKeyHistory.Add(rawXmss.Select(x => x.PublicKey.ToArray()).ToList());
             return new byte[] { 0xAA, 0xBB, 0xCC };
         }
 

@@ -17,6 +17,7 @@ using Nethermind.Libp2p.Core.Dto;
 using Nethermind.Libp2p;
 using Nethermind.Libp2p.Protocols;
 using Nethermind.Libp2p.Protocols.Pubsub;
+using System.Linq;
 using System.Net;
 using System.Text;
 using ConsensusService = Lean.Consensus.ConsensusServiceV2;
@@ -38,7 +39,7 @@ public static class NodeApp
                 logging.AddSimpleConsole(o =>
                 {
                     o.IncludeScopes = true;
-                    o.SingleLine = true;
+                    o.SingleLine = false;
                     o.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fff] ";
                     o.UseUtcTimestamp = true;
                 });
@@ -67,7 +68,7 @@ public static class NodeApp
                 services.AddSingleton<IStateByRootStore, StateByRootStore>();
                 services.AddSingleton<IBlocksByRootRpcRouter, BlocksByRootRpcRouter>();
                 services.AddSingleton<IStatusRpcRouter, StatusRpcRouter>();
-                services.AddSingleton<SignedBlockWithAttestationGossipDecoder>();
+                services.AddSingleton<SignedBlockGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
                 services.AddSingleton<SignedAggregatedAttestationGossipDecoder>();
                 services.AddSingleton(sp => new ProtoArrayForkChoiceStore(
@@ -730,7 +731,9 @@ public static class NodeApp
     {
         if (chainConfig?.GenesisValidators is { Count: > 0 } genesisValidators)
         {
-            options.Consensus.GenesisValidatorPublicKeys = genesisValidators;
+            options.Consensus.GenesisValidatorKeys = genesisValidators
+                .Select(v => (v.AttestationPubkey, v.ProposalPubkey))
+                .ToList();
         }
 
         var configuredValidatorCount = chainConfig?.ValidatorCount
@@ -766,6 +769,10 @@ public static class NodeApp
         var validatorIndices = new List<ulong>();
         var allPublicKeyPaths = new List<string>();
         var allSecretKeyPaths = new List<string>();
+        var allAttestationPublicKeyPaths = new List<string>();
+        var allAttestationSecretKeyPaths = new List<string>();
+        var allProposalPublicKeyPaths = new List<string>();
+        var allProposalSecretKeyPaths = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
             string.IsNullOrWhiteSpace(options.Validator.PublicKeyPath) &&
@@ -777,26 +784,48 @@ public static class NodeApp
                 var idx = baseIndex + offset;
                 validatorIndices.Add(idx);
 
-                var sszPk = Path.Combine(dir, $"validator_{idx}_pk.ssz");
-                var sszSk = Path.Combine(dir, $"validator_{idx}_sk.ssz");
-                var jsonPk = Path.Combine(dir, $"validator_{idx}_pk.json");
-                var jsonSk = Path.Combine(dir, $"validator_{idx}_sk.json");
+                // Try new dual-key naming first
+                var attestPk = Path.Combine(dir, $"validator_{idx}_attest_pk.ssz");
+                var attestSk = Path.Combine(dir, $"validator_{idx}_attest_sk.ssz");
+                var proposePk = Path.Combine(dir, $"validator_{idx}_propose_pk.ssz");
+                var proposeSk = Path.Combine(dir, $"validator_{idx}_propose_sk.ssz");
 
-                if (File.Exists(sszPk) && File.Exists(sszSk))
+                if (File.Exists(attestPk) && File.Exists(attestSk) &&
+                    File.Exists(proposePk) && File.Exists(proposeSk))
                 {
-                    allPublicKeyPaths.Add(sszPk);
-                    allSecretKeyPaths.Add(sszSk);
+                    allAttestationPublicKeyPaths.Add(attestPk);
+                    allAttestationSecretKeyPaths.Add(attestSk);
+                    allProposalPublicKeyPaths.Add(proposePk);
+                    allProposalSecretKeyPaths.Add(proposeSk);
                 }
-                else if (File.Exists(jsonPk) && File.Exists(jsonSk))
+                else
                 {
-                    allPublicKeyPaths.Add(jsonPk);
-                    allSecretKeyPaths.Add(jsonSk);
+                    // Fall back to legacy single-key naming
+                    var sszPk = Path.Combine(dir, $"validator_{idx}_pk.ssz");
+                    var sszSk = Path.Combine(dir, $"validator_{idx}_sk.ssz");
+                    var jsonPk = Path.Combine(dir, $"validator_{idx}_pk.json");
+                    var jsonSk = Path.Combine(dir, $"validator_{idx}_sk.json");
+
+                    if (File.Exists(sszPk) && File.Exists(sszSk))
+                    {
+                        allPublicKeyPaths.Add(sszPk);
+                        allSecretKeyPaths.Add(sszSk);
+                    }
+                    else if (File.Exists(jsonPk) && File.Exists(jsonSk))
+                    {
+                        allPublicKeyPaths.Add(jsonPk);
+                        allSecretKeyPaths.Add(jsonSk);
+                    }
                 }
             }
         }
 
-        var publicKeyPath = allPublicKeyPaths.Count > 0 ? allPublicKeyPaths[0] : options.Validator.PublicKeyPath;
-        var secretKeyPath = allSecretKeyPaths.Count > 0 ? allSecretKeyPaths[0] : options.Validator.SecretKeyPath;
+        var publicKeyPath = allAttestationPublicKeyPaths.Count > 0
+            ? allAttestationPublicKeyPaths[0]
+            : allPublicKeyPaths.Count > 0 ? allPublicKeyPaths[0] : options.Validator.PublicKeyPath;
+        var secretKeyPath = allAttestationSecretKeyPaths.Count > 0
+            ? allAttestationSecretKeyPaths[0]
+            : allSecretKeyPaths.Count > 0 ? allSecretKeyPaths[0] : options.Validator.SecretKeyPath;
 
         if (validatorIndices.Count == 0)
         {
@@ -823,9 +852,14 @@ public static class NodeApp
             ValidatorIndices = validatorIndices,
             AllPublicKeyPaths = allPublicKeyPaths,
             AllSecretKeyPaths = allSecretKeyPaths,
+            AllAttestationPublicKeyPaths = allAttestationPublicKeyPaths,
+            AllAttestationSecretKeyPaths = allAttestationSecretKeyPaths,
+            AllProposalPublicKeyPaths = allProposalPublicKeyPaths,
+            AllProposalSecretKeyPaths = allProposalSecretKeyPaths,
             ActivationEpoch = options.Validator.ActivationEpoch,
             NumActiveEpochs = options.Validator.NumActiveEpochs,
-            GenesisValidatorPublicKeys = chainConfig?.GenesisValidators ?? (IReadOnlyList<string>)Array.Empty<string>(),
+            GenesisValidatorKeys = chainConfig?.GenesisValidators?.Select(v => (v.AttestationPubkey, v.ProposalPubkey)).ToList()
+                ?? (IReadOnlyList<(string, string)>)Array.Empty<(string, string)>(),
             PublishAggregates = options.Validator.PublishAggregates
         };
     }

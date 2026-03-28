@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace Lean.Consensus.Types;
 
-public sealed class AggregationBits
+public sealed class AggregationBits : IEquatable<AggregationBits>
 {
     private readonly bool[] _bits;
 
@@ -63,5 +63,25 @@ public sealed class AggregationBits
     public byte[] HashTreeRoot()
     {
         return SszInterop.HashBitlist(_bits, SszEncoding.ValidatorRegistryLimit);
+    }
+
+    public bool Equals(AggregationBits? other)
+    {
+        if (other is null) return false;
+        if (ReferenceEquals(this, other)) return true;
+        return _bits.AsSpan().SequenceEqual(other._bits.AsSpan());
+    }
+
+    public override bool Equals(object? obj) => Equals(obj as AggregationBits);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(_bits.Length);
+        for (var i = 0; i < _bits.Length; i++)
+        {
+            if (_bits[i]) hash.Add(i);
+        }
+        return hash.ToHashCode();
     }
 }

@@ -328,14 +328,11 @@ public sealed class ConsensusServiceV2Tests
         return new Block(new Slot(slot), proposerIndex, parentRoot, Bytes32.Zero(), body);
     }
 
-    private static SignedBlockWithAttestation WrapBlock(Block block)
+    private static SignedBlock WrapBlock(Block block)
     {
-        var attestation = new Attestation(0, new AttestationData(
-            block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), emptyXmssSig);
-        return new SignedBlockWithAttestation(blockWithAttestation, signature);
+        return new SignedBlock(block, signature);
     }
 
     private static SignedAttestation CreateAttestation(ulong validatorId, ulong slot, Bytes32 headRoot)
@@ -366,7 +363,7 @@ public sealed class ConsensusServiceV2Tests
         public SyncState State { get; }
         public ulong NetworkHeadSlot { get; set; }
         public ulong GetNetworkHeadSlot() => NetworkHeadSlot;
-        public Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId) => Task.CompletedTask;
+        public Task OnGossipBlockAsync(SignedBlock block, Bytes32 blockRoot, string? peerId) => Task.CompletedTask;
         public Task OnGossipAttestationAsync(SignedAttestation attestation) => Task.CompletedTask;
         public Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot, Bytes32? headRoot = null) => Task.CompletedTask;
         public void CascadeAcceptedBlock(Bytes32 blockRoot) { }

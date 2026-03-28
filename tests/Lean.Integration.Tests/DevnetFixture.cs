@@ -57,11 +57,11 @@ public sealed class DevnetFixture : IDisposable
         }
 
         BinaryPath = ResolveBinaryPath();
-        GenesisTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
 
-        var pubkeyHexList = GenerateKeys(keyDir);
+        var keyList = GenerateKeys(keyDir);
         GenerateLibp2pKeys();
-        WriteConfigYaml(pubkeyHexList);
+        GenesisTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
+        WriteConfigYaml(keyList);
         WriteValidatorConfigYaml();
         WriteBootstrapConfig();
     }
@@ -85,21 +85,60 @@ public sealed class DevnetFixture : IDisposable
             checkpointSyncUrl: checkpointSyncUrl);
     }
 
-    private List<string> GenerateKeys(string keyDir)
+    private List<(string AttestHex, string ProposeHex)> GenerateKeys(string keyDir)
     {
-        var sig = new RustLeanSig();
-        var pubkeyHexList = new List<string>();
         var totalValidators = NodeCount * ValidatorsPerNode;
+        var cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".cache", "nlean-integ-keys");
+        Directory.CreateDirectory(cacheDir);
 
-        for (int i = 0; i < totalValidators; i++)
+        var keyList = new (string AttestHex, string ProposeHex)[totalValidators];
+
+        bool allCached = Enumerable.Range(0, totalValidators).All(i =>
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attest_pk.ssz")) &&
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attest_sk.ssz")) &&
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_propose_pk.ssz")) &&
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_propose_sk.ssz")));
+
+        if (allCached)
         {
-            var kp = sig.GenerateKeyPair(0, NumActiveEpochs);
-            File.WriteAllBytes(Path.Combine(keyDir, $"validator_{i}_pk.ssz"), kp.PublicKey);
-            File.WriteAllBytes(Path.Combine(keyDir, $"validator_{i}_sk.ssz"), kp.SecretKey);
-            pubkeyHexList.Add(Convert.ToHexString(kp.PublicKey).ToLowerInvariant());
+            for (int i = 0; i < totalValidators; i++)
+            {
+                foreach (var suffix in new[] { "attest_pk", "attest_sk", "propose_pk", "propose_sk" })
+                {
+                    var fileName = $"validator_{i}_{suffix}.ssz";
+                    File.Copy(Path.Combine(cacheDir, fileName), Path.Combine(keyDir, fileName), overwrite: true);
+                }
+
+                var attestPk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_attest_pk.ssz"));
+                var proposePk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_propose_pk.ssz"));
+                keyList[i] = (Convert.ToHexString(attestPk).ToLowerInvariant(),
+                              Convert.ToHexString(proposePk).ToLowerInvariant());
+            }
+        }
+        else
+        {
+            Parallel.For(0, totalValidators, i =>
+            {
+                var sig = new RustLeanSig();
+                var attestKp = sig.GenerateKeyPair(0, NumActiveEpochs);
+                var proposeKp = sig.GenerateKeyPair(0, NumActiveEpochs);
+
+                foreach (var dir in new[] { keyDir, cacheDir })
+                {
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attest_pk.ssz"), attestKp.PublicKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attest_sk.ssz"), attestKp.SecretKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_propose_pk.ssz"), proposeKp.PublicKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_propose_sk.ssz"), proposeKp.SecretKey);
+                }
+
+                keyList[i] = (Convert.ToHexString(attestKp.PublicKey).ToLowerInvariant(),
+                              Convert.ToHexString(proposeKp.PublicKey).ToLowerInvariant());
+            });
         }
 
-        return pubkeyHexList;
+        return keyList.ToList();
     }
 
     private void GenerateLibp2pKeys()
@@ -126,7 +165,7 @@ public sealed class DevnetFixture : IDisposable
         }
     }
 
-    private void WriteConfigYaml(List<string> pubkeyHexList)
+    private void WriteConfigYaml(List<(string AttestHex, string ProposeHex)> keyList)
     {
         var sb = new StringBuilder();
         sb.AppendLine("# Genesis Settings");
@@ -144,9 +183,10 @@ public sealed class DevnetFixture : IDisposable
         sb.AppendLine();
         sb.AppendLine("# Genesis Validator Pubkeys");
         sb.AppendLine("GENESIS_VALIDATORS:");
-        foreach (var hex in pubkeyHexList)
+        foreach (var (attestHex, proposeHex) in keyList)
         {
-            sb.AppendLine($"    - \"{hex}\"");
+            sb.AppendLine($"    - attestation_pubkey: \"{attestHex}\"");
+            sb.AppendLine($"      proposal_pubkey: \"{proposeHex}\"");
         }
 
         File.WriteAllText(Path.Combine(ConfigDir, "config.yaml"), sb.ToString());

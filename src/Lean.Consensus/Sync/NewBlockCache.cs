@@ -4,7 +4,7 @@ namespace Lean.Consensus.Sync;
 
 public sealed record PendingBlock(
     Bytes32 Root, Bytes32 ParentRoot, ulong Slot, string? ReceivedFrom,
-    SignedBlockWithAttestation? SignedBlock = null);
+    SignedBlock? SignedBlock = null);
 
 public sealed class NewBlockCache
 {

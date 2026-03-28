@@ -6,41 +6,33 @@ namespace Lean.Consensus.Tests;
 public sealed class SszLeanSpecVectorsTests
 {
     [Test]
-    public void SignedBlockWithAttestationEncodingUsesFixedXmssSignature()
+    public void SignedBlockEncodingUsesFixedXmssSignature()
     {
         var emptySignature = XmssSignature.Empty();
 
-        var signedBlock = new SignedBlockWithAttestation(
-            new BlockWithAttestation(
-                new Block(
-                    new Slot(0),
-                    0,
-                    Bytes32.Zero(),
-                    Bytes32.Zero(),
-                    new BlockBody(Array.Empty<AggregatedAttestation>())),
-                new Attestation(
-                    0,
-                    new AttestationData(
-                        new Slot(0),
-                        new Checkpoint(Bytes32.Zero(), new Slot(0)),
-                        new Checkpoint(Bytes32.Zero(), new Slot(0)),
-                        new Checkpoint(Bytes32.Zero(), new Slot(0))))),
+        var signedBlock = new SignedBlock(
+            new Block(
+                new Slot(0),
+                0,
+                Bytes32.Zero(),
+                Bytes32.Zero(),
+                new BlockBody(Array.Empty<AggregatedAttestation>())),
             new BlockSignatures(
                 Array.Empty<AggregatedSignatureProof>(),
                 emptySignature));
 
         var encoded = SszEncoding.Encode(signedBlock);
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var blockBytes = SszEncoding.Encode(signedBlock.Block);
         var signatureBytes = SszEncoding.Encode(signedBlock.Signature);
 
-        Assert.That(encoded.Length, Is.EqualTo(8 + messageBytes.Length + signatureBytes.Length));
+        Assert.That(encoded.Length, Is.EqualTo(8 + blockBytes.Length + signatureBytes.Length));
 
-        var messageOffset = BitConverter.ToInt32(encoded, 0);
+        var blockOffset = BitConverter.ToInt32(encoded, 0);
         var signatureOffset = BitConverter.ToInt32(encoded, 4);
-        Assert.That(messageOffset, Is.EqualTo(8));
-        Assert.That(signatureOffset, Is.EqualTo(8 + messageBytes.Length));
+        Assert.That(blockOffset, Is.EqualTo(8));
+        Assert.That(signatureOffset, Is.EqualTo(8 + blockBytes.Length));
 
-        Assert.That(encoded.AsSpan(messageOffset, messageBytes.Length).ToArray(), Is.EqualTo(messageBytes));
+        Assert.That(encoded.AsSpan(blockOffset, blockBytes.Length).ToArray(), Is.EqualTo(blockBytes));
         Assert.That(encoded.AsSpan(signatureOffset, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
 

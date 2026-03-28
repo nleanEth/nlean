@@ -12,7 +12,7 @@ public sealed record BlockGossipDecodeResult
 {
     private BlockGossipDecodeResult(
         bool isSuccess,
-        SignedBlockWithAttestation? signedBlock,
+        SignedBlock? signedBlock,
         Bytes32? blockMessageRoot,
         BlockGossipDecodeFailure failure,
         string reason)
@@ -26,7 +26,7 @@ public sealed record BlockGossipDecodeResult
 
     public bool IsSuccess { get; }
 
-    public SignedBlockWithAttestation? SignedBlock { get; }
+    public SignedBlock? SignedBlock { get; }
 
     public Bytes32? BlockMessageRoot { get; }
 
@@ -34,7 +34,7 @@ public sealed record BlockGossipDecodeResult
 
     public string Reason { get; }
 
-    public static BlockGossipDecodeResult Success(SignedBlockWithAttestation signedBlock, Bytes32 blockMessageRoot)
+    public static BlockGossipDecodeResult Success(SignedBlock signedBlock, Bytes32 blockMessageRoot)
     {
         return new BlockGossipDecodeResult(
             isSuccess: true,

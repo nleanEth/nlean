@@ -458,15 +458,17 @@ internal sealed class ChainStateTransition
     private IReadOnlyList<Validator> BuildGenesisValidators(ulong initialValidatorCount)
     {
         var validators = new List<Validator>();
-        for (var index = 0; index < _config.GenesisValidatorPublicKeys.Count; index++)
+        for (var index = 0; index < _config.GenesisValidatorKeys.Count; index++)
         {
-            var keyHex = _config.GenesisValidatorPublicKeys[index];
-            if (!TryParseHexBytes(keyHex, out var bytes) || bytes.Length != SszEncoding.Bytes52Length)
-            {
-                bytes = new byte[SszEncoding.Bytes52Length];
-            }
+            var (attestKeyHex, proposalKeyHex) = _config.GenesisValidatorKeys[index];
 
-            validators.Add(new Validator(new Bytes52(bytes), (ulong)index));
+            if (!TryParseHexBytes(attestKeyHex, out var attestBytes) || attestBytes.Length != SszEncoding.Bytes52Length)
+                attestBytes = new byte[SszEncoding.Bytes52Length];
+
+            if (!TryParseHexBytes(proposalKeyHex, out var proposalBytes) || proposalBytes.Length != SszEncoding.Bytes52Length)
+                proposalBytes = new byte[SszEncoding.Bytes52Length];
+
+            validators.Add(new Validator(new Bytes52(attestBytes), new Bytes52(proposalBytes), (ulong)index));
         }
 
         var targetCount = validators.Count > 0
@@ -474,7 +476,7 @@ internal sealed class ChainStateTransition
             : Math.Max(1UL, initialValidatorCount);
         while ((ulong)validators.Count < targetCount)
         {
-            validators.Add(new Validator(Bytes52.Zero(), (ulong)validators.Count));
+            validators.Add(new Validator(Bytes52.Zero(), Bytes52.Zero(), (ulong)validators.Count));
         }
 
         return validators;

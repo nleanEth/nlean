@@ -109,6 +109,57 @@ public sealed class LeanApiServer
                     response.OutputStream.Write(ssz);
                     break;
 
+                case "/lean/v0/fork_choice":
+                    var fcSnap = _getSnapshot();
+                    if (fcSnap.ForkChoice is null)
+                    {
+                        WriteJson(response, 503, "{\"error\":\"fork choice not available\"}");
+                        break;
+                    }
+                    var fc = fcSnap.ForkChoice;
+                    var sb = new System.Text.StringBuilder(4096);
+                    sb.Append("{\"nodes\":[");
+                    for (int i = 0; i < fc.Nodes.Count; i++)
+                    {
+                        if (i > 0) sb.Append(',');
+                        var n = fc.Nodes[i];
+                        sb.Append("{\"root\":\"0x");
+                        sb.Append(n.Root);
+                        sb.Append("\",\"slot\":");
+                        sb.Append(n.Slot);
+                        sb.Append(",\"parent_root\":\"0x");
+                        sb.Append(n.ParentRoot);
+                        sb.Append("\",\"weight\":");
+                        sb.Append(n.Weight);
+                        sb.Append('}');
+                    }
+                    sb.Append("],\"head\":\"0x");
+                    sb.Append(fc.Head);
+                    sb.Append("\",\"justified\":{\"slot\":");
+                    sb.Append(fcSnap.JustifiedSlot);
+                    sb.Append(",\"root\":\"0x");
+                    sb.Append(fcSnap.JustifiedRoot);
+                    sb.Append("\"},\"finalized\":{\"slot\":");
+                    sb.Append(fcSnap.FinalizedSlot);
+                    sb.Append(",\"root\":\"0x");
+                    sb.Append(fcSnap.FinalizedRoot);
+                    sb.Append("\"},\"safe_target\":\"0x");
+                    sb.Append(fc.SafeTarget);
+                    sb.Append("\",\"validator_count\":");
+                    sb.Append(fc.ValidatorCount);
+                    sb.Append('}');
+                    WriteJson(response, 200, sb.ToString());
+                    break;
+
+                case "/lean/v0/fork_choice/ui":
+                    var html = ForkChoiceHtml.Content;
+                    response.StatusCode = 200;
+                    response.ContentType = "text/html; charset=utf-8";
+                    var htmlBytes = System.Text.Encoding.UTF8.GetBytes(html);
+                    response.ContentLength64 = htmlBytes.Length;
+                    response.OutputStream.Write(htmlBytes);
+                    break;
+
                 default:
                     WriteJson(response, 404, "{\"error\":\"not found\"}");
                     break;
@@ -134,6 +185,14 @@ public sealed class LeanApiServer
     }
 }
 
+public sealed record ForkChoiceNode(
+    string Root, ulong Slot, string ParentRoot, long Weight);
+
+public sealed record ForkChoiceSnapshot(
+    IReadOnlyList<ForkChoiceNode> Nodes,
+    string Head, string SafeTarget, ulong ValidatorCount);
+
 public sealed record ApiSnapshot(
     ulong JustifiedSlot, string JustifiedRoot,
-    ulong FinalizedSlot, string FinalizedRoot);
+    ulong FinalizedSlot, string FinalizedRoot,
+    ForkChoiceSnapshot? ForkChoice = null);

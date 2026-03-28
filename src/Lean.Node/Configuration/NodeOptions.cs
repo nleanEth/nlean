@@ -131,6 +131,11 @@ public sealed class NodeOptions
             options.HashSigKeyDir = overrides.HashSigKeyDir;
         }
 
+        if (overrides.AggregateSubnetIds is { Length: > 0 })
+        {
+            options.Consensus.AggregateSubnetIds = overrides.AggregateSubnetIds;
+        }
+
         return options;
     }
 }

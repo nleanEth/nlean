@@ -582,7 +582,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     /// </summary>
     private static ForkChoiceApplyResult ApplyBlock(
         ProtoArrayForkChoiceStore store,
-        SignedBlockWithAttestation signed,
+        SignedBlock signed,
         ulong validatorCount = 1)
     {
         var genesisCheckpoint = new Checkpoint(store.JustifiedRoot, new Slot(store.JustifiedSlot));
@@ -595,14 +595,11 @@ public sealed class ProtoArrayForkChoiceStoreTests
         return new Block(new Slot(slot), proposerIndex, parentRoot, Bytes32.Zero(), body);
     }
 
-    private static SignedBlockWithAttestation WrapBlock(Block block)
+    private static SignedBlock WrapBlock(Block block)
     {
-        var attestation = new Attestation(0, new AttestationData(
-            block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), emptyXmssSig);
-        return new SignedBlockWithAttestation(blockWithAttestation, signature);
+        return new SignedBlock(block, signature);
     }
 
     /// <summary>
@@ -610,7 +607,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     /// participants. Per leanSpec, fork-choice votes are only updated through on_block
     /// (block-body attestations), not from gossip.
     /// </summary>
-    private static SignedBlockWithAttestation CreateBlockWithAttestations(
+    private static SignedBlock CreateBlockWithAttestations(
         ulong slot, Bytes32 parentRoot, ulong proposerIndex,
         AttestationData attestationData, ulong[] participantIds)
     {
@@ -619,15 +616,11 @@ public sealed class ProtoArrayForkChoiceStoreTests
         var body = new BlockBody(new[] { aggregatedAtt });
         var block = new Block(new Slot(slot), proposerIndex, parentRoot, Bytes32.Zero(), body);
 
-        var proposerAttestation = new Attestation(proposerIndex, new AttestationData(
-            new Slot(slot), Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, proposerAttestation);
-
         var proof = new AggregatedSignatureProof(bits, new byte[32]);
         var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(new[] { proof }, emptyXmssSig);
 
-        return new SignedBlockWithAttestation(blockWithAttestation, signature);
+        return new SignedBlock(block, signature);
     }
 
     private static SignedAttestation CreateAttestation(ulong validatorId, ulong slot, Bytes32 headRoot)

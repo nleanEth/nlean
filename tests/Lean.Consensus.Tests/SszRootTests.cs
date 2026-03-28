@@ -160,7 +160,7 @@ public sealed class SszRootTests
     }
 
     [Test]
-    public void SignedBlockWithAttestationRootMatchesContainer()
+    public void SignedBlockRootMatchesContainer()
     {
         var body = new BlockBody(Array.Empty<AggregatedAttestation>());
         var block = new Block(
@@ -169,18 +169,13 @@ public sealed class SszRootTests
             new Bytes32(Enumerable.Repeat((byte)4, 32).ToArray()),
             new Bytes32(Enumerable.Repeat((byte)5, 32).ToArray()),
             body);
-        var message = new BlockWithAttestation(block, new Attestation(3, new AttestationData(
-            new Slot(30),
-            Checkpoint.Default(),
-            Checkpoint.Default(),
-            Checkpoint.Default())));
         var signature = new BlockSignatures(
             Array.Empty<AggregatedSignatureProof>(),
             XmssSignature.Empty());
-        var signed = new SignedBlockWithAttestation(message, signature);
+        var signed = new SignedBlock(block, signature);
 
         var expected = HashContainer(
-            message.HashTreeRoot(),
+            block.HashTreeRoot(),
             signature.HashTreeRoot());
 
         Assert.That(signed.HashTreeRoot(), Is.EqualTo(expected));

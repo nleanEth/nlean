@@ -225,18 +225,15 @@ public sealed class SyncServiceTests
     private static Bytes32 MakeRoot(byte fill) =>
         new(Enumerable.Repeat(fill, 32).ToArray());
 
-    private static Bytes32 ComputeRoot(SignedBlockWithAttestation signedBlock) =>
-        new(signedBlock.Message.Block.HashTreeRoot());
+    private static Bytes32 ComputeRoot(SignedBlock signedBlock) =>
+        new(signedBlock.Block.HashTreeRoot());
 
-    private static SignedBlockWithAttestation MakeSignedBlock(Bytes32 parentRoot, ulong slot)
+    private static SignedBlock MakeSignedBlock(Bytes32 parentRoot, ulong slot)
     {
         var body = new BlockBody(Array.Empty<AggregatedAttestation>());
         var block = new Block(new Slot(slot), 0, parentRoot, Bytes32.Zero(), body);
-        var attestation = new Attestation(0, new AttestationData(
-            block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
-        return new SignedBlockWithAttestation(blockWithAttestation, sig);
+        return new SignedBlock(block, sig);
     }
 
     private static SignedAttestation MakeAttestation(ulong validatorId, ulong slot, Bytes32 headRoot)
@@ -265,16 +262,17 @@ public sealed class SyncServiceTests
         public int ProcessedCount { get; private set; }
         public ulong CurrentHeadSlot { get; set; }
         public ulong HeadSlot => CurrentHeadSlot;
+        public ulong FinalizedSlot { get; set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
         public bool HasState(Bytes32 root) => KnownRoots.Contains(root);
 
-        public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+        public ForkChoiceApplyResult ProcessBlock(SignedBlock signedBlock)
         {
             ProcessedCount++;
-            var root = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+            var root = new Bytes32(signedBlock.Block.HashTreeRoot());
             KnownRoots.Add(root);
-            CurrentHeadSlot = Math.Max(CurrentHeadSlot, signedBlock.Message.Block.Slot.Value);
+            CurrentHeadSlot = Math.Max(CurrentHeadSlot, signedBlock.Block.Slot.Value);
             return ForkChoiceApplyResult.AcceptedResult(false, CurrentHeadSlot, root);
         }
     }
@@ -308,20 +306,20 @@ public sealed class SyncServiceTests
 
     private sealed class FakeNetworkRequester : INetworkRequester
     {
-        public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
+        public Task<List<SignedBlock>> RequestBlocksByRootAsync(
             string peerId, List<Bytes32> roots, CancellationToken ct) =>
-            Task.FromResult(new List<SignedBlockWithAttestation>());
+            Task.FromResult(new List<SignedBlock>());
     }
 
     private sealed class RecordingNetworkRequester : INetworkRequester
     {
         public List<(string PeerId, List<Bytes32> Roots)> Requests { get; } = new();
 
-        public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
+        public Task<List<SignedBlock>> RequestBlocksByRootAsync(
             string peerId, List<Bytes32> roots, CancellationToken ct)
         {
             Requests.Add((peerId, new List<Bytes32>(roots)));
-            return Task.FromResult(new List<SignedBlockWithAttestation>());
+            return Task.FromResult(new List<SignedBlock>());
         }
     }
 }
