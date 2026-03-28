@@ -34,7 +34,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private ulong _maxPeerHeadSlot;
     private ulong _validatorCount;
     private readonly IReadOnlySet<ulong> _localValidatorIds;
-    private readonly HashSet<int> _localValidatorSubnetIds;
     private readonly int _attestationCommitteeCount;
     private enum VoteSource
     {
@@ -53,9 +52,6 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
         _localValidatorIds = config.LocalValidatorIds;
         _attestationCommitteeCount = Math.Max(1, config.AttestationCommitteeCount);
-        _localValidatorSubnetIds = new HashSet<int>(
-            _localValidatorIds.Select(vid =>
-                new Types.ValidatorIndex(vid).ComputeSubnetId(_attestationCommitteeCount)));
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
 
         ConsensusHeadState? loaded = null;
@@ -169,6 +165,28 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public void OnGossipAggregatedAttestation(SignedAggregatedAttestation signed)
     {
         _ = TryOnGossipAggregatedAttestation(signed, out _);
+    }
+
+    public bool ApplyLocalAggregationResult(SignedAggregatedAttestation signed, out string reason)
+    {
+        if (!signed.Proof.Participants.TryToValidatorIndices(out var participantIds) || participantIds.Count == 0)
+        {
+            reason = "Aggregated attestation must include at least one participant.";
+            return false;
+        }
+
+        var dataRootKey = ToDataRootKey(signed.Data);
+        if (!_knownAggregatedPayloads.TryGetValue(dataRootKey, out var entry))
+        {
+            entry = (signed.Data, new HashSet<AggregatedSignatureProof>());
+            _knownAggregatedPayloads[dataRootKey] = entry;
+        }
+        entry.Proofs.Add(signed.Proof);
+        LeanMetrics.SetLatestKnownAggregatedPayloads(
+            _knownAggregatedPayloads.Values.Sum(v => v.Proofs.Count));
+
+        reason = string.Empty;
+        return true;
     }
 
     public bool TryOnGossipAggregatedAttestation(SignedAggregatedAttestation signed, out string reason)

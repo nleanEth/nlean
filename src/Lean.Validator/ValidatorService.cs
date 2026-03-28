@@ -399,7 +399,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             // Store locally first so the proposer can include this aggregation
             // in the next block even if gossipsub does not deliver self-published
             // messages back to this node.
-            _consensusService.TryApplyLocalAggregatedAttestation(signed, out _);
+            _consensusService.ApplyLocalAggregationResult(signed, out _);
 
             await PublishToTopicAsync(_gossipTopics.AggregateTopic, payload, cancellationToken);
 

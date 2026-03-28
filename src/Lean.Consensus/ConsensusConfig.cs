@@ -17,5 +17,6 @@ public sealed class ConsensusConfig
         = Array.Empty<(string, string)>();
     public int AttestationCommitteeCount { get; set; } = 1;
     public bool IsAggregator { get; set; } = false;
+    public IReadOnlyList<int> AggregateSubnetIds { get; set; } = Array.Empty<int>();
     public IReadOnlySet<ulong> LocalValidatorIds { get; set; } = new HashSet<ulong> { 0 };
 }
