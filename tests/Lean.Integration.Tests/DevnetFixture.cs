@@ -270,7 +270,7 @@ public sealed class DevnetFixture : IDisposable
             return parsed;
         }
 
-        return Environment.GetEnvironmentVariable("CI") == "true" ? 2 : 1;
+        return 4;
     }
 
     private static string ResolveBinaryPath()

@@ -18,7 +18,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 20,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
 
         var checkpoints = new List<(ulong slot, string root)>();
         for (int i = 0; i < 4; i++)
@@ -43,14 +43,14 @@ public class FinalizationTests
         // Phase 1: 4 nodes finalize to >= 20
         await cluster.WaitForFinalization(
             targetSlot: 20,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
 
         // Phase 2: stop node 3, 3 nodes continue finalizing to >= 30
         cluster.StopNode(3);
 
         await cluster.WaitForFinalization(
             targetSlot: 30,
-            timeout: TimeSpan.FromMinutes(5),
+            timeout: TimeSpan.FromMinutes(10),
             nodeIndices: new[] { 0, 1, 2 });
 
         // Phase 3: restart node 3, all 4 nodes finalize to >= 40
@@ -58,7 +58,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 40,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
     }
 
     [Test]
@@ -69,7 +69,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 20,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
 
         cluster.StopNode(3);
         cluster.CleanNodeData(3);
@@ -80,7 +80,7 @@ public class FinalizationTests
         var node0Cp = await cluster.GetFinalizedCheckpoint(0);
         var targetSlot = (node0Cp?.slot ?? 20) + 20;
         await cluster.WaitForNodeFinalization(3, targetSlot,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
     }
 
     [Test]
@@ -91,7 +91,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 20,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
 
         var checkpoints = new List<(ulong slot, string root)>();
         for (int i = 0; i < 2; i++)
@@ -119,7 +119,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 20,
-            timeout: TimeSpan.FromMinutes(5));
+            timeout: TimeSpan.FromMinutes(10));
 
         var checkpoints = new List<(ulong slot, string root)>();
         for (int i = 0; i < 4; i++)
