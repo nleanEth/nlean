@@ -39,6 +39,11 @@ int32_t leanmultisig_setup_prover(void);
 
 int32_t leanmultisig_setup_verifier(void);
 
+/**
+ * Flat aggregate (no children) — backward-compatible FFI signature.
+ * Uses rec_aggregation internally with empty children.
+ * Output is now postcard+lz4 serialized (was SSZ).
+ */
 int32_t leanmultisig_aggregate(const struct LeanBuffer *pub_keys_ptr,
                                uintptr_t pub_keys_len,
                                const struct LeanBuffer *sigs_ptr,
@@ -49,6 +54,31 @@ int32_t leanmultisig_aggregate(const struct LeanBuffer *pub_keys_ptr,
                                uint8_t **out_ptr,
                                uintptr_t *out_len);
 
+/**
+ * Recursive aggregate: merges existing children proofs (and optionally raw XMSS pairs).
+ * Children are (public_keys, serialized_AggregatedXMSS) pairs.
+ * Public keys for all children are passed as a flat array with per-child counts.
+ * Output is postcard+lz4 serialized.
+ */
+int32_t leanmultisig_aggregate_recursive(const struct LeanBuffer *children_proofs_ptr,
+                                         uintptr_t children_count,
+                                         const struct LeanBuffer *children_pks_ptr,
+                                         uintptr_t children_pks_total,
+                                         const uintptr_t *children_pk_counts_ptr,
+                                         const struct LeanBuffer *raw_pks_ptr,
+                                         uintptr_t raw_pks_len,
+                                         const struct LeanBuffer *raw_sigs_ptr,
+                                         uintptr_t raw_sigs_len,
+                                         const uint8_t *msg_ptr,
+                                         uintptr_t msg_len,
+                                         uint32_t epoch,
+                                         uint8_t **out_ptr,
+                                         uintptr_t *out_len);
+
+/**
+ * Verify an aggregated proof.
+ * Input proof must be postcard+lz4 serialized (new format).
+ */
 int32_t leanmultisig_verify_aggregate(const struct LeanBuffer *pub_keys_ptr,
                                       uintptr_t pub_keys_len,
                                       const uint8_t *agg_ptr,

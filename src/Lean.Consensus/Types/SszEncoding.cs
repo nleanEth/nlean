@@ -20,6 +20,7 @@ public static class SszEncoding
     public const int AttestationDataLength = UInt64Length + (CheckpointLength * 3);
     public const int AttestationLength = UInt64Length + AttestationDataLength;
     public const int BlockHeaderLength = (UInt64Length * 2) + (Bytes32Length * 3);
+    public const int MaxAttestationsData = 16;
 
     public static byte[] Encode(AttestationData value)
     {
@@ -60,7 +61,7 @@ public static class SszEncoding
     public static byte[] Encode(SignedAttestation value)
     {
         var signatureBytes = Encode(value.Signature);
-        // XmssSignature is treated as fixed-size (3112 bytes) — no offset field.
+        // XmssSignature is treated as fixed-size (2536 bytes for V=46) — no offset field.
         // Layout: ValidatorId(8) + AttestationData(128) + XmssSignature(inline)
         var fixedSize = UInt64Length + AttestationDataLength;
         var buffer = new byte[fixedSize + signatureBytes.Length];

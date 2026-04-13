@@ -8,6 +8,18 @@ namespace Lean.Consensus.ForkChoice;
 
 public readonly record struct GossipSignatureEntry(ulong ValidatorId, XmssSignature Signature);
 
+/// <summary>
+/// Compares <see cref="GossipSignatureEntry"/> by <see cref="GossipSignatureEntry.ValidatorId"/> only.
+/// XmssSignature is a reference type without value equality, so the default record struct
+/// equality would fail to deduplicate entries from the same validator.
+/// </summary>
+internal sealed class GossipSignatureEntryByValidatorComparer : IEqualityComparer<GossipSignatureEntry>
+{
+    public static readonly GossipSignatureEntryByValidatorComparer Instance = new();
+    public bool Equals(GossipSignatureEntry x, GossipSignatureEntry y) => x.ValidatorId == y.ValidatorId;
+    public int GetHashCode(GossipSignatureEntry obj) => obj.ValidatorId.GetHashCode();
+}
+
 public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 {
     public const int IntervalsPerSlot = 5;
@@ -148,7 +160,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ToDataRootKey(data);
         if (!_gossipSignatures.TryGetValue(dataRootKey, out var entry))
         {
-            entry = (data, new HashSet<GossipSignatureEntry>());
+            entry = (data, new HashSet<GossipSignatureEntry>(GossipSignatureEntryByValidatorComparer.Instance));
             _gossipSignatures[dataRootKey] = entry;
         }
         entry.Entries.Add(new GossipSignatureEntry(validatorId, signature));
@@ -160,7 +172,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var dataRootKey = ProtoArray.RootKey(dataRoot);
         if (!_gossipSignatures.TryGetValue(dataRootKey, out var entry))
             return false;
-        return entry.Entries.Any(e => e.ValidatorId == validatorId);
+        return entry.Entries.Contains(new GossipSignatureEntry(validatorId, null!));
     }
 
     public void OnGossipAggregatedAttestation(SignedAggregatedAttestation signed)
@@ -323,6 +335,28 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 _headRoot);
         }
 
+        if (aggregatedAttestations.Count > SszEncoding.MaxAttestationsData)
+        {
+            return ForkChoiceApplyResult.Rejected(
+                ForkChoiceRejectReason.InvalidAttestation,
+                $"Block contains {aggregatedAttestations.Count} attestation data entries, exceeding max {SszEncoding.MaxAttestationsData}.",
+                _headSlot, _headRoot);
+        }
+
+        // leanSpec PR #510: each AttestationData must appear at most once per block.
+        var seenDataRoots = new HashSet<Bytes32>();
+        for (var i = 0; i < aggregatedAttestations.Count; i++)
+        {
+            var key = new Bytes32(aggregatedAttestations[i].Data.HashTreeRoot());
+            if (!seenDataRoots.Add(key))
+            {
+                return ForkChoiceApplyResult.Rejected(
+                    ForkChoiceRejectReason.InvalidAttestation,
+                    "Block contains duplicate AttestationData entries.",
+                    _headSlot, _headRoot);
+            }
+        }
+
         _protoArray.RegisterBlock(
             blockRoot, block.ParentRoot, block.Slot.Value,
             canonicalJustified.Slot.Value,
@@ -404,7 +438,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             var dataRootKey = ToDataRootKey(attestation.Message);
             if (!_gossipSignatures.TryGetValue(dataRootKey, out var entry))
             {
-                entry = (attestation.Message, new HashSet<GossipSignatureEntry>());
+                entry = (attestation.Message, new HashSet<GossipSignatureEntry>(GossipSignatureEntryByValidatorComparer.Instance));
                 _gossipSignatures[dataRootKey] = entry;
             }
             entry.Entries.Add(new GossipSignatureEntry(attestation.ValidatorId, attestation.Signature));
@@ -418,7 +452,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             var dataRootKey = ToDataRootKey(attestation.Message);
             if (_gossipSignatures.TryGetValue(dataRootKey, out var entry))
             {
-                entry.Entries.RemoveWhere(e => e.ValidatorId == attestation.ValidatorId);
+                entry.Entries.Remove(new GossipSignatureEntry(attestation.ValidatorId, null!));
                 if (entry.Entries.Count == 0)
                     _gossipSignatures.Remove(dataRootKey);
             }

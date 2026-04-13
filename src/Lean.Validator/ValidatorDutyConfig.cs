@@ -23,11 +23,7 @@ public sealed class ValidatorDutyConfig
     public ulong ValidatorIndex { get; init; }
     public IReadOnlyList<ulong> ValidatorIndices { get; init; } = Array.Empty<ulong>();
 
-    // Legacy single-key path lists
-    public IReadOnlyList<string> AllPublicKeyPaths { get; init; } = Array.Empty<string>();
-    public IReadOnlyList<string> AllSecretKeyPaths { get; init; } = Array.Empty<string>();
-
-    // Dual-key path lists for devnet4
+    // Dual-key path lists
     public IReadOnlyList<string> AllAttestationPublicKeyPaths { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> AllAttestationSecretKeyPaths { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> AllProposalPublicKeyPaths { get; init; } = Array.Empty<string>();

@@ -229,11 +229,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             var parentRoot = _store.HeadRoot.AsSpan().ToArray();
             var target = _store.ComputeTargetCheckpoint();
+            var source = GetHeadStateSource();
             var baseAttestationData = new AttestationData(
                 new Slot(slot),
                 new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
                 target,
-                new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)));
+                source);
 
             return (parentRoot, baseAttestationData);
         }
@@ -244,12 +245,35 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         lock (_storeLock)
         {
             var target = _store.ComputeTargetCheckpoint();
+            var source = GetHeadStateSource();
             return new AttestationData(
                 new Slot(slot),
                 new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
                 target,
-                new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot)));
+                source);
         }
+    }
+
+    /// <summary>
+    /// Returns the source checkpoint from the head block's post-state.
+    /// leanSpec: "The source must come from the head state — not from the store-wide field."
+    /// Falls back to store-wide justified if the head state is not cached (should not happen).
+    /// Must be called under _storeLock.
+    /// </summary>
+    private Checkpoint GetHeadStateSource()
+    {
+        var headRoot = _store.HeadRoot;
+        if (_chainStateCache.TryGet(ChainStateCache.RootKey(headRoot), out var headState)
+            && !headState.LatestJustified.Root.Equals(Bytes32.Zero()))
+        {
+            return headState.LatestJustified;
+        }
+
+        // Pre-justification (genesis) or cache miss: the head state's LatestJustified is
+        // still Checkpoint.Default (zeroed root) which is not a known block root in the
+        // proto-array. Use the store-wide justified checkpoint which is correctly
+        // initialized to the genesis block root.
+        return new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot));
     }
 
     // IBlockProcessor

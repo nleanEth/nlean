@@ -52,8 +52,6 @@ public sealed class ValidatorServiceTests
         await service.StartAsync(CancellationToken.None);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(multiSig.SetupProverCalls, Is.EqualTo(0));
-        Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(0));
     }
 
     [Test]
@@ -75,8 +73,6 @@ public sealed class ValidatorServiceTests
         await service.StartAsync(CancellationToken.None);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(multiSig.SetupProverCalls, Is.EqualTo(0));
-        Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(0));
     }
 
     [Test]
@@ -719,7 +715,7 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
-    public async Task DutyLoop_ProposerSlot_UsesMultipleProofsForSameDataRoot_WhenCoverageIsSplit()
+    public async Task DutyLoop_ProposerSlot_PicksSingleBestProofForSameDataRoot()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 3 };
         var network = new FakeNetworkService();
@@ -743,11 +739,13 @@ public sealed class ValidatorServiceTests
 
         var slotTwoData = consensus.CreateAttestationData(2);
         var allowed = new AggregationBits(new[] { true, true, false });
+        // Proof A covers validator 0 only (1 participant).
         var proofForValidator0 = new AggregatedSignatureProof(
             new AggregationBits(new[] { true, false, false }),
             new byte[] { 0xA0 });
-        var proofForValidator1 = new AggregatedSignatureProof(
-            new AggregationBits(new[] { false, true, false }),
+        // Proof B covers validators 0 and 1 (2 participants) — strictly better.
+        var proofForBoth = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, false }),
             new byte[] { 0xB1 });
         consensus.KnownAggregatedPayloads = (
             new[]
@@ -758,7 +756,7 @@ public sealed class ValidatorServiceTests
             new[]
             {
                 proofForValidator0,
-                proofForValidator1
+                proofForBoth
             });
 
         await service.StartAsync(CancellationToken.None);
@@ -779,15 +777,14 @@ public sealed class ValidatorServiceTests
             });
         var proposed = decoder.DecodeAndValidate(proposedPayload).SignedBlock!;
 
+        // leanSpec PR #510: each AttestationData must appear at most once.
         var expectedDataRoot = slotTwoData.HashTreeRoot();
         var matchingDataRoots = proposed.Block.Body.Attestations
             .Count(attestation => attestation.Data.HashTreeRoot().AsSpan().SequenceEqual(expectedDataRoot));
-        Assert.That(matchingDataRoots, Is.EqualTo(2));
+        Assert.That(matchingDataRoots, Is.EqualTo(1));
+        // The single proof should be the best-covering one (proofForBoth with 2 participants).
         Assert.That(
-            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForValidator0.ProofData)),
-            Is.True);
-        Assert.That(
-            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForValidator1.ProofData)),
+            proposed.Signature.AttestationSignatures.Any(proof => proof.ProofData.AsSpan().SequenceEqual(proofForBoth.ProofData)),
             Is.True);
     }
 
@@ -818,8 +815,6 @@ public sealed class ValidatorServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(network.PublishedMessages.Count, Is.GreaterThan(0));
-        Assert.That(multiSig.SetupProverCalls, Is.EqualTo(0));
-        Assert.That(multiSig.SetupVerifierCalls, Is.EqualTo(0));
     }
 
     [Test]
@@ -1056,20 +1051,8 @@ public sealed class ValidatorServiceTests
 
     private sealed class FakeLeanMultiSig : ILeanMultiSig
     {
-        public int SetupProverCalls { get; private set; }
-        public int SetupVerifierCalls { get; private set; }
         public int AggregateCalls { get; private set; }
         public List<IReadOnlyList<byte[]>> AggregatePublicKeyHistory { get; } = new();
-
-        public void SetupProver()
-        {
-            SetupProverCalls++;
-        }
-
-        public void SetupVerifier()
-        {
-            SetupVerifierCalls++;
-        }
 
         public byte[] AggregateSignatures(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
             IReadOnlyList<ReadOnlyMemory<byte>> signatures,
@@ -1100,6 +1083,15 @@ public sealed class ValidatorServiceTests
             uint epoch)
         {
             return true;
+        }
+
+        public byte[] AggregateRecursive(
+            IReadOnlyList<(IReadOnlyList<ReadOnlyMemory<byte>> PublicKeys, byte[] ProofData)> children,
+            ReadOnlySpan<byte> message,
+            uint epoch)
+        {
+            AggregateCalls++;
+            return new byte[] { 0xAA, 0xBB, 0xCC };
         }
     }
 

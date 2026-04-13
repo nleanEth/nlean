@@ -23,7 +23,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 {
     // Keep block gossip payloads comfortably below 1 MiB across mixed-client devnets.
     // Individual aggregate proofs are often ~250 KiB, so 3 proofs keeps the full block SSZ size bounded.
-    private const int MaxAggregatedProofsPerBlock = 3;
+    private const int MaxAggregatedProofsPerBlock = SszEncoding.MaxAttestationsData;
 
     private static readonly Meter ValidatorMeter = new("Lean.Validator");
     private static readonly Counter<long> DutyRunsTotal = ValidatorMeter.CreateCounter<long>(
@@ -639,7 +639,10 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             return;
         }
 
-        // For each attestation data root, greedily cover remaining validators using known proofs.
+        // For each attestation data root, produce a single proof.
+        // leanSpec PR #510: each AttestationData must appear at most once per block.
+        // When multiple proofs exist for the same data, merge non-overlapping ones
+        // via recursive aggregation to maximize validator coverage.
         foreach (var entry in groups.OrderByDescending(g => g.Value.Data.Slot.Value).ThenBy(g => g.Key, StringComparer.Ordinal))
         {
             if (outputAttestations.Count >= MaxAggregatedProofsPerBlock)
@@ -649,63 +652,126 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
             var data = entry.Value.Data;
             var proofs = entry.Value.Proofs;
-            var remaining = new SortedSet<ulong>(entry.Value.Allowed);
 
-            while (outputAttestations.Count < MaxAggregatedProofsPerBlock && remaining.Count > 0)
+            AggregatedSignatureProof? mergedProof = TryMergeProofs(proofs, data);
+
+            if (mergedProof is null)
             {
-                var targetValidator = remaining.Min();
+                continue;
+            }
 
-                AggregatedSignatureProof? bestProof = null;
-                List<ulong>? bestCovered = null;
-                var maxCoverage = 0;
-                foreach (var candidateProof in proofs)
-                {
-                    if (!candidateProof.Participants.TryToValidatorIndices(out var proofParticipants) ||
-                        proofParticipants.Count == 0 ||
-                        !proofParticipants.Contains(targetValidator))
-                    {
-                        continue;
-                    }
+            var participants = CloneAggregationBits(mergedProof.Participants);
+            outputAttestations.Add(new AggregatedAttestation(participants, data));
+            outputProofs.Add(CloneAggregatedProof(mergedProof));
 
-                    var covered = proofParticipants.Where(remaining.Contains).ToList();
-                    if (covered.Count <= maxCoverage)
-                    {
-                        continue;
-                    }
-
-                    maxCoverage = covered.Count;
-                    bestProof = candidateProof;
-                    bestCovered = covered;
-                }
-
-                if (bestProof is null || bestCovered is null || bestCovered.Count == 0)
-                {
-                    break;
-                }
-
-                // Output attestation bits must match proof participants exactly.
-                var participants = CloneAggregationBits(bestProof.Participants);
-                outputAttestations.Add(new AggregatedAttestation(participants, data));
-                outputProofs.Add(CloneAggregatedProof(bestProof));
-
-                var participantIds = participants.TryToValidatorIndices(out var ids)
-                    ? string.Join(",", ids)
-                    : "none";
+            if (mergedProof.Participants.TryToValidatorIndices(out var ids))
+            {
                 _logger.LogDebug(
                     "Prepared block aggregate proof. Source: {Source}, Slot: {Slot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], DataRoot: {DataRoot}, TargetRoot: {TargetRoot}, ProofBytes: {ProofBytes}",
                     source,
                     data.Slot.Value,
                     data.Target.Slot.Value,
-                    participantIds,
+                    string.Join(",", ids),
                     Convert.ToHexString(data.HashTreeRoot()),
                     Convert.ToHexString(data.Target.Root.AsSpan()),
-                    bestProof.ProofData.Length);
-
-                foreach (var vid in bestCovered)
-                {
-                    remaining.Remove(vid);
-                }
+                    mergedProof.ProofData.Length);
             }
+        }
+    }
+
+    /// <summary>
+    /// Given multiple proofs for the same AttestationData, greedily select non-overlapping
+    /// proofs and merge them via recursive aggregation. Returns the merged proof, or the
+    /// single best proof if only one is usable or merging fails.
+    /// </summary>
+    private AggregatedSignatureProof? TryMergeProofs(
+        List<AggregatedSignatureProof> proofs,
+        AttestationData data)
+    {
+        // Filter to proofs with valid participants.
+        var validProofs = new List<(AggregatedSignatureProof Proof, HashSet<ulong> Ids)>();
+        foreach (var proof in proofs)
+        {
+            if (proof.Participants.TryToValidatorIndices(out var ids) && ids.Count > 0)
+            {
+                validProofs.Add((proof, new HashSet<ulong>(ids)));
+            }
+        }
+
+        if (validProofs.Count == 0)
+            return null;
+
+        // Sort by coverage descending for greedy selection.
+        validProofs.Sort((a, b) => b.Ids.Count.CompareTo(a.Ids.Count));
+
+        if (validProofs.Count == 1)
+            return validProofs[0].Proof;
+
+        // Greedily select non-overlapping proofs to maximize coverage.
+        var selected = new List<(AggregatedSignatureProof Proof, HashSet<ulong> Ids)> { validProofs[0] };
+        var coveredIds = new HashSet<ulong>(validProofs[0].Ids);
+
+        for (var i = 1; i < validProofs.Count; i++)
+        {
+            var candidate = validProofs[i];
+            if (!candidate.Ids.Overlaps(coveredIds))
+            {
+                selected.Add(candidate);
+                coveredIds.UnionWith(candidate.Ids);
+            }
+        }
+
+        // If only one proof was selected (all others overlap), return it directly.
+        if (selected.Count == 1)
+            return selected[0].Proof;
+
+        // Merge via recursive aggregation.
+        // Each child needs its public keys (looked up from _validatorPublicKeys).
+        try
+        {
+            var children = new List<(IReadOnlyList<ReadOnlyMemory<byte>> PublicKeys, byte[] ProofData)>();
+            foreach (var (proof, ids) in selected)
+            {
+                var sortedIds = ids.OrderBy(id => id).ToList();
+                var pks = new List<ReadOnlyMemory<byte>>();
+                foreach (var id in sortedIds)
+                {
+                    if (_validatorPublicKeys.TryGetValue(id, out var pk))
+                    {
+                        pks.Add(pk);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Missing public key for validator {ValidatorId} during proof merge, falling back to best single proof",
+                            id);
+                        return selected[0].Proof;
+                    }
+                }
+                children.Add((pks, proof.ProofData));
+            }
+
+            var messageRoot = data.HashTreeRoot();
+            var epoch = ToSignatureEpoch(data.Slot.Value);
+
+            var mergedProofData = _leanMultiSig.AggregateRecursive(children, messageRoot, epoch);
+            var mergedParticipants = AggregationBits.FromValidatorIndices(coveredIds);
+
+            _logger.LogDebug(
+                "Merged {Count} proofs for AttestationData slot {Slot}: {OldCounts} -> {MergedCount} validators",
+                selected.Count,
+                data.Slot.Value,
+                string.Join("+", selected.Select(s => s.Ids.Count)),
+                coveredIds.Count);
+
+            return new AggregatedSignatureProof(mergedParticipants, mergedProofData);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to merge {Count} proofs via recursive aggregation, falling back to best single proof",
+                selected.Count);
+            return selected[0].Proof;
         }
     }
 
@@ -744,19 +810,6 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             var proposalSecretKeyPath = i < _validatorDutyConfig.AllProposalSecretKeyPaths.Count
                 ? _validatorDutyConfig.AllProposalSecretKeyPaths[i]
                 : null;
-
-            // Fall back to legacy single-key paths
-            var legacyPublicKeyPath = i < _validatorDutyConfig.AllPublicKeyPaths.Count
-                ? _validatorDutyConfig.AllPublicKeyPaths[i]
-                : null;
-            var legacySecretKeyPath = i < _validatorDutyConfig.AllSecretKeyPaths.Count
-                ? _validatorDutyConfig.AllSecretKeyPaths[i]
-                : null;
-
-            attestPublicKeyPath ??= legacyPublicKeyPath;
-            attestSecretKeyPath ??= legacySecretKeyPath;
-            proposalPublicKeyPath ??= legacyPublicKeyPath;
-            proposalSecretKeyPath ??= legacySecretKeyPath;
 
             // Try attestation-specific hex config first, then fall back to legacy hex
             var attestPublicHex = (i == 0 ? ParseHex(_validatorDutyConfig.AttestationPublicKeyHex) : null)

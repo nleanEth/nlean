@@ -52,6 +52,23 @@ internal static partial class NativeMethods
         out IntPtr aggregatePtr,
         out nuint aggregateLen);
 
+    [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leanmultisig_aggregate_recursive")]
+    internal static partial int LeanMultiSigAggregateRecursive(
+        IntPtr childrenProofs,
+        nuint childrenCount,
+        IntPtr childrenPks,
+        nuint childrenPksTotal,
+        IntPtr childrenPkCounts,
+        IntPtr rawPublicKeys,
+        nuint rawPublicKeyCount,
+        IntPtr rawSignatures,
+        nuint rawSignatureCount,
+        IntPtr messagePtr,
+        nuint messageLen,
+        uint epoch,
+        out IntPtr aggregatePtr,
+        out nuint aggregateLen);
+
     [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leanmultisig_verify_aggregate")]
     internal static partial int LeanMultiSigVerifyAggregate(
         IntPtr publicKeys,

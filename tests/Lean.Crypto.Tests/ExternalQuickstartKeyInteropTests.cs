@@ -1,5 +1,3 @@
-using Lean.Consensus;
-using Lean.Consensus.Types;
 using Lean.Crypto;
 using NUnit.Framework;
 
@@ -8,15 +6,19 @@ namespace Lean.Crypto.Tests;
 public sealed class ExternalQuickstartKeyInteropTests
 {
     [Test]
-    public void QuickstartValidator0KeysSignAndVerify()
+    public void QuickstartValidator0AttesterKeySignAndVerify()
     {
-        const string basePath = "/Users/grapebaba/conductor/workspaces/zeam/lima-v1/lean-quickstart/local-devnet-nlean-investigate16/genesis/hash-sig-keys";
-        var skPath = Path.Combine(basePath, "validator_0_sk.ssz");
-        var pkPath = Path.Combine(basePath, "validator_0_pk.ssz");
+        var runDir =
+            Environment.GetEnvironmentVariable("NLEAN_QUICKSTART_RUN_DIR")
+            ?? "/Users/grapebaba/Documents/projects/lean/nlean/vendor/lean-quickstart/local-devnet-nlean";
+
+        var keyDir = Path.Combine(runDir, "genesis", "hash-sig-keys");
+        var skPath = Path.Combine(keyDir, "validator_0_attester_key_sk.ssz");
+        var pkPath = Path.Combine(keyDir, "validator_0_attester_key_pk.ssz");
 
         if (!File.Exists(skPath) || !File.Exists(pkPath))
         {
-            Assert.Ignore("Quickstart key files not found.");
+            Assert.Ignore("Quickstart attester key files not found (expected validator_0_attester_key_{sk,pk}.ssz).");
             return;
         }
 
@@ -34,67 +36,7 @@ public sealed class ExternalQuickstartKeyInteropTests
         var sig = leanSig.Sign(sk, epoch, msg);
         var ok = leanSig.Verify(pk, epoch, msg, sig);
 
-        Assert.That(ok, Is.True, "nlean FFI failed to verify signature against quickstart key files.");
+        Assert.That(ok, Is.True, "nlean FFI failed to verify signature against quickstart attester key files.");
     }
 
-    [Test]
-    public void DumpedQuickstartAttestationsVerifyWithValidator0PublicKey()
-    {
-        var runDir =
-            Environment.GetEnvironmentVariable("NLEAN_QUICKSTART_RUN_DIR")
-            ?? "/Users/grapebaba/conductor/workspaces/zeam/lima-v1/lean-quickstart/local-devnet-nlean-investigate19";
-
-        var pkPath = Path.Combine(runDir, "genesis", "hash-sig-keys", "validator_0_pk.ssz");
-        var dumpDir = Path.Combine(runDir, "data", "nlean_0", "att-debug");
-
-        if (!File.Exists(pkPath) || !Directory.Exists(dumpDir))
-        {
-            Assert.Ignore("Quickstart attestation dump or validator_0 public key file not found.");
-            return;
-        }
-
-        var payloadPaths = Directory.GetFiles(dumpDir, "*.ssz", SearchOption.TopDirectoryOnly)
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .ToArray();
-        if (payloadPaths.Length == 0)
-        {
-            Assert.Ignore("No dumped attestation payloads found.");
-            return;
-        }
-
-        var pk = File.ReadAllBytes(pkPath);
-        var leanSig = new RustLeanSig();
-        var decoder = new SignedAttestationGossipDecoder();
-        var verifiedPayloads = 0;
-
-        foreach (var payloadPath in payloadPaths)
-        {
-            var payload = File.ReadAllBytes(payloadPath);
-            var decodeResult = decoder.DecodeAndValidate(payload);
-            if (decodeResult.Failure != AttestationGossipDecodeFailure.None || decodeResult.Attestation is null)
-            {
-                // Dump directories can contain payloads from older SSZ layouts.
-                // This test only validates signatures for payloads decodable by
-                // the current gossip decoder.
-                continue;
-            }
-
-            var signedAttestation = decodeResult.Attestation;
-            var root = signedAttestation.Message.HashTreeRoot();
-            var signature = signedAttestation.Signature.EncodeBytes();
-            var epoch = checked((uint)signedAttestation.Message.Slot.Value);
-
-            var ok = leanSig.Verify(pk, epoch, root, signature);
-            Assert.That(
-                ok,
-                Is.True,
-                $"signature verification failed for payload {Path.GetFileName(payloadPath)} (slot={signedAttestation.Message.Slot.Value})");
-            verifiedPayloads++;
-        }
-
-        if (verifiedPayloads == 0)
-        {
-            Assert.Ignore("No decodable attestation payloads found in quickstart dump.");
-        }
-    }
 }

@@ -23,14 +23,16 @@ public sealed class DevnetFixture : IDisposable
 
     public string HashSigKeyDir { get; }
     public int ValidatorsPerNode { get; }
+    public int AttestationCommitteeCount { get; }
 
     private const uint ActiveEpochExponent = 18;
     private const uint NumActiveEpochs = 1 << (int)ActiveEpochExponent;
 
-    public DevnetFixture(int nodeCount = 4, int basePort = 19100, int validatorsPerNode = 1)
+    public DevnetFixture(int nodeCount = 4, int basePort = 19100, int validatorsPerNode = 1, int attestationCommitteeCount = 1)
     {
         NodeCount = nodeCount;
         ValidatorsPerNode = validatorsPerNode;
+        AttestationCommitteeCount = attestationCommitteeCount;
         RootDir = Path.Combine(Path.GetTempPath(), $"nlean-integ-{Guid.NewGuid():N}");
         ConfigDir = Path.Combine(RootDir, "config");
         Directory.CreateDirectory(ConfigDir);
@@ -70,6 +72,15 @@ public sealed class DevnetFixture : IDisposable
     {
         var validatorConfigPath = Path.Combine(ConfigDir, "validator-config.yaml");
         var nodeKeyPath = Path.Combine(ConfigDir, $"nlean_{index}.key");
+        var isAggregator = index == 0;
+
+        int? committeeCount = AttestationCommitteeCount > 1 ? AttestationCommitteeCount : null;
+        int[]? aggregateSubnetIds = null;
+        if (isAggregator && AttestationCommitteeCount > 1)
+        {
+            aggregateSubnetIds = Enumerable.Range(0, AttestationCommitteeCount).ToArray();
+        }
+
         return new NodeProcess(
             BinaryPath,
             validatorConfigPath,
@@ -80,9 +91,11 @@ public sealed class DevnetFixture : IDisposable
             QuicPorts[index],
             ApiPorts[index],
             MetricsPorts[index],
-            isAggregator: index == 0,
+            isAggregator,
             HashSigKeyDir,
-            checkpointSyncUrl: checkpointSyncUrl);
+            checkpointSyncUrl: checkpointSyncUrl,
+            attestationCommitteeCount: committeeCount,
+            aggregateSubnetIds: aggregateSubnetIds);
     }
 
     private List<(string AttestHex, string ProposeHex)> GenerateKeys(string keyDir)
@@ -96,23 +109,23 @@ public sealed class DevnetFixture : IDisposable
         var keyList = new (string AttestHex, string ProposeHex)[totalValidators];
 
         bool allCached = Enumerable.Range(0, totalValidators).All(i =>
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attest_pk.ssz")) &&
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attest_sk.ssz")) &&
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_propose_pk.ssz")) &&
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_propose_sk.ssz")));
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attester_key_pk.ssz")) &&
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attester_key_sk.ssz")) &&
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_proposer_key_pk.ssz")) &&
+            File.Exists(Path.Combine(cacheDir, $"validator_{i}_proposer_key_sk.ssz")));
 
         if (allCached)
         {
             for (int i = 0; i < totalValidators; i++)
             {
-                foreach (var suffix in new[] { "attest_pk", "attest_sk", "propose_pk", "propose_sk" })
+                foreach (var suffix in new[] { "attester_key_pk", "attester_key_sk", "proposer_key_pk", "proposer_key_sk" })
                 {
                     var fileName = $"validator_{i}_{suffix}.ssz";
                     File.Copy(Path.Combine(cacheDir, fileName), Path.Combine(keyDir, fileName), overwrite: true);
                 }
 
-                var attestPk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_attest_pk.ssz"));
-                var proposePk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_propose_pk.ssz"));
+                var attestPk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_attester_key_pk.ssz"));
+                var proposePk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_proposer_key_pk.ssz"));
                 keyList[i] = (Convert.ToHexString(attestPk).ToLowerInvariant(),
                               Convert.ToHexString(proposePk).ToLowerInvariant());
             }
@@ -127,10 +140,10 @@ public sealed class DevnetFixture : IDisposable
 
                 foreach (var dir in new[] { keyDir, cacheDir })
                 {
-                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attest_pk.ssz"), attestKp.PublicKey);
-                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attest_sk.ssz"), attestKp.SecretKey);
-                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_propose_pk.ssz"), proposeKp.PublicKey);
-                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_propose_sk.ssz"), proposeKp.SecretKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attester_key_pk.ssz"), attestKp.PublicKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attester_key_sk.ssz"), attestKp.SecretKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_proposer_key_pk.ssz"), proposeKp.PublicKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_proposer_key_sk.ssz"), proposeKp.SecretKey);
                 }
 
                 keyList[i] = (Convert.ToHexString(attestKp.PublicKey).ToLowerInvariant(),
@@ -180,6 +193,7 @@ public sealed class DevnetFixture : IDisposable
         sb.AppendLine();
         sb.AppendLine("# Validator Settings");
         sb.AppendLine($"VALIDATOR_COUNT: {NodeCount * ValidatorsPerNode}");
+        sb.AppendLine($"ATTESTATION_COMMITTEE_COUNT: {AttestationCommitteeCount}");
         sb.AppendLine();
         sb.AppendLine("# Genesis Validator Pubkeys");
         sb.AppendLine("GENESIS_VALIDATORS:");

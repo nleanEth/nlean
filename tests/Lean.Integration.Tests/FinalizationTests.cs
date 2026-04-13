@@ -106,4 +106,32 @@ public class FinalizationTests
             Is.EqualTo(1),
             "Nodes disagree on finalized root");
     }
+
+    [Test]
+    public async Task FourNode_FourSubnets_ReachesFinalization()
+    {
+        // 4 nodes x 2 validators = 8 validators across 4 subnets
+        // validator_id % 4: v0->s0, v1->s1, v2->s2, v3->s3, v4->s0, v5->s1, v6->s2, v7->s3
+        // Aggregator (node 0) subscribes to all 4 subnets via --aggregate-subnet-ids
+        using var cluster = new DevnetCluster(
+            nodeCount: 4, basePort: 20200, validatorsPerNode: 2, attestationCommitteeCount: 4);
+        cluster.StartAll();
+
+        await cluster.WaitForFinalization(
+            targetSlot: 20,
+            timeout: TimeSpan.FromMinutes(5));
+
+        var checkpoints = new List<(ulong slot, string root)>();
+        for (int i = 0; i < 4; i++)
+        {
+            var cp = await cluster.GetFinalizedCheckpoint(i);
+            Assert.That(cp, Is.Not.Null, $"Node {i} finalized checkpoint is null");
+            checkpoints.Add(cp!.Value);
+        }
+
+        Assert.That(
+            checkpoints.Select(c => c.root).Distinct().Count(),
+            Is.EqualTo(1),
+            "Nodes disagree on finalized root");
+    }
 }
