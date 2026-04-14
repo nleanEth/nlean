@@ -119,32 +119,22 @@ public sealed class DevnetFixture : IDisposable
         Directory.CreateDirectory(cacheDir);
 
         var keyList = new (string AttestHex, string ProposeHex)[totalValidators];
+        var suffixes = new[] { "attester_key_pk", "attester_key_sk", "proposer_key_pk", "proposer_key_sk" };
 
-        bool allCached = Enumerable.Range(0, totalValidators).All(i =>
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attester_key_pk.ssz")) &&
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_attester_key_sk.ssz")) &&
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_proposer_key_pk.ssz")) &&
-            File.Exists(Path.Combine(cacheDir, $"validator_{i}_proposer_key_sk.ssz")));
-
-        if (allCached)
+        Parallel.For(0, totalValidators, i =>
         {
-            for (int i = 0; i < totalValidators; i++)
+            var cachedForThisValidator = suffixes.All(s =>
+                File.Exists(Path.Combine(cacheDir, $"validator_{i}_{s}.ssz")));
+
+            if (cachedForThisValidator)
             {
-                foreach (var suffix in new[] { "attester_key_pk", "attester_key_sk", "proposer_key_pk", "proposer_key_sk" })
+                foreach (var suffix in suffixes)
                 {
                     var fileName = $"validator_{i}_{suffix}.ssz";
                     File.Copy(Path.Combine(cacheDir, fileName), Path.Combine(keyDir, fileName), overwrite: true);
                 }
-
-                var attestPk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_attester_key_pk.ssz"));
-                var proposePk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_proposer_key_pk.ssz"));
-                keyList[i] = (Convert.ToHexString(attestPk).ToLowerInvariant(),
-                              Convert.ToHexString(proposePk).ToLowerInvariant());
             }
-        }
-        else
-        {
-            Parallel.For(0, totalValidators, i =>
+            else
             {
                 var sig = new RustLeanSig();
                 var attestKp = sig.GenerateKeyPair(0, NumActiveEpochs);
@@ -157,11 +147,13 @@ public sealed class DevnetFixture : IDisposable
                     File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_proposer_key_pk.ssz"), proposeKp.PublicKey);
                     File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_proposer_key_sk.ssz"), proposeKp.SecretKey);
                 }
+            }
 
-                keyList[i] = (Convert.ToHexString(attestKp.PublicKey).ToLowerInvariant(),
-                              Convert.ToHexString(proposeKp.PublicKey).ToLowerInvariant());
-            });
-        }
+            var attestPk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_attester_key_pk.ssz"));
+            var proposePk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_proposer_key_pk.ssz"));
+            keyList[i] = (Convert.ToHexString(attestPk).ToLowerInvariant(),
+                          Convert.ToHexString(proposePk).ToLowerInvariant());
+        });
 
         return keyList.ToList();
     }
