@@ -229,7 +229,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             var parentRoot = _store.HeadRoot.AsSpan().ToArray();
             var target = _store.ComputeTargetCheckpoint();
-            var source = GetAttestationSource();
+            var source = new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot));
             var baseAttestationData = new AttestationData(
                 new Slot(slot),
                 new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
@@ -245,39 +245,13 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         lock (_storeLock)
         {
             var target = _store.ComputeTargetCheckpoint();
-            var source = GetAttestationSource();
+            var source = new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot));
             return new AttestationData(
                 new Slot(slot),
                 new Checkpoint(_store.HeadRoot, new Slot(_store.HeadSlot)),
                 target,
                 source);
         }
-    }
-
-    /// <summary>
-    /// Returns the attestation source checkpoint.
-    /// Prefers store-wide justified (consistent across nodes), but falls back to head state's
-    /// justified if more recent. This ensures all nodes independently arrive at the same source
-    /// without divergence, while avoiding stale sources if store update lags.
-    /// Must be called under _storeLock.
-    /// </summary>
-    private Checkpoint GetAttestationSource()
-    {
-        var storeJustified = new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot));
-        
-        // Check if head state has a more recent justified
-        var headRoot = _store.HeadRoot;
-        if (_chainStateCache.TryGet(ChainStateCache.RootKey(headRoot), out var headState)
-            && !headState.LatestJustified.Root.Equals(Bytes32.Zero())
-            && headState.LatestJustified.Slot.Value > storeJustified.Slot.Value)
-        {
-            // Head state has more recent justified - all nodes will compute the same result
-            // since they all have the same head block
-            return headState.LatestJustified;
-        }
-        
-        // Fall back to store-wide justified
-        return storeJustified;
     }
 
     // IBlockProcessor
