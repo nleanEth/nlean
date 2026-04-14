@@ -20,8 +20,12 @@ public class FinalizationTests
             secondsPerSlot = parsed;
         }
 
-        // Baseline is 10 minutes at 2s/slot. Scale linearly for slower slots.
-        var minutes = Math.Max(10, (int)Math.Ceiling(10.0 * secondsPerSlot / 2.0));
+        // Baseline is 15 minutes at 2s/slot. Scale linearly for slower slots.
+        // leanMultisig 2eb4b9d made aggregated-signature verification ~1.7-2x slower
+        // than fd88140, so the prior 10-minute baseline no longer leaves enough
+        // headroom on CI (especially for multi-phase tests like CatchupAfterRestart
+        // that call WaitForFinalization three times).
+        var minutes = Math.Max(15, (int)Math.Ceiling(15.0 * secondsPerSlot / 2.0));
         return TimeSpan.FromMinutes(minutes);
     }
 
