@@ -122,4 +122,40 @@ public class FinalizationTests
             "Nodes disagree on finalized root");
     }
 
+    [Test]
+    public async Task FourNode_TwoSubnets_DedicatedAggregators_ReachesFinalization()
+    {
+        using var cluster = new DevnetCluster(
+            nodeCount: 4,
+            basePort: 20200,
+            validatorsPerNode: 2,
+            attestationCommitteeCount: 2,
+            nodeIsAggregator: new[] { true, true, false, false },
+            nodeAggregateSubnetIds: new[]
+            {
+                new[] { 0 },
+                new[] { 1 },
+                Array.Empty<int>(),
+                Array.Empty<int>()
+            });
+        cluster.StartAll();
+
+        await cluster.WaitForFinalization(
+            targetSlot: 20,
+            timeout: FinalizationTimeout);
+
+        var checkpoints = new List<(ulong slot, string root)>();
+        for (int i = 0; i < 4; i++)
+        {
+            var cp = await cluster.GetFinalizedCheckpoint(i);
+            Assert.That(cp, Is.Not.Null, $"Node {i} finalized checkpoint is null");
+            checkpoints.Add(cp!.Value);
+        }
+
+        Assert.That(
+            checkpoints.Select(c => c.root).Distinct().Count(),
+            Is.EqualTo(1),
+            "Nodes disagree on finalized root");
+    }
+
 }
