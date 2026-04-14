@@ -37,12 +37,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native/lean-crypto-ffi
-      - name: Cache integration test keys
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/nlean-integ-keys
-          key: integ-keys-${{ runner.os }}-v1
-          restore-keys: integ-keys-${{ runner.os }}-
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Install dotnet-format
@@ -193,6 +187,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native/lean-crypto-ffi
+      - name: Cache integration test keys
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nlean-integ-keys
+          key: integ-keys-${{ runner.os }}-v1
+          restore-keys: integ-keys-${{ runner.os }}-
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Build patched quic package
