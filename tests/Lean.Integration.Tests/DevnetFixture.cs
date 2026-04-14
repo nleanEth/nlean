@@ -24,6 +24,8 @@ public sealed class DevnetFixture : IDisposable
     public string HashSigKeyDir { get; }
     public int ValidatorsPerNode { get; }
     public int AttestationCommitteeCount { get; }
+    public bool[] NodeIsAggregator { get; }
+    public int[][] NodeAggregateSubnetIds { get; }
 
     private const uint ActiveEpochExponent = 18;
     private const uint NumActiveEpochs = 1 << (int)ActiveEpochExponent;
@@ -32,11 +34,19 @@ public sealed class DevnetFixture : IDisposable
         int nodeCount = 4,
         int basePort = 19100,
         int validatorsPerNode = 1,
-        int attestationCommitteeCount = 1)
+        int attestationCommitteeCount = 1,
+        bool[]? nodeIsAggregator = null,
+        int[][]? nodeAggregateSubnetIds = null)
     {
         NodeCount = nodeCount;
         ValidatorsPerNode = validatorsPerNode;
         AttestationCommitteeCount = attestationCommitteeCount;
+        NodeIsAggregator = ResolveNodeIsAggregator(nodeCount, nodeIsAggregator);
+        NodeAggregateSubnetIds = ResolveNodeAggregateSubnetIds(
+            nodeCount,
+            attestationCommitteeCount,
+            NodeIsAggregator,
+            nodeAggregateSubnetIds);
         RootDir = Path.Combine(Path.GetTempPath(), $"nlean-integ-{Guid.NewGuid():N}");
         ConfigDir = Path.Combine(RootDir, "config");
         Directory.CreateDirectory(ConfigDir);
@@ -76,14 +86,12 @@ public sealed class DevnetFixture : IDisposable
     {
         var validatorConfigPath = Path.Combine(ConfigDir, "validator-config.yaml");
         var nodeKeyPath = Path.Combine(ConfigDir, $"nlean_{index}.key");
-        var isAggregator = index == 0;
+        var isAggregator = NodeIsAggregator[index];
 
         int? committeeCount = AttestationCommitteeCount > 1 ? AttestationCommitteeCount : null;
-        int[]? aggregateSubnetIds = null;
-        if (isAggregator && AttestationCommitteeCount > 1)
-        {
-            aggregateSubnetIds = Enumerable.Range(0, AttestationCommitteeCount).ToArray();
-        }
+        int[]? aggregateSubnetIds = NodeAggregateSubnetIds[index].Length > 0
+            ? NodeAggregateSubnetIds[index]
+            : null;
 
         return new NodeProcess(
             BinaryPath,
@@ -230,7 +238,7 @@ public sealed class DevnetFixture : IDisposable
             sb.AppendLine($"      quic: {QuicPorts[i]}");
             sb.AppendLine($"    metricsPort: {MetricsPorts[i]}");
             sb.AppendLine($"    count: {ValidatorsPerNode}");
-            sb.AppendLine($"    isAggregator: {(i == 0 ? "true" : "false")}");
+            sb.AppendLine($"    isAggregator: {(NodeIsAggregator[i] ? "true" : "false")}");
         }
 
         File.WriteAllText(Path.Combine(ConfigDir, "validator-config.yaml"), sb.ToString());
@@ -275,6 +283,66 @@ public sealed class DevnetFixture : IDisposable
         }
 
         return 2;
+    }
+
+    private static bool[] ResolveNodeIsAggregator(int nodeCount, bool[]? nodeIsAggregator)
+    {
+        if (nodeIsAggregator is null)
+        {
+            return Enumerable.Range(0, nodeCount)
+                .Select(i => i == 0)
+                .ToArray();
+        }
+
+        if (nodeIsAggregator.Length != nodeCount)
+        {
+            throw new ArgumentException($"Expected {nodeCount} aggregator flags, got {nodeIsAggregator.Length}.", nameof(nodeIsAggregator));
+        }
+
+        return nodeIsAggregator.ToArray();
+    }
+
+    private static int[][] ResolveNodeAggregateSubnetIds(
+        int nodeCount,
+        int attestationCommitteeCount,
+        IReadOnlyList<bool> nodeIsAggregator,
+        int[][]? nodeAggregateSubnetIds)
+    {
+        if (nodeAggregateSubnetIds is null)
+        {
+            return Enumerable.Range(0, nodeCount)
+                .Select(i => nodeIsAggregator[i] && i == 0 && attestationCommitteeCount > 1
+                    ? Enumerable.Range(0, attestationCommitteeCount).ToArray()
+                    : Array.Empty<int>())
+                .ToArray();
+        }
+
+        if (nodeAggregateSubnetIds.Length != nodeCount)
+        {
+            throw new ArgumentException(
+                $"Expected {nodeCount} aggregate subnet entries, got {nodeAggregateSubnetIds.Length}.",
+                nameof(nodeAggregateSubnetIds));
+        }
+
+        var maxSubnetId = Math.Max(0, attestationCommitteeCount - 1);
+        return nodeAggregateSubnetIds
+            .Select((subnets, index) =>
+            {
+                var sanitized = (subnets ?? Array.Empty<int>())
+                    .Where(subnetId => subnetId >= 0 && subnetId <= maxSubnetId)
+                    .Distinct()
+                    .ToArray();
+
+                if (!nodeIsAggregator[index] && sanitized.Length > 0)
+                {
+                    throw new ArgumentException(
+                        $"Node {index} has aggregate subnet ids but is not configured as an aggregator.",
+                        nameof(nodeAggregateSubnetIds));
+                }
+
+                return sanitized;
+            })
+            .ToArray();
     }
 
     private static string ResolveBinaryPath()
