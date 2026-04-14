@@ -264,7 +264,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private Checkpoint GetAttestationSource()
     {
         var storeJustified = new Checkpoint(_store.JustifiedRoot, new Slot(_store.JustifiedSlot));
-
+        
         // Check if head state has a more recent justified
         var headRoot = _store.HeadRoot;
         if (_chainStateCache.TryGet(ChainStateCache.RootKey(headRoot), out var headState)
@@ -275,7 +275,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             // since they all have the same head block
             return headState.LatestJustified;
         }
-
+        
         // Fall back to store-wide justified
         return storeJustified;
     }
