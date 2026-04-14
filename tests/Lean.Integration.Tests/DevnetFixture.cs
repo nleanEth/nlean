@@ -28,7 +28,11 @@ public sealed class DevnetFixture : IDisposable
     private const uint ActiveEpochExponent = 18;
     private const uint NumActiveEpochs = 1 << (int)ActiveEpochExponent;
 
-    public DevnetFixture(int nodeCount = 4, int basePort = 19100, int validatorsPerNode = 1, int attestationCommitteeCount = 1)
+    public DevnetFixture(
+        int nodeCount = 4,
+        int basePort = 19100,
+        int validatorsPerNode = 1,
+        int attestationCommitteeCount = 1)
     {
         NodeCount = nodeCount;
         ValidatorsPerNode = validatorsPerNode;
@@ -270,7 +274,7 @@ public sealed class DevnetFixture : IDisposable
             return parsed;
         }
 
-        return 4;
+        return 2;
     }
 
     private static string ResolveBinaryPath()
