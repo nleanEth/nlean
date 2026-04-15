@@ -10,9 +10,9 @@ crate-type = ["cdylib"]
 # Individual keygen/sign/verify — leanSig devnet4 branch (V=46, aborting target sum)
 leansig_hashsig = { package = "leansig", git = "https://github.com/leanEthereum/leanSig.git", branch = "devnet4" }
 # Recursive aggregation — leanMultisig at zeam's devnet4 rev
-rec_aggregation = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6" }
-leansig_wrapper = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6" }
-backend = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6" }
+rec_aggregation = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "b09d5e7618cc5a32ef4a6c9009034a19778d7b39" }
+leansig_wrapper = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "b09d5e7618cc5a32ef4a6c9009034a19778d7b39" }
+backend = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "b09d5e7618cc5a32ef4a6c9009034a19778d7b39" }
 rand = "0.10"
 serde_json = "1"
 
