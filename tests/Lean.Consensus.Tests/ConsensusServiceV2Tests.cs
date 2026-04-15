@@ -370,6 +370,7 @@ public sealed class ConsensusServiceV2Tests
         public void TrySyncFromBestPeer() { }
         public void OnPeerConnected(string peerId) { }
         public void OnPeerDisconnected(string peerId) { }
+        public void RequestBlockByRoot(Bytes32 blockRoot) { }
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
     }

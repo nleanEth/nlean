@@ -113,6 +113,37 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void TryOnAttestation_WithUnknownSourceRoot_TriggersBlockFetchCallback()
+    {
+        // When an attestation's source/target/head root is not in proto-array,
+        // 2/3 supermajority is cryptographically real but our node is missing
+        // the referenced block. Reject the attestation (per spec) AND queue
+        // the root for BlocksByRoot retrieval so finalization can self-heal
+        // once the block arrives.
+        var requested = new List<Bytes32>();
+        var store = new ProtoArrayForkChoiceStore(
+            new ConsensusConfig { InitialValidatorCount = 4 },
+            stateStore: null,
+            logger: null,
+            requestBlockByRoot: requested.Add);
+
+        var unknownRoot = new Bytes32(Enumerable.Repeat((byte)0xAB, 32).ToArray());
+        var attestation = new SignedAttestation(
+            0,
+            new AttestationData(
+                new Slot(0),
+                new Checkpoint(store.HeadRoot, new Slot(0)),
+                new Checkpoint(store.HeadRoot, new Slot(0)),
+                new Checkpoint(unknownRoot, new Slot(0))),
+            XmssSignature.Empty());
+
+        Assert.That(store.TryOnAttestation(attestation, out var reason), Is.False);
+        Assert.That(reason, Does.StartWith("Unknown source root"));
+        Assert.That(requested, Does.Contain(unknownRoot),
+            "Expected unknown source root to be queued for backfill");
+    }
+
+    [Test]
     public void ComputeTargetCheckpoint_LoadedCheckpointAnchor_DoesNotReturnZeroRoot()
     {
         var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());

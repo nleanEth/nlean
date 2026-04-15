@@ -54,12 +54,20 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         Merged
     }
 
+    // Callback for requesting a block by root when fork choice / attestation
+    // validation encounters a root that's not in proto-array. Wired to the
+    // SyncService's BackfillTrigger by ConsensusServiceV2. Optional so tests
+    // that don't need sync behavior can skip it.
+    private readonly Action<Bytes32>? _requestBlockByRoot;
+
     public ProtoArrayForkChoiceStore(
         ConsensusConfig config,
         IConsensusStateStore? stateStore = null,
-        ILogger<ProtoArrayForkChoiceStore>? logger = null)
+        ILogger<ProtoArrayForkChoiceStore>? logger = null,
+        Action<Bytes32>? requestBlockByRoot = null)
     {
         ArgumentNullException.ThrowIfNull(config);
+        _requestBlockByRoot = requestBlockByRoot;
 
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
         _localValidatorIds = config.LocalValidatorIds;
@@ -809,6 +817,21 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         if (canonicalJustified.Slot.Value >= _latestJustified.Slot.Value)
         {
             _latestJustified = canonicalJustified;
+
+            // 2/3 supermajority already formed on this root — it is the canonically
+            // justified block. If we don't have it locally (e.g. the attestations
+            // that justified it referenced a minority fork we never saw, included
+            // in a canonical block we did process), trigger a BlocksByRoot fetch
+            // so the block arrives and subsequent local attestations referencing
+            // it as source no longer fail with "Unknown source root".
+            if (!_protoArray.ContainsBlock(canonicalJustified.Root))
+            {
+                _logger.LogWarning(
+                    "Justified advanced to unknown block, queueing backfill. Slot: {Slot}, Root: {Root}",
+                    canonicalJustified.Slot.Value,
+                    Convert.ToHexString(canonicalJustified.Root.AsSpan()));
+                _requestBlockByRoot?.Invoke(canonicalJustified.Root);
+            }
         }
 
         if (canonicalFinalized.Slot.Value <= _latestFinalized.Slot.Value)
@@ -1011,19 +1034,22 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         if (!_protoArray.ContainsBlock(data.Source.Root))
         {
-            reason = $"Unknown source root {data.Source.Root}.";
+            _requestBlockByRoot?.Invoke(data.Source.Root);
+            reason = $"Unknown source root {Convert.ToHexString(data.Source.Root.AsSpan())}.";
             return false;
         }
 
         if (!_protoArray.ContainsBlock(data.Target.Root))
         {
-            reason = $"Unknown target root {data.Target.Root}.";
+            _requestBlockByRoot?.Invoke(data.Target.Root);
+            reason = $"Unknown target root {Convert.ToHexString(data.Target.Root.AsSpan())}.";
             return false;
         }
 
         if (!_protoArray.ContainsBlock(data.Head.Root))
         {
-            reason = $"Unknown head root {data.Head.Root}.";
+            _requestBlockByRoot?.Invoke(data.Head.Root);
+            reason = $"Unknown head root {Convert.ToHexString(data.Head.Root.AsSpan())}.";
             return false;
         }
 

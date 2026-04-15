@@ -58,6 +58,11 @@ public sealed class SyncService : ISyncService
         return _peerManager.GetNetworkHeadSlot();
     }
 
+    public void RequestBlockByRoot(Bytes32 blockRoot)
+    {
+        _backfillSync.RequestBackfill(blockRoot);
+    }
+
     public void OnPeerConnected(string peerId)
     {
         _peerManager.AddPeer(peerId);
