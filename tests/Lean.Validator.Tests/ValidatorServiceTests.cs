@@ -291,6 +291,57 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_ProposerSlot_SkipsBlockWhenPostStateJustifiedLagsStoreJustified()
+    {
+        // Matches leanSpec PR 595 invariant: when store.latest_justified has been
+        // advanced by a minority fork's attestations but the head chain's parent
+        // state has not caught up, the fixed-point attestation loop in
+        // BuildAggregatedAttestations may fail to close the divergence (the pool
+        // does not contain the attestations needed). The produced block would
+        // carry a stale justified, degrading consensus liveness for all peers
+        // processing it. Proposer must skip rather than publish such a block.
+        var consensus = new FakeConsensusService
+        {
+            CurrentSlotValue = 1,
+            JustifiedSlotValue = 10,
+            // Simulate: store.JustifiedSlot = 10, but post-state (parent + pool)
+            // resolves only up to slot 5 — divergence unclosed.
+            TryComputeBlockStateRootPostJustified = new Checkpoint(Bytes32.Zero(), new Slot(5)),
+        };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig
+            {
+                ValidatorIndex = 1,
+                GenesisValidatorKeys = new (string, string)[]
+                {
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
+                }
+            },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(1, 0);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(
+            network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
+            Is.False,
+            "Proposer should not publish a block whose post-state justified lags the store's justified");
+        Assert.That(
+            consensus.TryApplyLocalBlockCalls,
+            Is.EqualTo(0),
+            "Proposer should skip TryApplyLocalBlock when invariant fails");
+    }
+
+    [Test]
     public async Task DutyLoop_ProposerSlot_PublishesBlockAndSkipsStandaloneAttestation()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 1 };
@@ -965,9 +1016,13 @@ public sealed class ValidatorServiceTests
 
         public ulong HeadSlot => 1;
 
-        public ulong JustifiedSlot => 0;
+        public ulong JustifiedSlotValue { get; set; } = 0;
+
+        public ulong JustifiedSlot => JustifiedSlotValue;
 
         public ulong FinalizedSlot => 0;
+
+        public Checkpoint? TryComputeBlockStateRootPostJustified { get; set; }
 
         public bool HasUnknownBlockRootsInFlight => HasUnknownBlockRootsInFlightValue;
 
@@ -996,7 +1051,7 @@ public sealed class ValidatorServiceTests
         {
             TryComputeBlockStateRootCalls++;
             stateRoot = Bytes32.Zero();
-            postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
+            postJustified = TryComputeBlockStateRootPostJustified ?? new Checkpoint(Bytes32.Zero(), new Slot(0));
             reason = string.Empty;
             return true;
         }

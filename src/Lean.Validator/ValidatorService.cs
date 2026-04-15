@@ -470,12 +470,29 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             Bytes32.Zero(),
             new BlockBody(aggregatedAttestations));
 
-        if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out var computedStateRoot, out var computeReason))
+        if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out var computedStateRoot, out var postJustified, out var computeReason))
         {
             _logger.LogWarning(
                 "Cannot construct proposer block for slot {Slot}: failed to compute state root. Reason: {Reason}",
                 slot,
                 computeReason);
+            return false;
+        }
+
+        // leanSpec PR 595 invariant: produced block must close any justified
+        // divergence between the store and the head chain. If the fixed-point
+        // attestation loop failed to converge (e.g. pool lacks attestations
+        // from a minority fork that advanced store.latest_justified), publishing
+        // this block would leave peers unable to see the justify advance —
+        // degrading liveness. Skip the slot rather than broadcast a stale block.
+        var storeJustifiedSlot = _consensusService.JustifiedSlot;
+        if (postJustified.Slot.Value < storeJustifiedSlot)
+        {
+            _logger.LogWarning(
+                "Skipping proposer block for slot {Slot}: produced block justified={ProducedJustified} < store justified={StoreJustified}. Fixed-point attestation loop did not converge.",
+                slot,
+                postJustified.Slot.Value,
+                storeJustifiedSlot);
             return false;
         }
 
