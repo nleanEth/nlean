@@ -110,6 +110,7 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=devnet3,enable=${{ contains(github.ref, 'devnet3') }}
+            type=raw,value=devnet4,enable=${{ contains(github.ref, 'devnet4') }}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
 
       - name: Create manifest list and push
