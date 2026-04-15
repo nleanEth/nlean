@@ -14,9 +14,10 @@ public interface IConsensusService
     AttestationData CreateAttestationData(ulong slot);
     bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out string reason);
     bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason);
-    bool TryApplyLocalBlock(SignedBlockWithAttestation signedBlock, out string reason);
+    bool TryApplyLocalBlock(SignedBlock signedBlock, out string reason);
     bool TryApplyLocalAttestation(SignedAttestation signedAttestation, out string reason);
     bool TryApplyLocalAggregatedAttestation(SignedAggregatedAttestation signed, out string reason);
+    bool ApplyLocalAggregationResult(SignedAggregatedAttestation signed, out string reason);
     (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource);
     List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation();
     Task StartAsync(CancellationToken cancellationToken);

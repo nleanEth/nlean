@@ -10,7 +10,21 @@ public static class LeanReqRespCodec
 {
     public const int RootLength = 32;
     public const int MaxBlocksByRootRequestRoots = 1024;
-    public const int MaxRpcPayloadBytes = 4 * 1024 * 1024;
+
+    /// <summary>Maximum uncompressed payload size (10 MiB), per consensus spec.</summary>
+    public const int MaxPayloadSize = 10 * 1024 * 1024;
+
+    /// <summary>
+    /// Snappy worst-case compressed length for a payload of size n.
+    /// See https://github.com/google/snappy/blob/32ded457/snappy.cc#L218
+    /// </summary>
+    public static int MaxCompressedLen(int n) => 32 + n + n / 6;
+
+    /// <summary>
+    /// Spec-derived maximum message size: snappy worst-case of MaxPayloadSize + 1024 bytes
+    /// framing overhead, with a floor of 1 MiB.
+    /// </summary>
+    public static readonly int MaxMessageSize = Math.Max(MaxCompressedLen(MaxPayloadSize) + 1024, 1024 * 1024);
     private const int BlocksByRootRootsOffset = sizeof(uint);
     private const int SnappyStreamIdentifierLength = 10;
     private const int SnappyChunkHeaderLength = 4;
@@ -530,9 +544,9 @@ public static class LeanReqRespCodec
 
     private static void ValidatePayloadLength(int payloadLength)
     {
-        if (payloadLength is < 0 or > MaxRpcPayloadBytes)
+        if (payloadLength is < 0 or > MaxPayloadSize)
         {
-            throw new InvalidOperationException($"RPC payload length {payloadLength} is outside allowed range [0, {MaxRpcPayloadBytes}].");
+            throw new InvalidOperationException($"RPC payload length {payloadLength} is outside allowed range [0, {MaxPayloadSize}].");
         }
     }
 

@@ -123,7 +123,7 @@ public sealed class XmssSignature
     /// <summary>
     /// XMSS signature byte length produced by leanSig.
     /// </summary>
-    public const int Length = 3112;
+    public const int Length = 2536;
 
     /// <summary>
     /// Construct a structured XmssSignature from typed fields.

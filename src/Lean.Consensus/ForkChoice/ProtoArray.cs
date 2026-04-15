@@ -68,7 +68,7 @@ public sealed class ProtoArray
     /// Zeam-style two-pass delta application.
     /// Pass 1: apply deltas to node weights and propagate to parents.
     /// Pass 2: recompute BestChild/BestDescendant with cutoffWeight filter.
-    /// Tie-break: weight → slot → root (lexicographic).
+    /// Tie-break: weight → root (lexicographic, higher hex wins).
     /// </summary>
     public void ApplyDeltas(long[] deltas, long cutoffWeight)
     {
@@ -108,10 +108,9 @@ public sealed class ProtoArray
             {
                 var currentBest = _nodes[currentBestIdx];
 
-                // Compare: weight → slot → root
+                // Compare: weight → root (higher hex wins)
                 if (node.Weight > currentBest.Weight ||
-                    (node.Weight == currentBest.Weight && node.Slot > currentBest.Slot) ||
-                    (node.Weight == currentBest.Weight && node.Slot == currentBest.Slot &&
+                    (node.Weight == currentBest.Weight &&
                      string.Compare(RootKey(node.Root), RootKey(currentBest.Root),
                          StringComparison.Ordinal) > 0))
                 {
@@ -208,6 +207,17 @@ public sealed class ProtoArray
     {
         foreach (var node in _nodes)
             yield return (node.Root, node.Slot, node.ParentRoot);
+    }
+
+    /// <summary>
+    /// Returns all nodes as (root, slot, parentRoot, weight) tuples for snapshot export.
+    /// </summary>
+    public IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> GetAllNodes()
+    {
+        var result = new List<(Bytes32, ulong, Bytes32, long)>(_nodes.Count);
+        foreach (var node in _nodes)
+            result.Add((node.Root, node.Slot, node.ParentRoot, node.Weight));
+        return result;
     }
 
     // TODO: Replace hex-string dictionary keys with Bytes32 directly.

@@ -12,8 +12,6 @@ public sealed class LeanMultiSigInteropTests
         {
             var leanSig = new RustLeanSig();
             var leanMultiSig = new RustLeanMultiSig();
-            leanMultiSig.SetupProver();
-            leanMultiSig.SetupVerifier();
 
             var message = new byte[RustLeanSig.MessageLength];
             var epoch = 10u;

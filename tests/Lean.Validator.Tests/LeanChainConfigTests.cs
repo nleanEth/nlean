@@ -32,7 +32,7 @@ public sealed class LeanChainConfigTests
         var chainConfigPath = Path.Combine(tempDir.Path, "config.yaml");
 
         File.WriteAllText(validatorConfigPath, "validators: []");
-        File.WriteAllText(chainConfigPath, "GENESIS_VALIDATORS:\n  - \"0x01\"\n  - \"0x02\"\n");
+        File.WriteAllText(chainConfigPath, "GENESIS_VALIDATORS:\n  - attestation_pubkey: \"0x01\"\n    proposal_pubkey: \"0x02\"\n  - attestation_pubkey: \"0x03\"\n    proposal_pubkey: \"0x04\"\n");
 
         var config = LeanChainConfig.TryLoad(validatorConfigPath);
 

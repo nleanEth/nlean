@@ -6,7 +6,7 @@ public interface ISyncService
 {
     SyncState State { get; }
     ulong GetNetworkHeadSlot();
-    Task OnGossipBlockAsync(SignedBlockWithAttestation block, Bytes32 blockRoot, string? peerId);
+    Task OnGossipBlockAsync(SignedBlock block, Bytes32 blockRoot, string? peerId);
     Task OnGossipAttestationAsync(SignedAttestation attestation);
     Task OnPeerStatusAsync(string peerId, ulong headSlot, ulong finalizedSlot, Bytes32? headRoot = null);
     void TrySyncFromBestPeer();

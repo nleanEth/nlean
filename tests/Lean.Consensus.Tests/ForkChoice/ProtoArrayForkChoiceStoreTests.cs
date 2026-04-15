@@ -45,6 +45,74 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void Constructor_LoadedCheckpointStateWithDistinctJustified_RegistersJustifiedInProtoArray()
+    {
+        // When restarting from a persisted ConsensusHeadState where the justified root
+        // differs from both the finalized root and the head root (the common case after
+        // the chain has been running), the proto-array must still contain justifiedRoot
+        // so that local validators building attestations with Source = current justified
+        // are not rejected with "Unknown source root".
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+
+        var persisted = new ConsensusHeadState(
+            headSlot: 50,
+            headRoot: headRoot.AsSpan(),
+            latestJustifiedSlot: 40,
+            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestFinalizedSlot: 30,
+            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            safeTargetSlot: 30,
+            safeTargetRoot: finalizedRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        Assert.That(store.ContainsBlock(justifiedRoot), Is.True,
+            "justifiedRoot must be registered in proto-array after checkpoint load so local attestations can reference it as Source");
+    }
+
+    [Test]
+    public void TryOnAttestation_WithLoadedDistinctJustifiedAsSource_IsAccepted()
+    {
+        // End-to-end repro of the devnet-observed "Unknown source root" stall.
+        // Setup mirrors a node that restarted mid-chain where justified has advanced
+        // past finalized, and head is ahead of both. A local attestation with
+        // Source = loaded justified must not be rejected.
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+
+        var persisted = new ConsensusHeadState(
+            headSlot: 50,
+            headRoot: headRoot.AsSpan(),
+            latestJustifiedSlot: 40,
+            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestFinalizedSlot: 30,
+            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            safeTargetSlot: 30,
+            safeTargetRoot: finalizedRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        var attestation = new SignedAttestation(
+            0,
+            new AttestationData(
+                new Slot(51),
+                new Checkpoint(headRoot, new Slot(50)),
+                new Checkpoint(justifiedRoot, new Slot(40)),
+                new Checkpoint(store.JustifiedRoot, new Slot(store.JustifiedSlot))),
+            XmssSignature.Empty());
+
+        Assert.That(store.TryOnAttestation(attestation, out var reason), Is.True,
+            $"Expected attestation with Source = loaded justified to be accepted, got: {reason}");
+    }
+
+    [Test]
     public void ComputeTargetCheckpoint_LoadedCheckpointAnchor_DoesNotReturnZeroRoot()
     {
         var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
@@ -570,6 +638,125 @@ public sealed class ProtoArrayForkChoiceStoreTests
         Assert.That(store.HasGossipSignature(0, attDataRoot), Is.False);
     }
 
+    [Test]
+    public void OnBlock_RejectsDuplicateAttestationData()
+    {
+        var store = CreateStore(validatorCount: 4);
+        var genesisRoot = store.HeadRoot;
+
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        ApplyBlock(store, WrapBlock(block1), 4);
+        var block1Root = new Bytes32(block1.HashTreeRoot());
+
+        // Create a block with two attestations referencing the SAME data.
+        var attData = new AttestationData(
+            new Slot(1),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(genesisRoot, new Slot(0)));
+
+        var bits1 = AggregationBits.FromValidatorIndices(new ulong[] { 0, 1 });
+        var bits2 = AggregationBits.FromValidatorIndices(new ulong[] { 2, 3 });
+        var att1 = new AggregatedAttestation(bits1, attData);
+        var att2 = new AggregatedAttestation(bits2, attData);
+        var body = new BlockBody(new[] { att1, att2 });
+        var block2 = new Block(new Slot(2), 1, block1Root, Bytes32.Zero(), body);
+
+        var proof1 = new AggregatedSignatureProof(bits1, new byte[32]);
+        var proof2 = new AggregatedSignatureProof(bits2, new byte[32]);
+        var sig = new BlockSignatures(new[] { proof1, proof2 }, XmssSignature.Empty());
+        var signed2 = new SignedBlock(block2, sig);
+
+        var result = ApplyBlock(store, signed2, 4);
+        Assert.That(result.Accepted, Is.False);
+        Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.InvalidAttestation));
+    }
+
+    [Test]
+    public void OnBlock_AcceptsDistinctAttestationData()
+    {
+        var store = CreateStore(validatorCount: 4);
+        var genesisRoot = store.HeadRoot;
+
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        ApplyBlock(store, WrapBlock(block1), 4);
+        var block1Root = new Bytes32(block1.HashTreeRoot());
+
+        var block2 = CreateBlock(slot: 2, parentRoot: block1Root, proposerIndex: 1);
+        ApplyBlock(store, WrapBlock(block2), 4);
+        var block2Root = new Bytes32(block2.HashTreeRoot());
+
+        // Two attestations with DIFFERENT data (different slots).
+        var attData1 = new AttestationData(
+            new Slot(1),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(block1Root, new Slot(1)),
+            new Checkpoint(genesisRoot, new Slot(0)));
+        var attData2 = new AttestationData(
+            new Slot(2),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(genesisRoot, new Slot(0)));
+
+        var bits1 = AggregationBits.FromValidatorIndices(new ulong[] { 0, 1 });
+        var bits2 = AggregationBits.FromValidatorIndices(new ulong[] { 2, 3 });
+        var att1 = new AggregatedAttestation(bits1, attData1);
+        var att2 = new AggregatedAttestation(bits2, attData2);
+        var body = new BlockBody(new[] { att1, att2 });
+        var block3 = new Block(new Slot(3), 2, block2Root, Bytes32.Zero(), body);
+
+        var proof1 = new AggregatedSignatureProof(bits1, new byte[32]);
+        var proof2 = new AggregatedSignatureProof(bits2, new byte[32]);
+        var sig = new BlockSignatures(new[] { proof1, proof2 }, XmssSignature.Empty());
+        var signed3 = new SignedBlock(block3, sig);
+
+        var result = ApplyBlock(store, signed3, 4);
+        Assert.That(result.Accepted, Is.True);
+    }
+
+    [Test]
+    public void OnBlock_RejectsExceedingMaxAttestationsData()
+    {
+        var store = CreateStore(validatorCount: 4);
+        var genesisRoot = store.HeadRoot;
+
+        // Build enough blocks to have distinct roots for each attestation data.
+        var parentRoot = genesisRoot;
+        var blockRoots = new List<Bytes32> { genesisRoot };
+        for (ulong s = 1; s <= 20; s++)
+        {
+            var b = CreateBlock(slot: s, parentRoot: parentRoot, proposerIndex: s % 4);
+            ApplyBlock(store, WrapBlock(b), 4);
+            parentRoot = new Bytes32(b.HashTreeRoot());
+            blockRoots.Add(parentRoot);
+        }
+
+        // Create a block with MAX_ATTESTATIONS_DATA + 1 distinct attestation data entries.
+        var attestations = new List<AggregatedAttestation>();
+        var proofs = new List<AggregatedSignatureProof>();
+        for (var i = 0; i < SszEncoding.MaxAttestationsData + 1; i++)
+        {
+            var root = blockRoots[Math.Min(i + 1, blockRoots.Count - 1)];
+            var attData = new AttestationData(
+                new Slot((ulong)(i + 1)),
+                new Checkpoint(root, new Slot((ulong)(i + 1))),
+                new Checkpoint(root, new Slot((ulong)(i + 1))),
+                new Checkpoint(genesisRoot, new Slot(0)));
+            var bits = AggregationBits.FromValidatorIndices(new ulong[] { 0 });
+            attestations.Add(new AggregatedAttestation(bits, attData));
+            proofs.Add(new AggregatedSignatureProof(bits, new byte[32]));
+        }
+
+        var body = new BlockBody(attestations);
+        var overBlock = new Block(new Slot(21), 0, parentRoot, Bytes32.Zero(), body);
+        var sig = new BlockSignatures(proofs, XmssSignature.Empty());
+        var signed = new SignedBlock(overBlock, sig);
+
+        var result = ApplyBlock(store, signed, 4);
+        Assert.That(result.Accepted, Is.False);
+        Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.InvalidAttestation));
+    }
+
     private static ProtoArrayForkChoiceStore CreateStore(ulong validatorCount = 1)
     {
         var config = new ConsensusConfig { InitialValidatorCount = validatorCount };
@@ -582,7 +769,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     /// </summary>
     private static ForkChoiceApplyResult ApplyBlock(
         ProtoArrayForkChoiceStore store,
-        SignedBlockWithAttestation signed,
+        SignedBlock signed,
         ulong validatorCount = 1)
     {
         var genesisCheckpoint = new Checkpoint(store.JustifiedRoot, new Slot(store.JustifiedSlot));
@@ -595,14 +782,11 @@ public sealed class ProtoArrayForkChoiceStoreTests
         return new Block(new Slot(slot), proposerIndex, parentRoot, Bytes32.Zero(), body);
     }
 
-    private static SignedBlockWithAttestation WrapBlock(Block block)
+    private static SignedBlock WrapBlock(Block block)
     {
-        var attestation = new Attestation(0, new AttestationData(
-            block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), emptyXmssSig);
-        return new SignedBlockWithAttestation(blockWithAttestation, signature);
+        return new SignedBlock(block, signature);
     }
 
     /// <summary>
@@ -610,7 +794,7 @@ public sealed class ProtoArrayForkChoiceStoreTests
     /// participants. Per leanSpec, fork-choice votes are only updated through on_block
     /// (block-body attestations), not from gossip.
     /// </summary>
-    private static SignedBlockWithAttestation CreateBlockWithAttestations(
+    private static SignedBlock CreateBlockWithAttestations(
         ulong slot, Bytes32 parentRoot, ulong proposerIndex,
         AttestationData attestationData, ulong[] participantIds)
     {
@@ -619,15 +803,11 @@ public sealed class ProtoArrayForkChoiceStoreTests
         var body = new BlockBody(new[] { aggregatedAtt });
         var block = new Block(new Slot(slot), proposerIndex, parentRoot, Bytes32.Zero(), body);
 
-        var proposerAttestation = new Attestation(proposerIndex, new AttestationData(
-            new Slot(slot), Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, proposerAttestation);
-
         var proof = new AggregatedSignatureProof(bits, new byte[32]);
         var emptyXmssSig = XmssSignature.Empty();
         var signature = new BlockSignatures(new[] { proof }, emptyXmssSig);
 
-        return new SignedBlockWithAttestation(blockWithAttestation, signature);
+        return new SignedBlock(block, signature);
     }
 
     private static SignedAttestation CreateAttestation(ulong validatorId, ulong slot, Bytes32 headRoot)

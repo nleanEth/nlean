@@ -85,6 +85,43 @@ public sealed class BackfillSyncTests
     }
 
     [Test]
+    public async Task RequestParents_StopsAtFinalizedFloor()
+    {
+        var (backfill, network, processor, peerMgr) = CreateBackfillSync();
+        peerMgr.AddPeer("peer-1");
+
+        // Finalized at slot 100 — backfill should not walk past this.
+        processor.FinalizedSlot = 100;
+
+        // Create a chain: slot 102 -> slot 101 -> slot 100 -> slot 99 (below finalized)
+        var root99 = MakeRoot(0x99);
+        var block100 = MakeSignedBlock(root99, slot: 100);
+        var root100 = ComputeRoot(block100);
+        network.BlocksByRoot[root100] = block100;
+
+        var block101 = MakeSignedBlock(root100, slot: 101);
+        var root101 = ComputeRoot(block101);
+        network.BlocksByRoot[root101] = block101;
+
+        var block102 = MakeSignedBlock(root101, slot: 102);
+        var root102 = ComputeRoot(block102);
+        network.BlocksByRoot[root102] = block102;
+
+        // Also provide block99 on the network (should NOT be fetched)
+        var root98 = MakeRoot(0x98);
+        var block99 = MakeSignedBlock(root98, slot: 99);
+        network.BlocksByRoot[root99] = block99;
+
+        await backfill.RequestParentsAsync(new List<Bytes32> { root102 }, CancellationToken.None);
+
+        // block100 is at the finalized floor — its parent (root99) should NOT be enqueued.
+        // Without the fix this would walk to root99, root98, etc. for up to maxDepth.
+        // With the fix, we stop at block100 and never fetch block99.
+        Assert.That(network.RequestCount, Is.LessThanOrEqualTo(3),
+            "Backfill should stop at finalized floor, not walk past it");
+    }
+
+    [Test]
     public async Task RequestParents_UpdatesPeerScoreOnSuccess()
     {
         var (backfill, network, processor, peerMgr) = CreateBackfillSync();
@@ -410,32 +447,29 @@ public sealed class BackfillSyncTests
     private static Bytes32 MakeRoot(byte fill) =>
         new(Enumerable.Repeat(fill, 32).ToArray());
 
-    private static Bytes32 ComputeRoot(SignedBlockWithAttestation signedBlock) =>
-        new(signedBlock.Message.Block.HashTreeRoot());
+    private static Bytes32 ComputeRoot(SignedBlock signedBlock) =>
+        new(signedBlock.Block.HashTreeRoot());
 
-    private static SignedBlockWithAttestation MakeSignedBlock(Bytes32 parentRoot, ulong slot)
+    private static SignedBlock MakeSignedBlock(Bytes32 parentRoot, ulong slot)
     {
         var body = new BlockBody(Array.Empty<AggregatedAttestation>());
         var block = new Block(new Slot(slot), 0, parentRoot, Bytes32.Zero(), body);
-        var attestation = new Attestation(0, new AttestationData(
-            block.Slot, Checkpoint.Default(), Checkpoint.Default(), Checkpoint.Default()));
-        var blockWithAttestation = new BlockWithAttestation(block, attestation);
         var sig = new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty());
-        return new SignedBlockWithAttestation(blockWithAttestation, sig);
+        return new SignedBlock(block, sig);
     }
 
     private sealed class FakeNetworkRequester : INetworkRequester
     {
-        public Dictionary<Bytes32, SignedBlockWithAttestation> BlocksByRoot { get; } = new();
+        public Dictionary<Bytes32, SignedBlock> BlocksByRoot { get; } = new();
         public List<string> RequestedPeers { get; } = new();
         public int RequestCount { get; private set; }
 
-        public Task<List<SignedBlockWithAttestation>> RequestBlocksByRootAsync(
+        public Task<List<SignedBlock>> RequestBlocksByRootAsync(
             string peerId, List<Bytes32> roots, CancellationToken ct)
         {
             RequestCount++;
             RequestedPeers.Add(peerId);
-            var result = new List<SignedBlockWithAttestation>();
+            var result = new List<SignedBlock>();
             foreach (var root in roots)
             {
                 if (BlocksByRoot.TryGetValue(root, out var block))
@@ -450,19 +484,20 @@ public sealed class BackfillSyncTests
     {
         public HashSet<Bytes32> KnownRoots { get; } = new();
         public HashSet<Bytes32> StateReadyRoots { get; } = new();
-        public List<SignedBlockWithAttestation> ProcessedBlocks { get; } = new();
+        public List<SignedBlock> ProcessedBlocks { get; } = new();
         public ulong HeadSlot { get; private set; }
+        public ulong FinalizedSlot { get; set; }
 
         public bool IsBlockKnown(Bytes32 root) => KnownRoots.Contains(root);
         public bool HasState(Bytes32 root) => StateReadyRoots.Contains(root);
 
-        public ForkChoiceApplyResult ProcessBlock(SignedBlockWithAttestation signedBlock)
+        public ForkChoiceApplyResult ProcessBlock(SignedBlock signedBlock)
         {
             ProcessedBlocks.Add(signedBlock);
-            var root = new Bytes32(signedBlock.Message.Block.HashTreeRoot());
+            var root = new Bytes32(signedBlock.Block.HashTreeRoot());
             KnownRoots.Add(root);
             StateReadyRoots.Add(root);
-            HeadSlot = Math.Max(HeadSlot, signedBlock.Message.Block.Slot.Value);
+            HeadSlot = Math.Max(HeadSlot, signedBlock.Block.Slot.Value);
             return ForkChoiceApplyResult.AcceptedResult(false, HeadSlot, root);
         }
     }

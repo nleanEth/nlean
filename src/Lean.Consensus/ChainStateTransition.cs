@@ -191,10 +191,26 @@ internal sealed class ChainStateTransition
                 Bytes32.Zero(),
                 new Bytes32(block.Body.HashTreeRoot()));
 
-            // NOTE: Multiple aggregated attestations with the same AttestationData are
-            // allowed. Different validator subsets may attest to the same checkpoint and
-            // arrive as separate aggregates. The vote accumulation uses bool[] per
-            // validator, so overlapping attestations are harmless (no double-counting).
+            // leanSpec PR #510: each AttestationData must appear at most once per block.
+            // Multiple proofs for the same data must be merged before inclusion.
+            if (block.Body.Attestations.Count > SszEncoding.MaxAttestationsData)
+            {
+                postState = default!;
+                reason = $"Block has {block.Body.Attestations.Count} attestations, exceeding max {SszEncoding.MaxAttestationsData}.";
+                return false;
+            }
+
+            var seenAttData = new HashSet<Bytes32>();
+            foreach (var att in block.Body.Attestations)
+            {
+                var attKey = new Bytes32(att.Data.HashTreeRoot());
+                if (!seenAttData.Add(attKey))
+                {
+                    postState = default!;
+                    reason = "Block contains duplicate AttestationData entries.";
+                    return false;
+                }
+            }
 
             if (justificationsRoots.Any(root => root.Equals(Bytes32.Zero())))
             {
@@ -214,11 +230,11 @@ internal sealed class ChainStateTransition
                 return false;
             }
 
-            var rootToSlot = new Dictionary<string, ulong>(StringComparer.Ordinal);
+            var rootToSlot = new Dictionary<Bytes32, ulong>();
             var startSlot = latestFinalized.Slot.Value + 1;
             for (var slot = startSlot; slot < (ulong)historicalBlockHashes.Count; slot++)
             {
-                rootToSlot[ToKey(historicalBlockHashes[(int)slot])] = slot;
+                rootToSlot[historicalBlockHashes[(int)slot]] = slot;
             }
 
             attestationsProcessingStopwatch.Start();
@@ -282,7 +298,7 @@ internal sealed class ChainStateTransition
                     continue;
                 }
 
-                var targetKey = ToKey(aggregated.Data.Target.Root);
+                var targetKey = aggregated.Data.Target.Root;
                 if (!justificationsMap.TryGetValue(targetKey, out var votes))
                 {
                     votes = new JustificationVotes(
@@ -354,7 +370,7 @@ internal sealed class ChainStateTransition
 
                 ShiftLeft(justifiedSlots, delta);
 
-                var obsoleteTargets = new List<string>();
+                var obsoleteTargets = new List<Bytes32>();
                 foreach (var (key, value) in justificationsMap)
                 {
                     // leanSpec: root_to_slots.get(root, []) — missing root yields [],
@@ -374,7 +390,7 @@ internal sealed class ChainStateTransition
 
             justificationsRoots = new List<Bytes32>(justificationsMap.Count);
             justificationsValidators = new List<bool>(justificationsMap.Count * validators.Count);
-            foreach (var key in justificationsMap.Keys.OrderBy(value => value, StringComparer.Ordinal))
+            foreach (var key in justificationsMap.Keys.OrderBy(value => value))
             {
                 var value = justificationsMap[key];
                 if (value.Votes.Length != validators.Count)
@@ -458,15 +474,17 @@ internal sealed class ChainStateTransition
     private IReadOnlyList<Validator> BuildGenesisValidators(ulong initialValidatorCount)
     {
         var validators = new List<Validator>();
-        for (var index = 0; index < _config.GenesisValidatorPublicKeys.Count; index++)
+        for (var index = 0; index < _config.GenesisValidatorKeys.Count; index++)
         {
-            var keyHex = _config.GenesisValidatorPublicKeys[index];
-            if (!TryParseHexBytes(keyHex, out var bytes) || bytes.Length != SszEncoding.Bytes52Length)
-            {
-                bytes = new byte[SszEncoding.Bytes52Length];
-            }
+            var (attestKeyHex, proposalKeyHex) = _config.GenesisValidatorKeys[index];
 
-            validators.Add(new Validator(new Bytes52(bytes), (ulong)index));
+            if (!TryParseHexBytes(attestKeyHex, out var attestBytes) || attestBytes.Length != SszEncoding.Bytes52Length)
+                attestBytes = new byte[SszEncoding.Bytes52Length];
+
+            if (!TryParseHexBytes(proposalKeyHex, out var proposalBytes) || proposalBytes.Length != SszEncoding.Bytes52Length)
+                proposalBytes = new byte[SszEncoding.Bytes52Length];
+
+            validators.Add(new Validator(new Bytes52(attestBytes), new Bytes52(proposalBytes), (ulong)index));
         }
 
         var targetCount = validators.Count > 0
@@ -474,7 +492,7 @@ internal sealed class ChainStateTransition
             : Math.Max(1UL, initialValidatorCount);
         while ((ulong)validators.Count < targetCount)
         {
-            validators.Add(new Validator(Bytes52.Zero(), (ulong)validators.Count));
+            validators.Add(new Validator(Bytes52.Zero(), Bytes52.Zero(), (ulong)validators.Count));
         }
 
         return validators;
@@ -484,10 +502,10 @@ internal sealed class ChainStateTransition
         IReadOnlyList<Bytes32> roots,
         IReadOnlyList<bool> flattenedVotes,
         int validatorCount,
-        out Dictionary<string, JustificationVotes> map,
+        out Dictionary<Bytes32, JustificationVotes> map,
         out string reason)
     {
-        map = new Dictionary<string, JustificationVotes>(StringComparer.Ordinal);
+        map = new Dictionary<Bytes32, JustificationVotes>();
         reason = string.Empty;
 
         if (validatorCount <= 0)
@@ -510,7 +528,7 @@ internal sealed class ChainStateTransition
                 votes[voteIndex] = flattenedVotes[start + voteIndex];
             }
 
-            map[ToKey(roots[index])] = new JustificationVotes(roots[index], votes);
+            map[roots[index]] = new JustificationVotes(roots[index], votes);
         }
 
         return true;
@@ -602,11 +620,6 @@ internal sealed class ChainStateTransition
         {
             return false;
         }
-    }
-
-    private static string ToKey(Bytes32 root)
-    {
-        return Convert.ToHexString(root.AsSpan());
     }
 
     private sealed class JustificationVotes

@@ -23,6 +23,8 @@ public sealed class NodeProcess : IDisposable
     private readonly bool _isAggregator;
     private readonly string _hashSigKeyDir;
     private readonly string? _checkpointSyncUrl;
+    private readonly int? _attestationCommitteeCount;
+    private readonly int[]? _aggregateSubnetIds;
 
     public string NodeName => _nodeName;
     public string DataDir => _dataDir;
@@ -41,7 +43,9 @@ public sealed class NodeProcess : IDisposable
         int metricsPort,
         bool isAggregator,
         string hashSigKeyDir,
-        string? checkpointSyncUrl = null)
+        string? checkpointSyncUrl = null,
+        int? attestationCommitteeCount = null,
+        int[]? aggregateSubnetIds = null)
     {
         _binaryPath = binaryPath;
         _validatorConfigPath = validatorConfigPath;
@@ -55,6 +59,8 @@ public sealed class NodeProcess : IDisposable
         _isAggregator = isAggregator;
         _hashSigKeyDir = hashSigKeyDir;
         _checkpointSyncUrl = checkpointSyncUrl;
+        _attestationCommitteeCount = attestationCommitteeCount;
+        _aggregateSubnetIds = aggregateSubnetIds;
     }
 
     public void Start()
@@ -80,6 +86,16 @@ public sealed class NodeProcess : IDisposable
         if (!string.IsNullOrWhiteSpace(_checkpointSyncUrl))
         {
             args.Append($" --checkpoint-sync-url {_checkpointSyncUrl}");
+        }
+
+        if (_attestationCommitteeCount.HasValue)
+        {
+            args.Append($" --attestation-committee-count {_attestationCommitteeCount.Value}");
+        }
+
+        if (_aggregateSubnetIds is { Length: > 0 })
+        {
+            args.Append($" --aggregate-subnet-ids {string.Join(",", _aggregateSubnetIds)}");
         }
 
         args.Append(" --log Information");

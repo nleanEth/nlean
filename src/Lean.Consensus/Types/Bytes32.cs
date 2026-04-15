@@ -3,7 +3,7 @@ using System.Buffers.Binary;
 using System.Linq;
 namespace Lean.Consensus.Types;
 
-public readonly struct Bytes32 : IEquatable<Bytes32>
+public readonly struct Bytes32 : IEquatable<Bytes32>, IComparable<Bytes32>
 {
     private static readonly byte[] ZeroBytes = new byte[32];
     private static readonly Bytes32 ZeroInstance = default;
@@ -40,4 +40,6 @@ public readonly struct Bytes32 : IEquatable<Bytes32>
             BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(16, 4)),
             BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(24, 4)));
     }
+
+    public int CompareTo(Bytes32 other) => AsSpan().SequenceCompareTo(other.AsSpan());
 }

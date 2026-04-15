@@ -32,43 +32,35 @@ public sealed class SszInteropLayoutTests
     }
 
     [Test]
-    public void SignedBlockWithAttestation_ZeroEncodingMatchesVariableSizeLayout()
+    public void SignedBlock_ZeroEncodingMatchesVariableSizeLayout()
     {
-        var signedBlock = new SignedBlockWithAttestation(
-            new BlockWithAttestation(
-                new Block(
-                    new Slot(0),
-                    0,
-                    Bytes32.Zero(),
-                    Bytes32.Zero(),
-                    new BlockBody(Array.Empty<AggregatedAttestation>())),
-                new Attestation(
-                    0,
-                    new AttestationData(
-                        new Slot(0),
-                        new Checkpoint(Bytes32.Zero(), new Slot(0)),
-                        new Checkpoint(Bytes32.Zero(), new Slot(0)),
-                        new Checkpoint(Bytes32.Zero(), new Slot(0))))),
+        var signedBlock = new SignedBlock(
+            new Block(
+                new Slot(0),
+                0,
+                Bytes32.Zero(),
+                Bytes32.Zero(),
+                new BlockBody(Array.Empty<AggregatedAttestation>())),
             new BlockSignatures(
                 Array.Empty<AggregatedSignatureProof>(),
                 XmssSignature.Empty()));
 
         var encoded = SszEncoding.Encode(signedBlock);
-        var messageBytes = SszEncoding.Encode(signedBlock.Message);
+        var blockBytes = SszEncoding.Encode(signedBlock.Block);
         var signatureBytes = SszEncoding.Encode(signedBlock.Signature);
 
-        // SignedBlockWithAttestation: 2 variable fields = 2 offsets (8 bytes fixed)
+        // SignedBlock: 2 variable fields = 2 offsets (8 bytes fixed)
         var fixedSize = SszEncoding.UInt32Length * 2;
-        Assert.That(encoded.Length, Is.EqualTo(fixedSize + messageBytes.Length + signatureBytes.Length));
+        Assert.That(encoded.Length, Is.EqualTo(fixedSize + blockBytes.Length + signatureBytes.Length));
 
         // Verify offsets
-        var messageOffset = BinaryPrimitives.ReadUInt32LittleEndian(encoded.AsSpan(0, 4));
+        var blockOffset = BinaryPrimitives.ReadUInt32LittleEndian(encoded.AsSpan(0, 4));
         var signatureOffset = BinaryPrimitives.ReadUInt32LittleEndian(encoded.AsSpan(4, 4));
-        Assert.That(messageOffset, Is.EqualTo(fixedSize));
-        Assert.That(signatureOffset, Is.EqualTo(fixedSize + messageBytes.Length));
+        Assert.That(blockOffset, Is.EqualTo(fixedSize));
+        Assert.That(signatureOffset, Is.EqualTo(fixedSize + blockBytes.Length));
 
         // Verify data
-        Assert.That(encoded.AsSpan((int)messageOffset, messageBytes.Length).ToArray(), Is.EqualTo(messageBytes));
+        Assert.That(encoded.AsSpan((int)blockOffset, blockBytes.Length).ToArray(), Is.EqualTo(blockBytes));
         Assert.That(encoded.AsSpan((int)signatureOffset, signatureBytes.Length).ToArray(), Is.EqualTo(signatureBytes));
     }
 

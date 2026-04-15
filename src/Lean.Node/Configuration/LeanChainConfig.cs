@@ -14,7 +14,7 @@ public sealed class LeanChainConfig
     public ulong? ValidatorCount { get; set; }
 
     [YamlMember(Alias = "GENESIS_VALIDATORS")]
-    public List<string>? GenesisValidators { get; set; }
+    public List<GenesisValidatorEntry>? GenesisValidators { get; set; }
 
     public static LeanChainConfig? TryLoad(string validatorConfigPath)
     {
@@ -42,4 +42,13 @@ public sealed class LeanChainConfig
 
         return deserializer.Deserialize<LeanChainConfig>(yaml);
     }
+}
+
+public sealed class GenesisValidatorEntry
+{
+    [YamlMember(Alias = "attestation_pubkey")]
+    public string AttestationPubkey { get; set; } = string.Empty;
+
+    [YamlMember(Alias = "proposal_pubkey")]
+    public string ProposalPubkey { get; set; } = string.Empty;
 }

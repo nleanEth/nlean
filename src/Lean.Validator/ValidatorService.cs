@@ -13,11 +13,17 @@ using Microsoft.Extensions.Logging;
 
 namespace Lean.Validator;
 
+public sealed record ValidatorKeyMaterial(
+    byte[] AttestationPublicKey,
+    byte[] AttestationSecretKey,
+    byte[] ProposalPublicKey,
+    byte[] ProposalSecretKey);
+
 public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 {
     // Keep block gossip payloads comfortably below 1 MiB across mixed-client devnets.
     // Individual aggregate proofs are often ~250 KiB, so 3 proofs keeps the full block SSZ size bounded.
-    private const int MaxAggregatedProofsPerBlock = 3;
+    private const int MaxAggregatedProofsPerBlock = SszEncoding.MaxAttestationsData;
 
     private static readonly Meter ValidatorMeter = new("Lean.Validator");
     private static readonly Counter<long> DutyRunsTotal = ValidatorMeter.CreateCounter<long>(
@@ -42,12 +48,12 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
     private readonly ILeanSig _leanSig;
     private readonly ILeanMultiSig _leanMultiSig;
     private readonly ISyncService? _syncService;
-    private readonly SignedBlockWithAttestationGossipDecoder _signedBlockDecoder = new();
+    private readonly SignedBlockGossipDecoder _signedBlockDecoder = new();
     private readonly Dictionary<ulong, byte[]> _validatorPublicKeys = new();
     private readonly object _dutyStateLock = new();
     private CancellationToken _shutdownToken;
     private int _started;
-    private readonly Dictionary<ulong, (byte[] PublicKey, byte[] SecretKey)> _localValidators = new();
+    private readonly Dictionary<ulong, ValidatorKeyMaterial> _localValidators = new();
     private byte[] _validatorPublicKey = Array.Empty<byte>();
     private byte[] _validatorSecretKey = Array.Empty<byte>();
     private ulong _validatorId;
@@ -155,14 +161,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 return;
             }
 
-            TryGetProposerForSlot(slot, out var slotProposer);
             foreach (var validatorId in _localValidators.Keys)
             {
-                if (validatorId == slotProposer && slotProposer != 0)
-                {
-                    continue;
-                }
-
                 await PublishStandaloneAttestationAsync(slot, validatorId, cancellationToken);
                 DutyRunsTotal.Add(1);
             }
@@ -220,7 +220,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private async Task PublishStandaloneAttestationAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
-        var (validatorPublicKey, validatorSecretKey) = _localValidators[validatorId];
+        var keys = _localValidators[validatorId];
         var attestationData = _consensusService.CreateAttestationData(slot);
         var headSlot = attestationData.Head.Slot.Value;
         var justifiedSlot = _consensusService.JustifiedSlot;
@@ -243,15 +243,15 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
         var messageRoot = attestationData.HashTreeRoot();
         var signingStopwatch = Stopwatch.StartNew();
-        var signatureBytes = _leanSig.Sign(validatorSecretKey, epoch, messageRoot);
+        var signatureBytes = _leanSig.Sign(keys.AttestationSecretKey, epoch, messageRoot);
         signingStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(signingStopwatch.Elapsed);
 
         var selfVerificationOk = true;
-        if (validatorPublicKey.Length > 0)
+        if (keys.AttestationPublicKey.Length > 0)
         {
             var verificationStopwatch = Stopwatch.StartNew();
-            selfVerificationOk = _leanSig.Verify(validatorPublicKey, epoch, messageRoot, signatureBytes);
+            selfVerificationOk = _leanSig.Verify(keys.AttestationPublicKey, epoch, messageRoot, signatureBytes);
             verificationStopwatch.Stop();
             LeanMetrics.RecordPqAttestationVerification(selfVerificationOk, verificationStopwatch.Elapsed);
         }
@@ -288,19 +288,22 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 validatorId);
         }
 
-        _logger.LogDebug(
-            "Attestation signed. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}, MessageRoot: {MessageRoot}, SignatureBytes: {SignatureBytes}, SelfVerified: {SelfVerified}",
-            slot,
-            validatorId,
-            attestationData.Head.Slot.Value,
-            attestationData.Target.Slot.Value,
-            attestationData.Source.Slot.Value,
-            Convert.ToHexString(attestationData.Head.Root.AsSpan()),
-            Convert.ToHexString(attestationData.Target.Root.AsSpan()),
-            Convert.ToHexString(attestationData.Source.Root.AsSpan()),
-            Convert.ToHexString(messageRoot),
-            signatureBytes.Length,
-            selfVerificationOk);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Attestation signed. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}, HeadRoot: {HeadRoot}, TargetRoot: {TargetRoot}, SourceRoot: {SourceRoot}, MessageRoot: {MessageRoot}, SignatureBytes: {SignatureBytes}, SelfVerified: {SelfVerified}",
+                slot,
+                validatorId,
+                attestationData.Head.Slot.Value,
+                attestationData.Target.Slot.Value,
+                attestationData.Source.Slot.Value,
+                Convert.ToHexString(attestationData.Head.Root.AsSpan()),
+                Convert.ToHexString(attestationData.Target.Root.AsSpan()),
+                Convert.ToHexString(attestationData.Source.Root.AsSpan()),
+                Convert.ToHexString(messageRoot),
+                signatureBytes.Length,
+                selfVerificationOk);
+        }
 
         TryDumpAttestation(slot, attestationPayload, messageRoot, signatureBytes, selfVerificationOk);
 
@@ -399,7 +402,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             // Store locally first so the proposer can include this aggregation
             // in the next block even if gossipsub does not deliver self-published
             // messages back to this node.
-            _consensusService.TryApplyLocalAggregatedAttestation(signed, out _);
+            _consensusService.ApplyLocalAggregationResult(signed, out _);
 
             await PublishToTopicAsync(_gossipTopics.AggregateTopic, payload, cancellationToken);
 
@@ -436,7 +439,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private async Task<bool> TryPublishProposerBlockAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
-        var (_, validatorSecretKey) = _localValidators[validatorId];
+        var keys = _localValidators[validatorId];
         var (parentRootBytes, baseAttestationData) = _consensusService.GetProposalContext(slot);
         if (parentRootBytes.Length != SszEncoding.Bytes32Length)
         {
@@ -467,7 +470,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             Bytes32.Zero(),
             new BlockBody(aggregatedAttestations));
 
-        if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out var computedStateRoot, out var computeReason))
+        if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out var computedStateRoot, out var postJustified, out var computeReason))
         {
             _logger.LogWarning(
                 "Cannot construct proposer block for slot {Slot}: failed to compute state root. Reason: {Reason}",
@@ -476,25 +479,35 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             return false;
         }
 
-        var block = candidateBlock with { StateRoot = computedStateRoot };
-        var blockRoot = new Bytes32(block.HashTreeRoot());
-
-        var proposerAttestationData = baseAttestationData with
+        // leanSpec PR 595 invariant: produced block must close any justified
+        // divergence between the store and the head chain. If the fixed-point
+        // attestation loop failed to converge (e.g. pool lacks attestations
+        // from a minority fork that advanced store.latest_justified), publishing
+        // this block would leave peers unable to see the justify advance —
+        // degrading liveness. Skip the slot rather than broadcast a stale block.
+        var storeJustifiedSlot = _consensusService.JustifiedSlot;
+        if (postJustified.Slot.Value < storeJustifiedSlot)
         {
-            Head = new Checkpoint(blockRoot, new Slot(slot)),
-        };
+            _logger.LogWarning(
+                "Skipping proposer block for slot {Slot}: produced block justified={ProducedJustified} < store justified={StoreJustified}. Fixed-point attestation loop did not converge.",
+                slot,
+                postJustified.Slot.Value,
+                storeJustifiedSlot);
+            return false;
+        }
 
-        var proposerMessageRoot = proposerAttestationData.HashTreeRoot();
+        var block = candidateBlock with { StateRoot = computedStateRoot };
+        var blockRoot = block.HashTreeRoot();
+
+        // Sign hash_tree_root(block) with PROPOSAL key
         var proposerSigningStopwatch = Stopwatch.StartNew();
-        var proposerSignatureBytes = _leanSig.Sign(validatorSecretKey, ToSignatureEpoch(slot), proposerMessageRoot);
+        var proposerSignatureBytes = _leanSig.Sign(keys.ProposalSecretKey, ToSignatureEpoch(slot), blockRoot);
         proposerSigningStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(proposerSigningStopwatch.Elapsed);
         var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
-        var proposerAttestation = new Attestation(validatorId, proposerAttestationData);
-        var signedProposerAttestation = new SignedAttestation(validatorId, proposerAttestationData, proposerSignature);
 
-        var signedBlock = new SignedBlockWithAttestation(
-            new BlockWithAttestation(block, proposerAttestation),
+        var signedBlock = new SignedBlock(
+            block,
             new BlockSignatures(aggregatedProofs, proposerSignature));
 
         if (!_consensusService.TryApplyLocalBlock(signedBlock, out var applyReason))
@@ -508,7 +521,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         }
 
         var payload = SszEncoding.Encode(signedBlock);
-        TryDumpProposerBlock(slot, payload, parentRoot, blockRoot, signedBlock);
+        var blockRootBytes32 = new Bytes32(blockRoot);
+        TryDumpProposerBlock(slot, payload, parentRoot, blockRootBytes32, signedBlock);
         await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
 
         _logger.LogInformation(
@@ -516,7 +530,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             slot,
             validatorId,
             Convert.ToHexString(parentRoot.AsSpan()),
-            Convert.ToHexString(blockRoot.AsSpan()),
+            Convert.ToHexString(blockRoot),
             aggregatedAttestations.Count,
             aggregatedProofs.Count);
         return true;
@@ -642,7 +656,10 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             return;
         }
 
-        // For each attestation data root, greedily cover remaining validators using known proofs.
+        // For each attestation data root, produce a single proof.
+        // leanSpec PR #510: each AttestationData must appear at most once per block.
+        // When multiple proofs exist for the same data, merge non-overlapping ones
+        // via recursive aggregation to maximize validator coverage.
         foreach (var entry in groups.OrderByDescending(g => g.Value.Data.Slot.Value).ThenBy(g => g.Key, StringComparer.Ordinal))
         {
             if (outputAttestations.Count >= MaxAggregatedProofsPerBlock)
@@ -652,63 +669,126 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
             var data = entry.Value.Data;
             var proofs = entry.Value.Proofs;
-            var remaining = new SortedSet<ulong>(entry.Value.Allowed);
 
-            while (outputAttestations.Count < MaxAggregatedProofsPerBlock && remaining.Count > 0)
+            AggregatedSignatureProof? mergedProof = TryMergeProofs(proofs, data);
+
+            if (mergedProof is null)
             {
-                var targetValidator = remaining.Min();
+                continue;
+            }
 
-                AggregatedSignatureProof? bestProof = null;
-                List<ulong>? bestCovered = null;
-                var maxCoverage = 0;
-                foreach (var candidateProof in proofs)
-                {
-                    if (!candidateProof.Participants.TryToValidatorIndices(out var proofParticipants) ||
-                        proofParticipants.Count == 0 ||
-                        !proofParticipants.Contains(targetValidator))
-                    {
-                        continue;
-                    }
+            var participants = CloneAggregationBits(mergedProof.Participants);
+            outputAttestations.Add(new AggregatedAttestation(participants, data));
+            outputProofs.Add(CloneAggregatedProof(mergedProof));
 
-                    var covered = proofParticipants.Where(remaining.Contains).ToList();
-                    if (covered.Count <= maxCoverage)
-                    {
-                        continue;
-                    }
-
-                    maxCoverage = covered.Count;
-                    bestProof = candidateProof;
-                    bestCovered = covered;
-                }
-
-                if (bestProof is null || bestCovered is null || bestCovered.Count == 0)
-                {
-                    break;
-                }
-
-                // Output attestation bits must match proof participants exactly.
-                var participants = CloneAggregationBits(bestProof.Participants);
-                outputAttestations.Add(new AggregatedAttestation(participants, data));
-                outputProofs.Add(CloneAggregatedProof(bestProof));
-
-                var participantIds = participants.TryToValidatorIndices(out var ids)
-                    ? string.Join(",", ids)
-                    : "none";
+            if (mergedProof.Participants.TryToValidatorIndices(out var ids))
+            {
                 _logger.LogDebug(
                     "Prepared block aggregate proof. Source: {Source}, Slot: {Slot}, TargetSlot: {TargetSlot}, Participants: [{Participants}], DataRoot: {DataRoot}, TargetRoot: {TargetRoot}, ProofBytes: {ProofBytes}",
                     source,
                     data.Slot.Value,
                     data.Target.Slot.Value,
-                    participantIds,
+                    string.Join(",", ids),
                     Convert.ToHexString(data.HashTreeRoot()),
                     Convert.ToHexString(data.Target.Root.AsSpan()),
-                    bestProof.ProofData.Length);
-
-                foreach (var vid in bestCovered)
-                {
-                    remaining.Remove(vid);
-                }
+                    mergedProof.ProofData.Length);
             }
+        }
+    }
+
+    /// <summary>
+    /// Given multiple proofs for the same AttestationData, greedily select non-overlapping
+    /// proofs and merge them via recursive aggregation. Returns the merged proof, or the
+    /// single best proof if only one is usable or merging fails.
+    /// </summary>
+    private AggregatedSignatureProof? TryMergeProofs(
+        List<AggregatedSignatureProof> proofs,
+        AttestationData data)
+    {
+        // Filter to proofs with valid participants.
+        var validProofs = new List<(AggregatedSignatureProof Proof, HashSet<ulong> Ids)>();
+        foreach (var proof in proofs)
+        {
+            if (proof.Participants.TryToValidatorIndices(out var ids) && ids.Count > 0)
+            {
+                validProofs.Add((proof, new HashSet<ulong>(ids)));
+            }
+        }
+
+        if (validProofs.Count == 0)
+            return null;
+
+        // Sort by coverage descending for greedy selection.
+        validProofs.Sort((a, b) => b.Ids.Count.CompareTo(a.Ids.Count));
+
+        if (validProofs.Count == 1)
+            return validProofs[0].Proof;
+
+        // Greedily select non-overlapping proofs to maximize coverage.
+        var selected = new List<(AggregatedSignatureProof Proof, HashSet<ulong> Ids)> { validProofs[0] };
+        var coveredIds = new HashSet<ulong>(validProofs[0].Ids);
+
+        for (var i = 1; i < validProofs.Count; i++)
+        {
+            var candidate = validProofs[i];
+            if (!candidate.Ids.Overlaps(coveredIds))
+            {
+                selected.Add(candidate);
+                coveredIds.UnionWith(candidate.Ids);
+            }
+        }
+
+        // If only one proof was selected (all others overlap), return it directly.
+        if (selected.Count == 1)
+            return selected[0].Proof;
+
+        // Merge via recursive aggregation.
+        // Each child needs its public keys (looked up from _validatorPublicKeys).
+        try
+        {
+            var children = new List<(IReadOnlyList<ReadOnlyMemory<byte>> PublicKeys, byte[] ProofData)>();
+            foreach (var (proof, ids) in selected)
+            {
+                var sortedIds = ids.OrderBy(id => id).ToList();
+                var pks = new List<ReadOnlyMemory<byte>>();
+                foreach (var id in sortedIds)
+                {
+                    if (_validatorPublicKeys.TryGetValue(id, out var pk))
+                    {
+                        pks.Add(pk);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Missing public key for validator {ValidatorId} during proof merge, falling back to best single proof",
+                            id);
+                        return selected[0].Proof;
+                    }
+                }
+                children.Add((pks, proof.ProofData));
+            }
+
+            var messageRoot = data.HashTreeRoot();
+            var epoch = ToSignatureEpoch(data.Slot.Value);
+
+            var mergedProofData = _leanMultiSig.AggregateRecursive(children, messageRoot, epoch);
+            var mergedParticipants = AggregationBits.FromValidatorIndices(coveredIds);
+
+            _logger.LogDebug(
+                "Merged {Count} proofs for AttestationData slot {Slot}: {OldCounts} -> {MergedCount} validators",
+                selected.Count,
+                data.Slot.Value,
+                string.Join("+", selected.Select(s => s.Ids.Count)),
+                coveredIds.Count);
+
+            return new AggregatedSignatureProof(mergedParticipants, mergedProofData);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to merge {Count} proofs via recursive aggregation, falling back to best single proof",
+                selected.Count);
+            return selected[0].Proof;
         }
     }
 
@@ -733,57 +813,93 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         for (var i = 0; i < indices.Count; i++)
         {
             var validatorId = indices[i];
-            var publicKeyPath = i < _validatorDutyConfig.AllPublicKeyPaths.Count
-                ? _validatorDutyConfig.AllPublicKeyPaths[i]
+
+            // Try attestation-specific key paths first, then fall back to legacy paths
+            var attestPublicKeyPath = i < _validatorDutyConfig.AllAttestationPublicKeyPaths.Count
+                ? _validatorDutyConfig.AllAttestationPublicKeyPaths[i]
                 : null;
-            var secretKeyPath = i < _validatorDutyConfig.AllSecretKeyPaths.Count
-                ? _validatorDutyConfig.AllSecretKeyPaths[i]
+            var attestSecretKeyPath = i < _validatorDutyConfig.AllAttestationSecretKeyPaths.Count
+                ? _validatorDutyConfig.AllAttestationSecretKeyPaths[i]
+                : null;
+            var proposalPublicKeyPath = i < _validatorDutyConfig.AllProposalPublicKeyPaths.Count
+                ? _validatorDutyConfig.AllProposalPublicKeyPaths[i]
+                : null;
+            var proposalSecretKeyPath = i < _validatorDutyConfig.AllProposalSecretKeyPaths.Count
+                ? _validatorDutyConfig.AllProposalSecretKeyPaths[i]
                 : null;
 
-            var configuredPublic = (i == 0 ? ParseHex(_validatorDutyConfig.PublicKeyHex) : null)
-                ?? ReadKeyFile(publicKeyPath, "public");
-            var derivedPublic = configuredPublic;
-            if (derivedPublic is null)
+            // Try attestation-specific hex config first, then fall back to legacy hex
+            var attestPublicHex = (i == 0 ? ParseHex(_validatorDutyConfig.AttestationPublicKeyHex) : null)
+                ?? (i == 0 ? ParseHex(_validatorDutyConfig.PublicKeyHex) : null);
+            var attestSecretHex = (i == 0 ? ParseHex(_validatorDutyConfig.AttestationSecretKeyHex) : null)
+                ?? (i == 0 ? ParseHex(_validatorDutyConfig.SecretKeyHex) : null);
+            var proposalPublicHex = (i == 0 ? ParseHex(_validatorDutyConfig.ProposalPublicKeyHex) : null);
+            var proposalSecretHex = (i == 0 ? ParseHex(_validatorDutyConfig.ProposalSecretKeyHex) : null);
+
+            // Resolve attestation public key
+            var configuredAttestPublic = attestPublicHex ?? ReadKeyFile(attestPublicKeyPath, "attestation public");
+            var derivedAttestPublic = configuredAttestPublic;
+            if (derivedAttestPublic is null)
             {
                 lock (_dutyStateLock)
                 {
                     if (_validatorPublicKeys.TryGetValue(validatorId, out var knownPublic) && knownPublic.Length > 0)
                     {
-                        derivedPublic = knownPublic.ToArray();
+                        derivedAttestPublic = knownPublic.ToArray();
                     }
                 }
             }
 
-            var configuredSecret = (i == 0 ? ParseHex(_validatorDutyConfig.SecretKeyHex) : null)
-                ?? ReadKeyFile(secretKeyPath, "secret");
-            if (derivedPublic is not null && configuredSecret is not null)
+            // Resolve attestation secret key
+            var configuredAttestSecret = attestSecretHex ?? ReadKeyFile(attestSecretKeyPath, "attestation secret");
+
+            // Resolve proposal public key
+            var configuredProposalPublic = proposalPublicHex ?? ReadKeyFile(proposalPublicKeyPath, "proposal public");
+
+            // Resolve proposal secret key
+            var configuredProposalSecret = proposalSecretHex ?? ReadKeyFile(proposalSecretKeyPath, "proposal secret");
+
+            if (configuredAttestSecret is not null)
             {
-                _localValidators[validatorId] = (derivedPublic, configuredSecret);
-            }
-            else if (configuredSecret is not null)
-            {
-                _localValidators[validatorId] = (Array.Empty<byte>(), configuredSecret);
-                _logger.LogWarning(
-                    "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
-                    validatorId);
+                // We have at least attestation keys from config/files.
+                // Use same keys for proposal if proposal keys not separately configured.
+                var attestPub = derivedAttestPublic ?? Array.Empty<byte>();
+                var proposalPub = configuredProposalPublic ?? attestPub;
+                var proposalSec = configuredProposalSecret ?? configuredAttestSecret;
+
+                _localValidators[validatorId] = new ValidatorKeyMaterial(
+                    attestPub, configuredAttestSecret, proposalPub, proposalSec);
+
+                if (attestPub.Length == 0)
+                {
+                    _logger.LogWarning(
+                        "Validator secret key configured without public key. Aggregate publishing is disabled for validator {ValidatorId}.",
+                        validatorId);
+                }
             }
             else
             {
-                var keyPair = _leanSig.GenerateKeyPair(
+                // Generate fresh key pairs for both attestation and proposal
+                var attestKeyPair = _leanSig.GenerateKeyPair(
                     _validatorDutyConfig.ActivationEpoch,
                     _validatorDutyConfig.NumActiveEpochs);
-                _localValidators[validatorId] = (keyPair.PublicKey, keyPair.SecretKey);
+                var proposalKeyPair = _leanSig.GenerateKeyPair(
+                    _validatorDutyConfig.ActivationEpoch,
+                    _validatorDutyConfig.NumActiveEpochs);
+                _localValidators[validatorId] = new ValidatorKeyMaterial(
+                    attestKeyPair.PublicKey, attestKeyPair.SecretKey,
+                    proposalKeyPair.PublicKey, proposalKeyPair.SecretKey);
             }
 
             if (i == 0)
             {
-                _validatorPublicKey = _localValidators[validatorId].PublicKey;
-                _validatorSecretKey = _localValidators[validatorId].SecretKey;
+                _validatorPublicKey = _localValidators[validatorId].AttestationPublicKey;
+                _validatorSecretKey = _localValidators[validatorId].AttestationSecretKey;
             }
 
             lock (_dutyStateLock)
             {
-                var publicKey = _localValidators[validatorId].PublicKey;
+                var publicKey = _localValidators[validatorId].AttestationPublicKey;
                 if (publicKey.Length > 0)
                 {
                     _validatorPublicKeys[validatorId] = publicKey.ToArray();
@@ -819,23 +935,60 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private void LoadKnownValidatorPublicKeysFromDirectory()
     {
-        if (string.IsNullOrWhiteSpace(_validatorDutyConfig.PublicKeyPath))
+        var keyPath = _validatorDutyConfig.PublicKeyPath;
+        if (string.IsNullOrWhiteSpace(keyPath))
+        {
+            // Try attestation-specific path
+            keyPath = _validatorDutyConfig.AttestationPublicKeyPath;
+        }
+
+        if (string.IsNullOrWhiteSpace(keyPath))
         {
             return;
         }
 
-        var directory = Path.GetDirectoryName(_validatorDutyConfig.PublicKeyPath);
+        var directory = Path.GetDirectoryName(keyPath);
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
             return;
         }
 
+        // Load attestation public keys from new naming convention first
+        foreach (var filePath in Directory.EnumerateFiles(directory, "validator_*_attest_pk.ssz"))
+        {
+            var fileName = Path.GetFileNameWithoutExtension(filePath);
+            if (!TryParseValidatorIndexFromAttestPublicKeyFileName(fileName, out var validatorId))
+            {
+                continue;
+            }
+
+            var publicKeyBytes = File.ReadAllBytes(filePath);
+            if (publicKeyBytes.Length == 0)
+            {
+                continue;
+            }
+
+            lock (_dutyStateLock)
+            {
+                _validatorPublicKeys[validatorId] = publicKeyBytes;
+            }
+        }
+
+        // Fall back to legacy naming convention for validators not already loaded
         foreach (var filePath in Directory.EnumerateFiles(directory, "validator_*_pk.ssz"))
         {
             var fileName = Path.GetFileNameWithoutExtension(filePath);
             if (!TryParseValidatorIndexFromPublicKeyFileName(fileName, out var validatorId))
             {
                 continue;
+            }
+
+            lock (_dutyStateLock)
+            {
+                if (_validatorPublicKeys.ContainsKey(validatorId))
+                {
+                    continue;
+                }
             }
 
             var publicKeyBytes = File.ReadAllBytes(filePath);
@@ -853,16 +1006,17 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private void LoadKnownValidatorPublicKeysFromGenesisConfig()
     {
-        if (_validatorDutyConfig.GenesisValidatorPublicKeys.Count == 0)
+        if (_validatorDutyConfig.GenesisValidatorKeys.Count == 0)
         {
             return;
         }
 
         lock (_dutyStateLock)
         {
-            for (var i = 0; i < _validatorDutyConfig.GenesisValidatorPublicKeys.Count; i++)
+            for (var i = 0; i < _validatorDutyConfig.GenesisValidatorKeys.Count; i++)
             {
-                var parsed = ParseHex(_validatorDutyConfig.GenesisValidatorPublicKeys[i]);
+                var (attestKeyHex, _) = _validatorDutyConfig.GenesisValidatorKeys[i];
+                var parsed = ParseHex(attestKeyHex);
                 if (parsed is null || parsed.Length == 0)
                 {
                     continue;
@@ -878,6 +1032,21 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         validatorId = 0;
         const string prefix = "validator_";
         const string suffix = "_pk";
+        if (!fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var span = fileName.AsSpan(prefix.Length, fileName.Length - prefix.Length - suffix.Length);
+        return ulong.TryParse(span, out validatorId);
+    }
+
+    private static bool TryParseValidatorIndexFromAttestPublicKeyFileName(string fileName, out ulong validatorId)
+    {
+        validatorId = 0;
+        const string prefix = "validator_";
+        const string suffix = "_attest_pk";
         if (!fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
             !fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
         {
@@ -1042,7 +1211,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         ReadOnlyMemory<byte> payload,
         Bytes32 parentRoot,
         Bytes32 blockRoot,
-        SignedBlockWithAttestation signedBlock)
+        SignedBlock signedBlock)
     {
         if (!DumpBlocksEnabled)
         {
@@ -1064,13 +1233,13 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 $"validator_id={_validatorId}",
                 $"parent_root={Convert.ToHexString(parentRoot.AsSpan())}",
                 $"block_root={Convert.ToHexString(blockRoot.AsSpan())}",
-                $"attestation_count={signedBlock.Message.Block.Body.Attestations.Count}",
+                $"attestation_count={signedBlock.Block.Body.Attestations.Count}",
                 $"proof_count={signedBlock.Signature.AttestationSignatures.Count}",
                 $"proposer_signature_length={signedBlock.Signature.ProposerSignature.Bytes.Length}",
                 $"proposer_signature_hash={Convert.ToHexString(SHA256.HashData(signedBlock.Signature.ProposerSignature.Bytes))}"
             };
 
-            var attestations = signedBlock.Message.Block.Body.Attestations;
+            var attestations = signedBlock.Block.Body.Attestations;
             var proofs = signedBlock.Signature.AttestationSignatures;
             var limit = Math.Min(attestations.Count, proofs.Count);
             for (var i = 0; i < limit; i++)
@@ -1128,7 +1297,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
             if (decodeResult.IsSuccess && decodeResult.SignedBlock is not null)
             {
-                var block = decodeResult.SignedBlock.Message.Block;
+                var block = decodeResult.SignedBlock.Block;
                 lines.Add($"block_slot={block.Slot.Value}");
                 lines.Add($"block_root={Convert.ToHexString(block.HashTreeRoot())}");
                 lines.Add($"attestation_count={block.Body.Attestations.Count}");

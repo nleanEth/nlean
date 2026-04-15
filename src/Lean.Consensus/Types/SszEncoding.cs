@@ -13,13 +13,14 @@ public static class SszEncoding
     public const int FpLength = Fp.ByteLength;
     public const int RandomnessLength = Randomness.Length * FpLength;
     public const int HashDigestVectorLength = HashDigestVector.Length * FpLength;
-    public const int ValidatorLength = Bytes52Length + UInt64Length;
+    public const int ValidatorLength = Bytes52Length + Bytes52Length + UInt64Length;
     public const int NodeListLimit = 1 << 18;
     public const int ValidatorRegistryLimit = 1 << 12;
     public const int CheckpointLength = Bytes32Length + UInt64Length;
     public const int AttestationDataLength = UInt64Length + (CheckpointLength * 3);
     public const int AttestationLength = UInt64Length + AttestationDataLength;
     public const int BlockHeaderLength = (UInt64Length * 2) + (Bytes32Length * 3);
+    public const int MaxAttestationsData = 16;
 
     public static byte[] Encode(AttestationData value)
     {
@@ -60,7 +61,7 @@ public static class SszEncoding
     public static byte[] Encode(SignedAttestation value)
     {
         var signatureBytes = Encode(value.Signature);
-        // XmssSignature is treated as fixed-size (3112 bytes) — no offset field.
+        // XmssSignature is treated as fixed-size (2536 bytes for V=46) — no offset field.
         // Layout: ValidatorId(8) + AttestationData(128) + XmssSignature(inline)
         var fixedSize = UInt64Length + AttestationDataLength;
         var buffer = new byte[fixedSize + signatureBytes.Length];
@@ -99,20 +100,6 @@ public static class SszEncoding
         return buffer;
     }
 
-    public static byte[] Encode(BlockWithAttestation value)
-    {
-        var blockBytes = Encode(value.Block);
-        var fixedSize = UInt32Length + AttestationLength;
-        var buffer = new byte[fixedSize + blockBytes.Length];
-        WriteOffset(buffer, 0, fixedSize);
-        var attestationOffset = UInt32Length;
-        Ssz.Encode(buffer.AsSpan(attestationOffset, UInt64Length), value.ProposerAttestation.ValidatorId);
-        attestationOffset += UInt64Length;
-        EncodeInto(buffer, attestationOffset, value.ProposerAttestation.Data);
-        blockBytes.CopyTo(buffer.AsSpan(fixedSize));
-        return buffer;
-    }
-
     public static byte[] Encode(BlockSignatures value)
     {
         var attestationSignaturesBytes = Encode(value.AttestationSignatures);
@@ -127,16 +114,16 @@ public static class SszEncoding
         return buffer;
     }
 
-    public static byte[] Encode(SignedBlockWithAttestation value)
+    public static byte[] Encode(SignedBlock value)
     {
-        var messageBytes = Encode(value.Message);
+        var blockBytes = Encode(value.Block);
         var signatureBytes = Encode(value.Signature);
         var fixedSize = UInt32Length + UInt32Length;
-        var buffer = new byte[fixedSize + messageBytes.Length + signatureBytes.Length];
+        var buffer = new byte[fixedSize + blockBytes.Length + signatureBytes.Length];
         WriteOffset(buffer, 0, fixedSize);
-        WriteOffset(buffer, UInt32Length, fixedSize + messageBytes.Length);
-        messageBytes.CopyTo(buffer.AsSpan(fixedSize));
-        signatureBytes.CopyTo(buffer.AsSpan(fixedSize + messageBytes.Length));
+        WriteOffset(buffer, UInt32Length, fixedSize + blockBytes.Length);
+        blockBytes.CopyTo(buffer.AsSpan(fixedSize));
+        signatureBytes.CopyTo(buffer.AsSpan(fixedSize + blockBytes.Length));
         return buffer;
     }
 
@@ -272,8 +259,9 @@ public static class SszEncoding
     public static byte[] Encode(Validator value)
     {
         var buffer = new byte[ValidatorLength];
-        value.Pubkey.AsSpan().CopyTo(buffer.AsSpan(0, Bytes52Length));
-        Ssz.Encode(buffer.AsSpan(Bytes52Length, UInt64Length), value.Index);
+        value.AttestationPubkey.AsSpan().CopyTo(buffer.AsSpan(0, Bytes52Length));
+        value.ProposalPubkey.AsSpan().CopyTo(buffer.AsSpan(Bytes52Length, Bytes52Length));
+        Ssz.Encode(buffer.AsSpan(Bytes52Length + Bytes52Length, UInt64Length), value.Index);
         return buffer;
     }
 
@@ -474,8 +462,9 @@ public static class SszEncoding
 
     private static void EncodeInto(Span<byte> buffer, int offset, Validator value)
     {
-        value.Pubkey.AsSpan().CopyTo(buffer.Slice(offset, Bytes52Length));
-        Ssz.Encode(buffer.Slice(offset + Bytes52Length, UInt64Length), value.Index);
+        value.AttestationPubkey.AsSpan().CopyTo(buffer.Slice(offset, Bytes52Length));
+        value.ProposalPubkey.AsSpan().CopyTo(buffer.Slice(offset + Bytes52Length, Bytes52Length));
+        Ssz.Encode(buffer.Slice(offset + Bytes52Length + Bytes52Length, UInt64Length), value.Index);
     }
 
     private static int WriteCheckpoint(Span<byte> buffer, int offset, Checkpoint value)

@@ -23,14 +23,30 @@ public sealed class DevnetFixture : IDisposable
 
     public string HashSigKeyDir { get; }
     public int ValidatorsPerNode { get; }
+    public int AttestationCommitteeCount { get; }
+    public bool[] NodeIsAggregator { get; }
+    public int[][] NodeAggregateSubnetIds { get; }
 
     private const uint ActiveEpochExponent = 18;
     private const uint NumActiveEpochs = 1 << (int)ActiveEpochExponent;
 
-    public DevnetFixture(int nodeCount = 4, int basePort = 19100, int validatorsPerNode = 1)
+    public DevnetFixture(
+        int nodeCount = 4,
+        int basePort = 19100,
+        int validatorsPerNode = 1,
+        int attestationCommitteeCount = 1,
+        bool[]? nodeIsAggregator = null,
+        int[][]? nodeAggregateSubnetIds = null)
     {
         NodeCount = nodeCount;
         ValidatorsPerNode = validatorsPerNode;
+        AttestationCommitteeCount = attestationCommitteeCount;
+        NodeIsAggregator = ResolveNodeIsAggregator(nodeCount, nodeIsAggregator);
+        NodeAggregateSubnetIds = ResolveNodeAggregateSubnetIds(
+            nodeCount,
+            attestationCommitteeCount,
+            NodeIsAggregator,
+            nodeAggregateSubnetIds);
         RootDir = Path.Combine(Path.GetTempPath(), $"nlean-integ-{Guid.NewGuid():N}");
         ConfigDir = Path.Combine(RootDir, "config");
         Directory.CreateDirectory(ConfigDir);
@@ -57,11 +73,11 @@ public sealed class DevnetFixture : IDisposable
         }
 
         BinaryPath = ResolveBinaryPath();
-        GenesisTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
 
-        var pubkeyHexList = GenerateKeys(keyDir);
+        var keyList = GenerateKeys(keyDir);
         GenerateLibp2pKeys();
-        WriteConfigYaml(pubkeyHexList);
+        GenesisTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
+        WriteConfigYaml(keyList);
         WriteValidatorConfigYaml();
         WriteBootstrapConfig();
     }
@@ -70,6 +86,13 @@ public sealed class DevnetFixture : IDisposable
     {
         var validatorConfigPath = Path.Combine(ConfigDir, "validator-config.yaml");
         var nodeKeyPath = Path.Combine(ConfigDir, $"nlean_{index}.key");
+        var isAggregator = NodeIsAggregator[index];
+
+        int? committeeCount = AttestationCommitteeCount > 1 ? AttestationCommitteeCount : null;
+        int[]? aggregateSubnetIds = NodeAggregateSubnetIds[index].Length > 0
+            ? NodeAggregateSubnetIds[index]
+            : null;
+
         return new NodeProcess(
             BinaryPath,
             validatorConfigPath,
@@ -80,26 +103,59 @@ public sealed class DevnetFixture : IDisposable
             QuicPorts[index],
             ApiPorts[index],
             MetricsPorts[index],
-            isAggregator: index == 0,
+            isAggregator,
             HashSigKeyDir,
-            checkpointSyncUrl: checkpointSyncUrl);
+            checkpointSyncUrl: checkpointSyncUrl,
+            attestationCommitteeCount: committeeCount,
+            aggregateSubnetIds: aggregateSubnetIds);
     }
 
-    private List<string> GenerateKeys(string keyDir)
+    private List<(string AttestHex, string ProposeHex)> GenerateKeys(string keyDir)
     {
-        var sig = new RustLeanSig();
-        var pubkeyHexList = new List<string>();
         var totalValidators = NodeCount * ValidatorsPerNode;
+        var cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".cache", "nlean-integ-keys");
+        Directory.CreateDirectory(cacheDir);
 
-        for (int i = 0; i < totalValidators; i++)
+        var keyList = new (string AttestHex, string ProposeHex)[totalValidators];
+        var suffixes = new[] { "attester_key_pk", "attester_key_sk", "proposer_key_pk", "proposer_key_sk" };
+
+        Parallel.For(0, totalValidators, i =>
         {
-            var kp = sig.GenerateKeyPair(0, NumActiveEpochs);
-            File.WriteAllBytes(Path.Combine(keyDir, $"validator_{i}_pk.ssz"), kp.PublicKey);
-            File.WriteAllBytes(Path.Combine(keyDir, $"validator_{i}_sk.ssz"), kp.SecretKey);
-            pubkeyHexList.Add(Convert.ToHexString(kp.PublicKey).ToLowerInvariant());
-        }
+            var cachedForThisValidator = suffixes.All(s =>
+                File.Exists(Path.Combine(cacheDir, $"validator_{i}_{s}.ssz")));
 
-        return pubkeyHexList;
+            if (cachedForThisValidator)
+            {
+                foreach (var suffix in suffixes)
+                {
+                    var fileName = $"validator_{i}_{suffix}.ssz";
+                    File.Copy(Path.Combine(cacheDir, fileName), Path.Combine(keyDir, fileName), overwrite: true);
+                }
+            }
+            else
+            {
+                var sig = new RustLeanSig();
+                var attestKp = sig.GenerateKeyPair(0, NumActiveEpochs);
+                var proposeKp = sig.GenerateKeyPair(0, NumActiveEpochs);
+
+                foreach (var dir in new[] { keyDir, cacheDir })
+                {
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attester_key_pk.ssz"), attestKp.PublicKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_attester_key_sk.ssz"), attestKp.SecretKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_proposer_key_pk.ssz"), proposeKp.PublicKey);
+                    File.WriteAllBytes(Path.Combine(dir, $"validator_{i}_proposer_key_sk.ssz"), proposeKp.SecretKey);
+                }
+            }
+
+            var attestPk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_attester_key_pk.ssz"));
+            var proposePk = File.ReadAllBytes(Path.Combine(keyDir, $"validator_{i}_proposer_key_pk.ssz"));
+            keyList[i] = (Convert.ToHexString(attestPk).ToLowerInvariant(),
+                          Convert.ToHexString(proposePk).ToLowerInvariant());
+        });
+
+        return keyList.ToList();
     }
 
     private void GenerateLibp2pKeys()
@@ -126,7 +182,7 @@ public sealed class DevnetFixture : IDisposable
         }
     }
 
-    private void WriteConfigYaml(List<string> pubkeyHexList)
+    private void WriteConfigYaml(List<(string AttestHex, string ProposeHex)> keyList)
     {
         var sb = new StringBuilder();
         sb.AppendLine("# Genesis Settings");
@@ -141,12 +197,14 @@ public sealed class DevnetFixture : IDisposable
         sb.AppendLine();
         sb.AppendLine("# Validator Settings");
         sb.AppendLine($"VALIDATOR_COUNT: {NodeCount * ValidatorsPerNode}");
+        sb.AppendLine($"ATTESTATION_COMMITTEE_COUNT: {AttestationCommitteeCount}");
         sb.AppendLine();
         sb.AppendLine("# Genesis Validator Pubkeys");
         sb.AppendLine("GENESIS_VALIDATORS:");
-        foreach (var hex in pubkeyHexList)
+        foreach (var (attestHex, proposeHex) in keyList)
         {
-            sb.AppendLine($"    - \"{hex}\"");
+            sb.AppendLine($"    - attestation_pubkey: \"{attestHex}\"");
+            sb.AppendLine($"      proposal_pubkey: \"{proposeHex}\"");
         }
 
         File.WriteAllText(Path.Combine(ConfigDir, "config.yaml"), sb.ToString());
@@ -172,7 +230,7 @@ public sealed class DevnetFixture : IDisposable
             sb.AppendLine($"      quic: {QuicPorts[i]}");
             sb.AppendLine($"    metricsPort: {MetricsPorts[i]}");
             sb.AppendLine($"    count: {ValidatorsPerNode}");
-            sb.AppendLine($"    isAggregator: {(i == 0 ? "true" : "false")}");
+            sb.AppendLine($"    isAggregator: {(NodeIsAggregator[i] ? "true" : "false")}");
         }
 
         File.WriteAllText(Path.Combine(ConfigDir, "validator-config.yaml"), sb.ToString());
@@ -216,7 +274,67 @@ public sealed class DevnetFixture : IDisposable
             return parsed;
         }
 
-        return Environment.GetEnvironmentVariable("CI") == "true" ? 2 : 1;
+        return 2;
+    }
+
+    private static bool[] ResolveNodeIsAggregator(int nodeCount, bool[]? nodeIsAggregator)
+    {
+        if (nodeIsAggregator is null)
+        {
+            return Enumerable.Range(0, nodeCount)
+                .Select(i => i == 0)
+                .ToArray();
+        }
+
+        if (nodeIsAggregator.Length != nodeCount)
+        {
+            throw new ArgumentException($"Expected {nodeCount} aggregator flags, got {nodeIsAggregator.Length}.", nameof(nodeIsAggregator));
+        }
+
+        return nodeIsAggregator.ToArray();
+    }
+
+    private static int[][] ResolveNodeAggregateSubnetIds(
+        int nodeCount,
+        int attestationCommitteeCount,
+        IReadOnlyList<bool> nodeIsAggregator,
+        int[][]? nodeAggregateSubnetIds)
+    {
+        if (nodeAggregateSubnetIds is null)
+        {
+            return Enumerable.Range(0, nodeCount)
+                .Select(i => nodeIsAggregator[i] && i == 0 && attestationCommitteeCount > 1
+                    ? Enumerable.Range(0, attestationCommitteeCount).ToArray()
+                    : Array.Empty<int>())
+                .ToArray();
+        }
+
+        if (nodeAggregateSubnetIds.Length != nodeCount)
+        {
+            throw new ArgumentException(
+                $"Expected {nodeCount} aggregate subnet entries, got {nodeAggregateSubnetIds.Length}.",
+                nameof(nodeAggregateSubnetIds));
+        }
+
+        var maxSubnetId = Math.Max(0, attestationCommitteeCount - 1);
+        return nodeAggregateSubnetIds
+            .Select((subnets, index) =>
+            {
+                var sanitized = (subnets ?? Array.Empty<int>())
+                    .Where(subnetId => subnetId >= 0 && subnetId <= maxSubnetId)
+                    .Distinct()
+                    .ToArray();
+
+                if (!nodeIsAggregator[index] && sanitized.Length > 0)
+                {
+                    throw new ArgumentException(
+                        $"Node {index} has aggregate subnet ids but is not configured as an aggregator.",
+                        nameof(nodeAggregateSubnetIds));
+                }
+
+                return sanitized;
+            })
+            .ToArray();
     }
 
     private static string ResolveBinaryPath()

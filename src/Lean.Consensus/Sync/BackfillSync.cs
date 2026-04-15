@@ -138,12 +138,13 @@ public sealed class BackfillSync : IBackfillTrigger
     {
         var pending = new Queue<Bytes32>(roots);
         var depth = 0;
-        var unprocessed = new List<(SignedBlockWithAttestation Block, Bytes32 Root)>();
+        var unprocessed = new List<(SignedBlock Block, Bytes32 Root)>();
         var fetchedRoots = new HashSet<Bytes32>();
         var consecutiveFailures = 0;
         const int maxConsecutiveFailures = 10;
         var totalAccepted = 0;
         var totalFetched = 0;
+        var finalizedSlot = _processor.FinalizedSlot;
 
         // Fetch blocks backwards and process incrementally as parents become known.
         // Unlike the old collect-all-then-process approach, this persists progress
@@ -189,16 +190,38 @@ public sealed class BackfillSync : IBackfillTrigger
 
             consecutiveFailures = 0;
 
+            var hitFinalizedFloor = false;
+
             foreach (var block in fetched)
             {
-                var blockRoot = new Bytes32(block.Message.Block.HashTreeRoot());
+                var blockRoot = new Bytes32(block.Block.HashTreeRoot());
                 unprocessed.Add((block, blockRoot));
                 fetchedRoots.Add(blockRoot);
                 totalFetched++;
 
-                var parentRoot = block.Message.Block.ParentRoot;
+                // Stop walking back past the finalized slot — no ancestor
+                // will be "known" below the finalized anchor, so further
+                // fetches would be wasted.
+                if (block.Block.Slot.Value <= finalizedSlot)
+                {
+                    hitFinalizedFloor = true;
+                    continue;
+                }
+
+                var parentRoot = block.Block.ParentRoot;
                 if (!_processor.IsBlockKnown(parentRoot) && !fetchedRoots.Contains(parentRoot))
                     pending.Enqueue(parentRoot);
+            }
+
+            if (hitFinalizedFloor)
+            {
+                _logger.LogInformation(
+                    "Backfill: reached finalized floor (slot {FinalizedSlot}), stopping chain walk. Fetched: {Fetched}, Accepted: {Accepted}",
+                    finalizedSlot, totalFetched, totalAccepted);
+                // Still try to process what we have before stopping.
+                var floorAccepted = TryProcessReady(unprocessed);
+                totalAccepted += floorAccepted;
+                break;
             }
 
             // Re-enqueue any batch roots that were not returned (partial response).
@@ -251,7 +274,7 @@ public sealed class BackfillSync : IBackfillTrigger
     /// already known in the store. Removes accepted blocks from the list.
     /// May loop multiple times as each accepted block can unblock its children.
     /// </summary>
-    private int TryProcessReady(List<(SignedBlockWithAttestation Block, Bytes32 Root)> unprocessed)
+    private int TryProcessReady(List<(SignedBlock Block, Bytes32 Root)> unprocessed)
     {
         var accepted = 0;
         bool madeProgress;
@@ -259,7 +282,7 @@ public sealed class BackfillSync : IBackfillTrigger
         // Sort by slot descending so the reverse-iteration loop (which uses
         // RemoveAt safely) processes oldest first (parents before children).
         unprocessed.Sort((a, b) =>
-            b.Block.Message.Block.Slot.Value.CompareTo(a.Block.Message.Block.Slot.Value));
+            b.Block.Block.Slot.Value.CompareTo(a.Block.Block.Slot.Value));
 
         do
         {
@@ -268,7 +291,7 @@ public sealed class BackfillSync : IBackfillTrigger
             for (var i = unprocessed.Count - 1; i >= 0; i--)
             {
                 var (block, blockRoot) = unprocessed[i];
-                var parentRoot = block.Message.Block.ParentRoot;
+                var parentRoot = block.Block.ParentRoot;
 
                 if (!_processor.IsBlockKnown(parentRoot) || !_processor.HasState(parentRoot))
                     continue;
@@ -284,9 +307,9 @@ public sealed class BackfillSync : IBackfillTrigger
                 {
                     _logger.LogWarning(
                         "Backfill: block rejected. Slot: {Slot}, Root: {Root}, ParentRoot: {ParentRoot}, Reason: {Reason}",
-                        block.Message.Block.Slot.Value,
+                        block.Block.Slot.Value,
                         Convert.ToHexString(blockRoot.AsSpan()),
-                        Convert.ToHexString(block.Message.Block.ParentRoot.AsSpan()),
+                        Convert.ToHexString(block.Block.ParentRoot.AsSpan()),
                         result.Reason);
                 }
 
@@ -364,7 +387,7 @@ public sealed class BackfillSync : IBackfillTrigger
         catch (OperationCanceledException) { }
     }
 
-    private async Task<IReadOnlyList<SignedBlockWithAttestation>?> FetchWithRetryAsync(
+    private async Task<IReadOnlyList<SignedBlock>?> FetchWithRetryAsync(
         List<Bytes32> batch,
         CancellationToken ct,
         string? preferredPeerId = null)
@@ -399,7 +422,7 @@ public sealed class BackfillSync : IBackfillTrigger
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(PerRequestTimeoutMs);
 
-                List<SignedBlockWithAttestation> fetched;
+                List<SignedBlock> fetched;
                 try
                 {
                     fetched = await _network.RequestBlocksByRootAsync(peerId, batch, timeoutCts.Token);

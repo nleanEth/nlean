@@ -139,8 +139,8 @@ public sealed class ConsensusStateStoreTests
             new[] { true, false, true },
             new[]
             {
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), 0),
-                new Validator(new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), 1)
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x41, 52).ToArray()), 0),
+                new Validator(new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), new Bytes52(Enumerable.Repeat((byte)0x42, 52).ToArray()), 1)
             },
             new[]
             {

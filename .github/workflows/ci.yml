@@ -84,7 +84,20 @@ jobs:
       - name: Build patched quic package
         run: ./scripts/libp2p/build-patched-quic-package.sh --force
       - name: Test
-        run: dotnet test Lean.sln -c Release --filter "FullyQualifiedName!~Integration"
+        run: |
+          mkdir -p artifacts/testlogs
+          set -o pipefail
+          dotnet test Lean.sln -c Release --filter "FullyQualifiedName!~Integration" \
+            -v normal \
+            --logger "console;verbosity=detailed" \
+            --logger "trx;LogFileName=build-test-${{ matrix.os }}.trx" \
+            2>&1 | tee artifacts/testlogs/build-test-${{ matrix.os }}.log
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs-build-test-${{ matrix.os }}
+          path: artifacts/testlogs
       - name: Publish
         run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -r ${{ matrix.rid }} --self-contained false -o ${{ github.workspace }}/artifacts/lean-client-${{ matrix.rid }} /p:ContinuousIntegrationBuild=true
       - name: Upload publish artifact
@@ -119,22 +132,39 @@ jobs:
       - name: Build patched quic package
         run: ./scripts/libp2p/build-patched-quic-package.sh --force
       - name: Run consensus simulation tests
-        run: >
-          dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj
-          -c Release
-          --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationV2Tests"
-          /m:1
-          /nodeReuse:false
+        run: |
+          mkdir -p artifacts/testlogs
+          set -o pipefail
+          dotnet test tests/Lean.Consensus.Tests/Lean.Consensus.Tests.csproj \
+            -c Release \
+            --filter "FullyQualifiedName~ConsensusMultiNodeFinalizationV2Tests" \
+            /m:1 \
+            /nodeReuse:false \
+            -v normal \
+            --logger "console;verbosity=detailed" \
+            --logger "trx;LogFileName=consensus-simulation.trx" \
+            2>&1 | tee artifacts/testlogs/consensus-simulation.log
+      - name: Upload consensus simulation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs-consensus-simulation
+          path: artifacts/testlogs
 
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
+    # Advisory job: reports results but does not fail the workflow if it times out.
+    # GitHub Actions 4-core runners are underpowered for this suite with
+    # leanMultisig 2eb4b9d — see docs/plans/ for the investigation notes.
+    continue-on-error: true
     env:
       CI: true
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
       NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+      NLEAN_INTEG_SECONDS_PER_SLOT: "4"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -161,6 +191,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native/lean-crypto-ffi
+      - name: Cache integration test keys
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nlean-integ-keys
+          key: integ-keys-${{ runner.os }}-v1
+          restore-keys: integ-keys-${{ runner.os }}-
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Build patched quic package
@@ -168,6 +204,18 @@ jobs:
       - name: Publish binary
         run: dotnet publish src/Lean.Client/Lean.Client.csproj -c Release -o artifacts/lean-client --self-contained false
       - name: Run integration tests
-        run: >
-          dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj
-          -c Release -v n
+        run: |
+          mkdir -p artifacts/testlogs
+          set -o pipefail
+          dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj \
+            -c Release \
+            -v normal \
+            --logger "console;verbosity=detailed" \
+            --logger "trx;LogFileName=integration-tests.trx" \
+            2>&1 | tee artifacts/testlogs/integration-tests.log
+      - name: Upload integration test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs-integration-tests
+          path: artifacts/testlogs

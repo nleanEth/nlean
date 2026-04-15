@@ -17,7 +17,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var dataRoot = new Bytes32(data.HashTreeRoot());
         var sig = XmssSignature.Empty();
 
-        store.OnGossipSignature(0, dataRoot, sig);
+        store.OnGossipSignature(0, data, sig);
 
         Assert.That(store.HasGossipSignature(0, dataRoot), Is.True);
         Assert.That(store.HasGossipSignature(1, dataRoot), Is.False);
@@ -86,9 +86,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
             store.HeadRoot,
             Bytes32.Zero(),
             new BlockBody(new[] { aggregated }));
-        var proposerAttestation = new Attestation(0, data);
-        var signed = new SignedBlockWithAttestation(
-            new BlockWithAttestation(block, proposerAttestation),
+        var signed = new SignedBlock(block,
             new BlockSignatures(new[] { proof }, XmssSignature.Empty()));
 
         var result = ApplyBlock(store, signed);
@@ -97,36 +95,8 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var pool = store.GetKnownPayloadPool();
         var dataRootKey = Convert.ToHexString(data.HashTreeRoot());
         Assert.That(pool.ContainsKey(dataRootKey), Is.True);
-        Assert.That(pool[dataRootKey], Has.Count.EqualTo(1));
-        Assert.That(pool[dataRootKey][0], Is.EqualTo(proof));
-    }
-
-    [Test]
-    public void OnBlock_StoresProposerSignatureForFutureAggregation()
-    {
-        var store = CreateStore();
-        var data = MakeAttestationData(store);
-        var block = new Block(
-            new Slot(1),
-            0,
-            store.HeadRoot,
-            Bytes32.Zero(),
-            new BlockBody(Array.Empty<AggregatedAttestation>()));
-        var proposerAttestation = new Attestation(0, data);
-        var proposerSignature = XmssSignature.Empty();
-        var signed = new SignedBlockWithAttestation(
-            new BlockWithAttestation(block, proposerAttestation),
-            new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), proposerSignature));
-
-        var result = ApplyBlock(store, signed);
-
-        Assert.That(result.Accepted, Is.True);
-        var groups = store.CollectAttestationsForAggregation();
-        Assert.That(groups, Has.Count.EqualTo(1));
-        Assert.That(groups[0].Data, Is.EqualTo(data));
-        Assert.That(groups[0].ValidatorIds, Is.EqualTo(new[] { 0UL }));
-        Assert.That(groups[0].Signatures, Has.Count.EqualTo(1));
-        Assert.That(groups[0].Signatures[0], Is.EqualTo(proposerSignature));
+        Assert.That(pool[dataRootKey].Proofs, Has.Count.EqualTo(1));
+        Assert.That(pool[dataRootKey].Proofs.First(), Is.EqualTo(proof));
     }
 
     [Test]
@@ -189,8 +159,8 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var dataRootKey = Convert.ToHexString(data.HashTreeRoot());
 
         Assert.That(pool.ContainsKey(dataRootKey), Is.True);
-        Assert.That(pool[dataRootKey], Has.Count.EqualTo(1));
-        Assert.That(pool[dataRootKey][0], Is.EqualTo(proof));
+        Assert.That(pool[dataRootKey].Proofs, Has.Count.EqualTo(1));
+        Assert.That(pool[dataRootKey].Proofs.First(), Is.EqualTo(proof));
     }
 
     [Test]
@@ -205,10 +175,10 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         store.TryOnAttestation(att, storeSignature: false, out _);
 
         // Insert signatures in descending order to test sorting
-        store.OnGossipSignature(3, dataRoot, XmssSignature.Empty());
-        store.OnGossipSignature(1, dataRoot, XmssSignature.Empty());
-        store.OnGossipSignature(0, dataRoot, XmssSignature.Empty());
-        store.OnGossipSignature(2, dataRoot, XmssSignature.Empty());
+        store.OnGossipSignature(3, data, XmssSignature.Empty());
+        store.OnGossipSignature(1, data, XmssSignature.Empty());
+        store.OnGossipSignature(0, data, XmssSignature.Empty());
+        store.OnGossipSignature(2, data, XmssSignature.Empty());
 
         var groups = store.CollectAttestationsForAggregation();
 
@@ -226,8 +196,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         // Block A at slot 1 (child of genesis, proposer 0)
         var blockA = new Block(new Slot(1), 0, genesisRoot, Bytes32.Zero(),
             new BlockBody(Array.Empty<AggregatedAttestation>()));
-        var signedA = new SignedBlockWithAttestation(
-            new BlockWithAttestation(blockA, new Attestation(0, genesisData)),
+        var signedA = new SignedBlock(blockA,
             new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
         Assert.That(ApplyBlock(store, signedA).Accepted, Is.True);
         var rootA = new Bytes32(blockA.HashTreeRoot());
@@ -235,8 +204,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         // Block D at slot 1 (fork, also child of genesis, different proposer for different root)
         var blockD = new Block(new Slot(1), 1, genesisRoot, Bytes32.Zero(),
             new BlockBody(Array.Empty<AggregatedAttestation>()));
-        var signedD = new SignedBlockWithAttestation(
-            new BlockWithAttestation(blockD, new Attestation(1, genesisData)),
+        var signedD = new SignedBlock(blockD,
             new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
         Assert.That(ApplyBlock(store, signedD).Accepted, Is.True);
         var rootD = new Bytes32(blockD.HashTreeRoot());
@@ -259,8 +227,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var proof = new AggregatedSignatureProof(bits, new byte[32]);
         var blockB = new Block(new Slot(2), 2, rootA, Bytes32.Zero(),
             new BlockBody(new[] { aggregated }));
-        var signedB = new SignedBlockWithAttestation(
-            new BlockWithAttestation(blockB, new Attestation(2, attForA)),
+        var signedB = new SignedBlock(blockB,
             new BlockSignatures(new[] { proof }, XmssSignature.Empty()));
         Assert.That(ApplyBlock(store, signedB).Accepted, Is.True);
         var rootB = new Bytes32(blockB.HashTreeRoot());
@@ -284,16 +251,14 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         // Two competing children at slot 1.
         var blockA = new Block(new Slot(1), 0, genesisRoot, Bytes32.Zero(),
             new BlockBody(Array.Empty<AggregatedAttestation>()));
-        var signedA = new SignedBlockWithAttestation(
-            new BlockWithAttestation(blockA, new Attestation(0, genesisData)),
+        var signedA = new SignedBlock(blockA,
             new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
         Assert.That(ApplyBlock(store, signedA).Accepted, Is.True);
         var rootA = new Bytes32(blockA.HashTreeRoot());
 
         var blockD = new Block(new Slot(1), 1, genesisRoot, Bytes32.Zero(),
             new BlockBody(Array.Empty<AggregatedAttestation>()));
-        var signedD = new SignedBlockWithAttestation(
-            new BlockWithAttestation(blockD, new Attestation(1, genesisData)),
+        var signedD = new SignedBlock(blockD,
             new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
         Assert.That(ApplyBlock(store, signedD).Accepted, Is.True);
         var rootD = new Bytes32(blockD.HashTreeRoot());
@@ -308,8 +273,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
         var knownProof = new AggregatedSignatureProof(knownBits, new byte[32]);
         var blockB = new Block(new Slot(2), 2, rootA, Bytes32.Zero(),
             new BlockBody(new[] { new AggregatedAttestation(knownBits, attForA) }));
-        var signedB = new SignedBlockWithAttestation(
-            new BlockWithAttestation(blockB, new Attestation(2, attForA)),
+        var signedB = new SignedBlock(blockB,
             new BlockSignatures(new[] { knownProof }, XmssSignature.Empty()));
         Assert.That(ApplyBlock(store, signedB).Accepted, Is.True);
 
@@ -348,7 +312,7 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
 
     private static ForkChoiceApplyResult ApplyBlock(
         ProtoArrayForkChoiceStore store,
-        SignedBlockWithAttestation signed)
+        SignedBlock signed)
     {
         var genesisCheckpoint = new Checkpoint(store.JustifiedRoot, new Slot(store.JustifiedSlot));
         return store.OnBlock(signed, genesisCheckpoint, genesisCheckpoint, 4);
