@@ -45,6 +45,74 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void Constructor_LoadedCheckpointStateWithDistinctJustified_RegistersJustifiedInProtoArray()
+    {
+        // When restarting from a persisted ConsensusHeadState where the justified root
+        // differs from both the finalized root and the head root (the common case after
+        // the chain has been running), the proto-array must still contain justifiedRoot
+        // so that local validators building attestations with Source = current justified
+        // are not rejected with "Unknown source root".
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+
+        var persisted = new ConsensusHeadState(
+            headSlot: 50,
+            headRoot: headRoot.AsSpan(),
+            latestJustifiedSlot: 40,
+            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestFinalizedSlot: 30,
+            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            safeTargetSlot: 30,
+            safeTargetRoot: finalizedRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        Assert.That(store.ContainsBlock(justifiedRoot), Is.True,
+            "justifiedRoot must be registered in proto-array after checkpoint load so local attestations can reference it as Source");
+    }
+
+    [Test]
+    public void TryOnAttestation_WithLoadedDistinctJustifiedAsSource_IsAccepted()
+    {
+        // End-to-end repro of the devnet-observed "Unknown source root" stall.
+        // Setup mirrors a node that restarted mid-chain where justified has advanced
+        // past finalized, and head is ahead of both. A local attestation with
+        // Source = loaded justified must not be rejected.
+        var finalizedRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var justifiedRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var headRoot = new Bytes32(Enumerable.Repeat((byte)0x33, 32).ToArray());
+
+        var persisted = new ConsensusHeadState(
+            headSlot: 50,
+            headRoot: headRoot.AsSpan(),
+            latestJustifiedSlot: 40,
+            latestJustifiedRoot: justifiedRoot.AsSpan(),
+            latestFinalizedSlot: 30,
+            latestFinalizedRoot: finalizedRoot.AsSpan(),
+            safeTargetSlot: 30,
+            safeTargetRoot: finalizedRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        var attestation = new SignedAttestation(
+            0,
+            new AttestationData(
+                new Slot(51),
+                new Checkpoint(headRoot, new Slot(50)),
+                new Checkpoint(justifiedRoot, new Slot(40)),
+                new Checkpoint(store.JustifiedRoot, new Slot(store.JustifiedSlot))),
+            XmssSignature.Empty());
+
+        Assert.That(store.TryOnAttestation(attestation, out var reason), Is.True,
+            $"Expected attestation with Source = loaded justified to be accepted, got: {reason}");
+    }
+
+    [Test]
     public void ComputeTargetCheckpoint_LoadedCheckpointAnchor_DoesNotReturnZeroRoot()
     {
         var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x22, 32).ToArray());
