@@ -89,9 +89,25 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 : loaded.LatestFinalizedSlot;
             _protoArray = new ProtoArray(finalizedRoot, rootSlot, loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
 
-            if (!headRoot.Equals(finalizedRoot))
+            // Register justifiedRoot as an explicit block so local attestations built
+            // with Source = current justified pass the ContainsBlock check in
+            // TryValidateAttestationData. Without this, a node that restarts while
+            // justifiedRoot ≠ finalizedRoot (the normal case) rejects every local
+            // attestation with "Unknown source root" until a new justification
+            // advances _latestJustified to a block that is in proto-array — which
+            // never happens when ≥50% of validators restart together and the
+            // remaining set cannot reach supermajority.
+            var headParent = finalizedRoot;
+            if (!justifiedRoot.Equals(finalizedRoot))
             {
-                _protoArray.RegisterBlock(headRoot, finalizedRoot, loaded.HeadSlot,
+                _protoArray.RegisterBlock(justifiedRoot, finalizedRoot, loaded.LatestJustifiedSlot,
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+                headParent = justifiedRoot;
+            }
+
+            if (!headRoot.Equals(finalizedRoot) && !headRoot.Equals(justifiedRoot))
+            {
+                _protoArray.RegisterBlock(headRoot, headParent, loaded.HeadSlot,
                     loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
             }
 
