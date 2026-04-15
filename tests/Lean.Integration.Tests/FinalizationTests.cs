@@ -29,6 +29,26 @@ public class FinalizationTests
         return TimeSpan.FromMinutes(minutes);
     }
 
+    /// <summary>
+    /// Pre-warm the per-validator XMSS key cache up to the worst-case count
+    /// needed by any test in this fixture (TwoSubnets uses 4 nodes × 2
+    /// validators = 8 validators). On a fresh runner the first test to see a
+    /// missing key would pay ~15-20 minutes of XMSS generation, leaving only
+    /// a few minutes for the actual finalization scenario. Amortizing key gen
+    /// here up-front keeps individual test budgets within the 30-minute
+    /// FinalizationTimeout wall.
+    ///
+    /// The fixture constructor only writes files (keys → shared cache at
+    /// ~/.cache/nlean-integ-keys, config → its own temp RootDir) and does
+    /// not bind sockets or spawn processes, so this is safe even though each
+    /// test later builds its own fixture with its own port range.
+    /// </summary>
+    [OneTimeSetUp]
+    public static void PrewarmKeyCache()
+    {
+        using var warmup = new DevnetFixture(nodeCount: 4, basePort: 29000, validatorsPerNode: 2);
+    }
+
     [Test]
     public async Task FourNode_ReachesFinalization()
     {
@@ -129,6 +149,12 @@ public class FinalizationTests
     [Test]
     public async Task FourNode_TwoSubnets_DedicatedAggregators_ReachesFinalization()
     {
+        // 8 validators × 2 subnets with dedicated aggregators. Even with
+        // PrewarmKeyCache OneTimeSetUp, this test's per-slot verification
+        // cost is roughly 2x a 4-validator test (double the aggregated sigs
+        // to verify each slot), so give it double the finalization budget.
+        var timeout = TimeSpan.FromMinutes(FinalizationTimeout.TotalMinutes * 2);
+
         using var cluster = new DevnetCluster(
             nodeCount: 4,
             basePort: 20200,
@@ -146,7 +172,7 @@ public class FinalizationTests
 
         await cluster.WaitForFinalization(
             targetSlot: 20,
-            timeout: FinalizationTimeout);
+            timeout: timeout);
 
         var checkpoints = new List<(ulong slot, string root)>();
         for (int i = 0; i < 4; i++)
