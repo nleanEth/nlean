@@ -147,6 +147,35 @@ public class FinalizationTests
     }
 
     [Test]
+    public async Task FourNode_AggregatorRestart_RecoversFinalization()
+    {
+        using var cluster = new DevnetCluster(nodeCount: 4, basePort: 20500);
+        cluster.StartAll();
+
+        await cluster.WaitForFinalization(
+            targetSlot: 20,
+            timeout: FinalizationTimeout);
+
+        var preFin = await cluster.GetFinalizedCheckpoint(0);
+        Assert.That(preFin, Is.Not.Null);
+
+        cluster.StopNode(0);
+        await Task.Delay(TimeSpan.FromSeconds(90));
+
+        cluster.RestartNode(0);
+
+        var recoveryTarget = preFin!.Value.slot + 30;
+        await cluster.WaitForFinalization(
+            targetSlot: recoveryTarget,
+            timeout: FinalizationTimeout);
+
+        var postFin = await cluster.GetFinalizedCheckpoint(0);
+        Assert.That(postFin, Is.Not.Null);
+        Assert.That(postFin!.Value.slot, Is.GreaterThanOrEqualTo(recoveryTarget),
+            "Aggregator did not recover finalization after 90s stop");
+    }
+
+    [Test]
     public async Task FourNode_TwoSubnets_DedicatedAggregators_ReachesFinalization()
     {
         // 8 validators × 2 subnets with dedicated aggregators. Even with

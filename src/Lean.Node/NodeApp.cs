@@ -74,7 +74,11 @@ public static class NodeApp
                 services.AddSingleton(sp => new ProtoArrayForkChoiceStore(
                     sp.GetRequiredService<ConsensusConfig>(),
                     sp.GetRequiredService<IConsensusStateStore>(),
-                    sp.GetService<ILogger<ProtoArrayForkChoiceStore>>()));
+                    sp.GetService<ILogger<ProtoArrayForkChoiceStore>>(),
+                    // Lazy-resolve ISyncService — ProtoArrayForkChoiceStore is
+                    // constructed before SyncService during DI setup, so we
+                    // defer the lookup until runtime when both singletons exist.
+                    requestBlockByRoot: root => sp.GetRequiredService<ISyncService>().RequestBlockByRoot(root)));
                 services.AddSingleton<ITimeSource, SystemTimeSource>();
                 services.AddSingleton(sp =>
                 {

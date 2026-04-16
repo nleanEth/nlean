@@ -126,6 +126,29 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         }
 
         _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), initialState);
+
+        // Also seed the finalized state so BackfillSync can process blocks whose
+        // parent is the finalized anchor (common case after aggregator restart:
+        // peers push blocks at slot finalized+1 whose parent = finalized root).
+        // Without this, TryProcessReady skips every fetched block because
+        // HasState(finalizedRoot) misses the in-memory cache.
+        if (_stateByRootStore is not null
+            && !_store.FinalizedRoot.Equals(_store.HeadRoot)
+            && _stateByRootStore.TryLoad(_store.FinalizedRoot, out var finalizedState)
+            && finalizedState is not null)
+        {
+            _chainStateCache.Set(ChainStateCache.RootKey(_store.FinalizedRoot), finalizedState);
+        }
+
+        if (_stateByRootStore is not null
+            && !_store.JustifiedRoot.Equals(_store.HeadRoot)
+            && !_store.JustifiedRoot.Equals(_store.FinalizedRoot)
+            && _stateByRootStore.TryLoad(_store.JustifiedRoot, out var justifiedState)
+            && justifiedState is not null)
+        {
+            _chainStateCache.Set(ChainStateCache.RootKey(_store.JustifiedRoot), justifiedState);
+        }
+
         RefreshSnapshot();
     }
 
