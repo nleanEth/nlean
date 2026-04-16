@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PATCH_FILE="$ROOT_DIR/scripts/libp2p/patches/quic-pooled-buffers.patch"
+PATCH_FILE_LOW_S="$ROOT_DIR/scripts/libp2p/patches/quic-low-s-normalization.patch"
 LOCAL_FEED_DIR="$ROOT_DIR/local-nuget"
 
 UPSTREAM_REPO="https://github.com/NethermindEth/dotnet-libp2p"
@@ -39,6 +40,7 @@ git -C "$WORK_DIR" fetch --depth 1 origin "$UPSTREAM_COMMIT"
 git -C "$WORK_DIR" checkout -f "$UPSTREAM_COMMIT"
 git -C "$WORK_DIR" clean -fdx
 git -C "$WORK_DIR" apply "$PATCH_FILE"
+git -C "$WORK_DIR" apply "$PATCH_FILE_LOW_S"
 
 dotnet_sdk_version=$(dotnet --version)
 cat > "$WORK_DIR/global.json" <<EOF
