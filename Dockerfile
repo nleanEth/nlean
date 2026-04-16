@@ -1,7 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG TARGETARCH
 ARG GIT_SHA=unknown
+ARG LEAN_VERSION=dev
 ENV LEAN_GIT_SHA=$GIT_SHA
+ENV LEAN_VERSION=$LEAN_VERSION
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/root/.cargo/bin:${PATH}"
 

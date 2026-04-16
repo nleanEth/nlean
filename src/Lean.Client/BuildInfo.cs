@@ -32,6 +32,19 @@ internal static class BuildInfo
     {
         get
         {
+            var leanVersion = Environment.GetEnvironmentVariable("LEAN_VERSION");
+            if (!string.IsNullOrWhiteSpace(leanVersion))
+            {
+                return leanVersion;
+            }
+
+            var assembly = Assembly.GetExecutingAssembly();
+            var info = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(info))
+            {
+                return info;
+            }
+
             return GitSha is null ? Version : $"{Version}+{GitSha}";
         }
     }

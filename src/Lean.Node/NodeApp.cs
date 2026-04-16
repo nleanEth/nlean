@@ -1,3 +1,4 @@
+using System.Reflection;
 using Lean.Consensus;
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
@@ -130,7 +131,7 @@ public static class NodeApp
                 services.AddSingleton(new IdentifyProtocolSettings
                 {
                     ProtocolVersion = "",
-                    AgentVersion = "nlean",
+                    AgentVersion = $"nlean/{ResolveAgentVersion()}",
                     PeerRecordsVerificationPolicy = PeerRecordsVerificationPolicy.DoesNotRequire
                 });
                 services.AddSingleton(BuildPubsubSettings());
@@ -833,6 +834,24 @@ public static class NodeApp
                 ?? (IReadOnlyList<(string, string)>)Array.Empty<(string, string)>(),
             PublishAggregates = options.Validator.PublishAggregates
         };
+    }
+
+    private static string ResolveAgentVersion()
+    {
+        var version = Environment.GetEnvironmentVariable("LEAN_VERSION");
+        if (!string.IsNullOrWhiteSpace(version))
+        {
+            return version;
+        }
+
+        var assembly = Assembly.GetEntryAssembly() ?? typeof(NodeApp).Assembly;
+        var info = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info))
+        {
+            return info;
+        }
+
+        return assembly.GetName().Version?.ToString() ?? "dev";
     }
 
     private static PubsubSettings BuildPubsubSettings()
