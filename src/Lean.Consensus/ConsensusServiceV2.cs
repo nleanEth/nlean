@@ -101,7 +101,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _slotIndexStore = slotIndexStore;
         _stateRootIndexStore = stateRootIndexStore;
         _stateByRootStore = stateByRootStore;
-        _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultNetwork);
+        _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultForkDigest);
         _logger = logger ?? NullLogger<ConsensusServiceV2>.Instance;
         _chainStateTransition = new ChainStateTransition(_config);
         _chainStateCache = chainStateCache ?? new ChainStateCache();

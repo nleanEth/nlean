@@ -2,7 +2,7 @@ namespace Lean.Network;
 
 public interface IGossipTopicProvider
 {
-    string Network { get; }
+    string ForkDigest { get; }
 
     string BlockTopic { get; }
 

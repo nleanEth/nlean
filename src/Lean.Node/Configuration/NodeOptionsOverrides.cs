@@ -3,7 +3,7 @@ namespace Lean.Node.Configuration;
 public sealed record NodeOptionsOverrides(
     string? ConfigPath,
     string? DataDir,
-    string? Network,
+    string? ForkDigest,
     bool? MetricsEnabled,
     string? LogLevel,
     string? ValidatorConfigPath,

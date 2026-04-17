@@ -148,8 +148,8 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet("devnet0", 0)), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet("12345678", 0)), Is.True);
     }
 
     [Test]
@@ -170,8 +170,8 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)).Payload;
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         Assert.That(decodeResult.Attestation, Is.Not.Null);
@@ -200,8 +200,8 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)).Payload;
         var fixedSectionLength = SszEncoding.UInt64Length + SszEncoding.AttestationDataLength;
         var expectedSignature = XmssSignature.Empty().EncodeBytes();
         Assert.That(payload.Length, Is.EqualTo(fixedSectionLength + expectedSignature.Length));
@@ -226,8 +226,8 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
-        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)).Payload;
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
+        var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)).Payload;
         var decodeResult = new SignedAttestationGossipDecoder().DecodeAndValidate(payload);
         Assert.That(decodeResult.IsSuccess, Is.True);
         var message = decodeResult.Attestation!.Message;
@@ -258,7 +258,7 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
         Assert.That(leanSig.LastSignEpoch, Is.EqualTo(1U));
     }
 
@@ -285,7 +285,7 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(consensus.CurrentSlotValue, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Aggregates), Is.False);
         Assert.That(multiSig.AggregateCalls, Is.EqualTo(0));
     }
@@ -371,7 +371,7 @@ public sealed class ValidatorServiceTests
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.True);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.GreaterThan(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.False);
 
         var payload = network.PublishedMessages.First(message => message.Topic == GossipTopics.Blocks).Payload;
         var decodeResult = new SignedBlockGossipDecoder().DecodeAndValidate(payload);
@@ -444,7 +444,7 @@ public sealed class ValidatorServiceTests
         await service.OnIntervalAsync(2, 1);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.True);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.True);
         Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks), Is.False);
         Assert.That(consensus.TryApplyLocalBlockCalls, Is.EqualTo(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.GreaterThan(0));
@@ -473,7 +473,7 @@ public sealed class ValidatorServiceTests
         await service.StopAsync(CancellationToken.None);
 
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.GreaterThan(0));
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.False);
     }
 
     [Test]
@@ -519,7 +519,7 @@ public sealed class ValidatorServiceTests
 
         Assert.That(consensus.CurrentSlotReadCalls, Is.GreaterThan(0));
         Assert.That(consensus.TryApplyLocalAttestationCalls, Is.EqualTo(0));
-        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultNetwork, 0)), Is.False);
+        Assert.That(network.PublishedMessages.Any(message => message.Topic == GossipTopics.AttestationSubnet(GossipTopics.DefaultForkDigest, 0)), Is.False);
     }
 
     [Test]

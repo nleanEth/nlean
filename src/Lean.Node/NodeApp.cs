@@ -59,7 +59,7 @@ public static class NodeApp
                 services.AddSingleton(options.Consensus);
                 services.AddSingleton(options.Metrics);
                 services.AddSingleton(options.Storage);
-                services.AddSingleton<IGossipTopicProvider>(_ => new GossipTopicProvider(options.Network));
+                services.AddSingleton<IGossipTopicProvider>(_ => new GossipTopicProvider(options.ForkDigest));
                 services.AddSingleton(validatorDutyConfig);
                 services.AddSingleton<IKeyValueStore>(_ => new RocksDbKeyValueStore(options.Storage, "consensus"));
                 services.AddSingleton<IConsensusStateStore, ConsensusStateStore>();

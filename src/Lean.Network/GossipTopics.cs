@@ -4,25 +4,29 @@ public static class GossipTopics
 {
     public const string Prefix = "leanconsensus";
     public const string Encoding = "ssz_snappy";
-    public const string DefaultNetwork = "devnet0";
+    /// Fork digest embedded in gossipsub topic strings, as lowercase hex
+    /// without 0x prefix. Currently a dummy value shared across all clients;
+    /// will eventually be derived from fork version + genesis validators root.
+    public const string DefaultForkDigest = "12345678";
 
-    public static string Blocks => Block(DefaultNetwork);
 
-    public static string Aggregates => Aggregate(DefaultNetwork);
+    public static string Blocks => Block(DefaultForkDigest);
 
-    public static string Block(string network) => Format(network, "block");
+    public static string Aggregates => Aggregate(DefaultForkDigest);
 
-    public static string Aggregate(string network) => Format(network, "aggregation");
+    public static string Block(string forkDigest) => Format(forkDigest, "block");
 
-    public static string AttestationSubnet(string network, int subnetId) => Format(network, $"attestation_{subnetId}");
+    public static string Aggregate(string forkDigest) => Format(forkDigest, "aggregation");
 
-    private static string Format(string network, string topic)
+    public static string AttestationSubnet(string forkDigest, int subnetId) => Format(forkDigest, $"attestation_{subnetId}");
+
+    private static string Format(string forkDigest, string topic)
     {
-        if (string.IsNullOrWhiteSpace(network))
+        if (string.IsNullOrWhiteSpace(forkDigest))
         {
-            network = DefaultNetwork;
+            forkDigest = DefaultForkDigest;
         }
 
-        return $"/{Prefix}/{network.Trim()}/{topic}/{Encoding}";
+        return $"/{Prefix}/{forkDigest.Trim()}/{topic}/{Encoding}";
     }
 }

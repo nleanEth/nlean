@@ -64,7 +64,7 @@ internal static class Program
         var overrides = new NodeOptionsOverrides(
             cliOptions.ConfigPath,
             cliOptions.DataDir,
-            cliOptions.Network,
+            cliOptions.ForkDigest,
             cliOptions.Metrics,
             cliOptions.LogLevel,
             cliOptions.ValidatorConfig,
@@ -106,7 +106,7 @@ internal static class Program
         Console.WriteLine("Options:");
         Console.WriteLine("  --config PATH             Path to node-config.json");
         Console.WriteLine("  --data-dir PATH           Data directory");
-        Console.WriteLine("  --network NAME            Network name (e.g. devnet2)");
+        Console.WriteLine("  --network DIGEST          Fork digest for gossip topics (default: 12345678)");
         Console.WriteLine("  --metrics [true|false]     Enable/disable metrics");
         Console.WriteLine("  --metrics-port PORT       Metrics endpoint port");
         Console.WriteLine("  --metrics-address HOST    Metrics listen host");

@@ -12,7 +12,7 @@ public sealed class LeanPubsubMessageIdTests
     [Test]
     public void Compute_IgnoresFromAndSeqno_ForAnonymousInterop()
     {
-        var topic = "/leanconsensus/devnet0/attestation/ssz_snappy";
+        var topic = "/leanconsensus/12345678/attestation/ssz_snappy";
         var data = ByteString.CopyFrom(new byte[] { 0x01, 0x02, 0x03, 0x04 });
 
         var first = new Message
@@ -38,7 +38,7 @@ public sealed class LeanPubsubMessageIdTests
     [Test]
     public void Compute_ChangesWhenPayloadChanges()
     {
-        var topic = "/leanconsensus/devnet0/block/ssz_snappy";
+        var topic = "/leanconsensus/12345678/block/ssz_snappy";
 
         var first = new Message
         {

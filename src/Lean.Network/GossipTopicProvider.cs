@@ -2,28 +2,28 @@ namespace Lean.Network;
 
 public sealed class GossipTopicProvider : IGossipTopicProvider
 {
-    public GossipTopicProvider(string? network)
+    public GossipTopicProvider(string? forkDigest)
     {
-        Network = NormalizeNetwork(network);
-        BlockTopic = GossipTopics.Block(Network);
-        AggregateTopic = GossipTopics.Aggregate(Network);
+        ForkDigest = NormalizeForkDigest(forkDigest);
+        BlockTopic = GossipTopics.Block(ForkDigest);
+        AggregateTopic = GossipTopics.Aggregate(ForkDigest);
     }
 
-    public string Network { get; }
+    public string ForkDigest { get; }
 
     public string BlockTopic { get; }
 
     public string AggregateTopic { get; }
 
-    public string AttestationSubnetTopic(int subnetId) => GossipTopics.AttestationSubnet(Network, subnetId);
+    public string AttestationSubnetTopic(int subnetId) => GossipTopics.AttestationSubnet(ForkDigest, subnetId);
 
-    private static string NormalizeNetwork(string? network)
+    private static string NormalizeForkDigest(string? forkDigest)
     {
-        if (string.IsNullOrWhiteSpace(network))
+        if (string.IsNullOrWhiteSpace(forkDigest))
         {
-            return GossipTopics.DefaultNetwork;
+            return GossipTopics.DefaultForkDigest;
         }
 
-        return network.Trim();
+        return forkDigest.Trim();
     }
 }

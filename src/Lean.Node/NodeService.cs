@@ -94,7 +94,7 @@ public sealed class NodeService : BackgroundService
             _logger.LogWarning(ex, "Initial bootstrap connection failed; reconnect loop will retry.");
         }
 
-        _logger.LogInformation("Lean node started. Network: {Network}", _options.Network);
+        _logger.LogInformation("Lean node started. Network: {Network}", _options.ForkDigest);
 
         try
         {

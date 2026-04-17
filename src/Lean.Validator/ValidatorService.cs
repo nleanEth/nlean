@@ -75,7 +75,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         _logger = logger;
         _consensusService = consensusService;
         _networkService = networkService;
-        _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultNetwork);
+        _gossipTopics = gossipTopics ?? new GossipTopicProvider(GossipTopics.DefaultForkDigest);
         _consensusConfig = consensusConfig;
         _validatorDutyConfig = validatorDutyConfig;
         _leanSig = leanSig;

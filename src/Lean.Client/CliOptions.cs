@@ -4,7 +4,7 @@ internal sealed class CliOptions
 {
     public string? ConfigPath { get; set; }
     public string? DataDir { get; set; }
-    public string? Network { get; set; }
+    public string? ForkDigest { get; set; }
     public bool? Metrics { get; set; }
     public string? LogLevel { get; set; }
     public string? ValidatorConfig { get; set; }
@@ -70,8 +70,8 @@ internal sealed class CliOptions
                 case "data-dir":
                     options.DataDir = value;
                     break;
-                case "network":
-                    options.Network = value;
+                case "fork-digest":
+                    options.ForkDigest = value;
                     break;
                 case "metrics":
                     options.Metrics = value is null || value.Equals("true", StringComparison.OrdinalIgnoreCase);

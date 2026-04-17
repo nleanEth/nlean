@@ -9,7 +9,7 @@ namespace Lean.Node.Configuration;
 public sealed class NodeOptions
 {
     public string DataDir { get; set; } = "data";
-    public string Network { get; set; } = "devnet0";
+    public string ForkDigest { get; set; } = GossipTopics.DefaultForkDigest;
     public string? ValidatorConfigPath { get; set; }
     public string? NodeName { get; set; }
     public Libp2pConfig Libp2p { get; set; } = new();
@@ -53,9 +53,9 @@ public sealed class NodeOptions
             options.DataDir = overrides.DataDir;
         }
 
-        if (!string.IsNullOrWhiteSpace(overrides.Network))
+        if (!string.IsNullOrWhiteSpace(overrides.ForkDigest))
         {
-            options.Network = overrides.Network;
+            options.ForkDigest = overrides.ForkDigest;
         }
 
         if (overrides.MetricsEnabled.HasValue)
