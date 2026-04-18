@@ -25,6 +25,22 @@ internal static class SszInterop
         return ToBytes(root);
     }
 
+    /// <summary>
+    /// SSZ hash_tree_root for ByteList[byteLimit]: pack to 32-byte chunks,
+    /// merkleise padded to ceil(byteLimit / 32) leaves, then mix in the
+    /// actual byte length. HashBytes above is for legacy callers that treated
+    /// the value as an unlimited byte array; it omits the chunk-count
+    /// padding and therefore doesn't match SSZ spec for any ByteList with
+    /// a non-trivial limit.
+    /// </summary>
+    public static byte[] HashByteList(ReadOnlySpan<byte> value, ulong byteLimit)
+    {
+        var chunkCount = (byteLimit + 31UL) / 32UL;
+        Merkle.Merkleize(out UInt256 root, value, chunkCount);
+        Merkle.MixIn(ref root, value.Length);
+        return ToBytes(root);
+    }
+
     public static byte[] HashBytesVector(ReadOnlySpan<byte> value)
     {
         Merkle.Merkleize(out UInt256 root, value);
