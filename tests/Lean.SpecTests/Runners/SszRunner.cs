@@ -22,7 +22,17 @@ public sealed class SszRunner : ISpecTestRunner
         // the fixture count stays accurate but CI stays green.
         if (actualSerialized is null || actualRoot is null)
         {
-            Assert.Inconclusive($"SSZ runner has no handler for type '{test.TypeName}' yet");
+            var reason = test.TypeName switch
+            {
+                "Signature" or "HashTreeOpening" or "BlockSignatures" or
+                "SignedBlock" or "SignedAttestation" or "HashTreeLayer" or "PublicKey"
+                    => $"'{test.TypeName}' uses XMSS NODE_LIST_LIMIT derived from the active " +
+                       $"signature scheme (leanEnv={test.LeanEnv}). nlean hardcodes PROD while " +
+                       $"fixtures emit TEST — regenerate fixtures with --scheme=prod or add " +
+                       $"env-aware scheme selection to Lean.Consensus to lift this.",
+                _ => $"SSZ runner has no handler for type '{test.TypeName}' yet",
+            };
+            Assert.Inconclusive(reason);
             return;
         }
 
@@ -63,6 +73,19 @@ public sealed class SszRunner : ISpecTestRunner
             "AggregatedAttestation" => EncodeAggregatedAttestation(value),
             "BlockBody" => EncodeBlockBody(value),
             "Block" => EncodeBlock(value),
+            "State" => EncodeState(value),
+            "AggregatedSignatureProof" => EncodeAggregatedSignatureProof(value),
+            "SignedAggregatedAttestation" => EncodeSignedAggregatedAttestation(value),
+
+            // XMSS-bearing containers are scheme-dependent: leanSpec derives
+            // NODE_LIST_LIMIT from LOG_LIFETIME (TEST=8 → 1<<5 = 32,
+            // PROD=32 → 1<<17 = 131072). nlean's types are pinned to PROD,
+            // while spec fixtures are currently emitted under the TEST
+            // environment. Until nlean grows env-aware scheme selection
+            // or fixtures are re-run with --scheme=prod, these can't pass.
+            "Signature" or "HashTreeOpening" or "BlockSignatures"
+                or "SignedBlock" or "SignedAttestation" or "HashTreeLayer" or "PublicKey"
+                => (null, null),
 
             // Everything else: no handler yet.
             _ => (null, null),
@@ -228,6 +251,74 @@ public sealed class SszRunner : ISpecTestRunner
     {
         var body = DeserializeBlockBody(value);
         return (SszEncoding.Encode(body), new Bytes32(body.HashTreeRoot()));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeSignedAggregatedAttestation(JsonElement value)
+    {
+        // SignedAggregatedAttestation is scheme-independent: it contains
+        // AttestationData + AggregatedSignatureProof (no XMSS signature).
+        var data = DeserializeAttestationData(value.GetProperty("data"));
+        var proof = new AggregatedSignatureProof(
+            DeserializeAggregationBits(value.GetProperty("proof").GetProperty("participants")),
+            ParseHex(value.GetProperty("proof").GetProperty("proofData").GetProperty("data").GetString()!));
+        var signed = new SignedAggregatedAttestation(data, proof);
+        return (SszEncoding.Encode(signed), new Bytes32(signed.HashTreeRoot()));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeAggregatedSignatureProof(JsonElement value)
+    {
+        var proof = new AggregatedSignatureProof(
+            DeserializeAggregationBits(value.GetProperty("participants")),
+            ParseHex(value.GetProperty("proofData").GetProperty("data").GetString()!));
+        return (SszEncoding.Encode(proof), new Bytes32(proof.HashTreeRoot()));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeState(JsonElement value)
+    {
+        var state = new State(
+            new Config(ReadUInt(value.GetProperty("config").GetProperty("genesisTime"))),
+            new Slot(ReadUInt(value.GetProperty("slot"))),
+            DeserializeBlockHeader(value.GetProperty("latestBlockHeader")),
+            DeserializeCheckpoint(value.GetProperty("latestJustified")),
+            DeserializeCheckpoint(value.GetProperty("latestFinalized")),
+            DeserializeRootList(value.GetProperty("historicalBlockHashes")),
+            DeserializeBoolList(value.GetProperty("justifiedSlots")),
+            DeserializeValidatorList(value.GetProperty("validators")),
+            DeserializeRootList(value.GetProperty("justificationsRoots")),
+            DeserializeBoolList(value.GetProperty("justificationsValidators")));
+        return (SszEncoding.Encode(state), new Bytes32(state.HashTreeRoot()));
+    }
+
+    private static List<Bytes32> DeserializeRootList(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var roots = new List<Bytes32>(data.GetArrayLength());
+        foreach (var r in data.EnumerateArray())
+            roots.Add(new Bytes32(ParseHex(r.GetString()!)));
+        return roots;
+    }
+
+    private static List<bool> DeserializeBoolList(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var bools = new List<bool>(data.GetArrayLength());
+        foreach (var b in data.EnumerateArray())
+            bools.Add(b.GetBoolean());
+        return bools;
+    }
+
+    private static List<Validator> DeserializeValidatorList(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var vs = new List<Validator>(data.GetArrayLength());
+        foreach (var v in data.EnumerateArray())
+        {
+            vs.Add(new Validator(
+                new Bytes52(ParseHex(v.GetProperty("attestationPubkey").GetString()!)),
+                new Bytes52(ParseHex(v.GetProperty("proposalPubkey").GetString()!)),
+                ReadUInt(v.GetProperty("index"))));
+        }
+        return vs;
     }
 
     private static (byte[] Serialized, Bytes32 Root) EncodeBlock(JsonElement value)
