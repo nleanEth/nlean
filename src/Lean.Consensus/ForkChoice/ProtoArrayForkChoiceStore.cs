@@ -59,6 +59,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     // SyncService's BackfillTrigger by ConsensusServiceV2. Optional so tests
     // that don't need sync behavior can skip it.
     private readonly Action<Bytes32>? _requestBlockByRoot;
+    private readonly int _pruneNodeThreshold;
 
     public ProtoArrayForkChoiceStore(
         ConsensusConfig config,
@@ -72,6 +73,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
         _localValidatorIds = config.LocalValidatorIds;
         _attestationCommitteeCount = Math.Max(1, config.AttestationCommitteeCount);
+        _pruneNodeThreshold = Math.Max(0, config.PruneNodeThreshold);
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
 
         ConsensusHeadState? loaded = null;
@@ -841,10 +843,25 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         _latestFinalized = canonicalFinalized;
 
-        // Prune proto-array and remap attestation tracker indices
-        var indexMapping = _protoArray.Prune(_latestFinalized.Root);
-        if (indexMapping.Count > 0)
-            RemapAttestationTrackerIndices(indexMapping);
+        // Prune proto-array lazily, lighthouse-style: only fire when the
+        // finalized node has moved far enough from the array head to make
+        // the Vec rebuild + attestation-tracker remap worthwhile. The delay
+        // doubles as a grace window for in-flight attestations whose
+        // source/target/head points at a block near the finalization
+        // boundary — leaving them in proto-array lets TryValidateAttestationData
+        // pass its existence checks instead of failing with Unknown*Root.
+        //
+        // Only the block-tree prune is gated; attestation-pool cleanup
+        // (PruneFinalizedAttestationData) still tracks latest_finalized,
+        // because stale attestations are useless regardless of whether
+        // their target block is physically present.
+        var finalizedIdx = _protoArray.GetIndex(_latestFinalized.Root);
+        if (finalizedIdx is { } idx && idx >= _pruneNodeThreshold)
+        {
+            var indexMapping = _protoArray.Prune(_latestFinalized.Root);
+            if (indexMapping.Count > 0)
+                RemapAttestationTrackerIndices(indexMapping);
+        }
 
         PruneFinalizedAttestationData();
     }
