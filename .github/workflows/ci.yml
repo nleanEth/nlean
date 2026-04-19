@@ -36,7 +36,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/lean-crypto-ffi
+          workspaces: |
+            native/lean-crypto-ffi
+            native/lean-crypto-ffi-test
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Install dotnet-format
@@ -78,7 +80,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/lean-crypto-ffi
+          workspaces: |
+            native/lean-crypto-ffi
+            native/lean-crypto-ffi-test
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Build patched quic package
@@ -250,7 +254,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/lean-crypto-ffi
+          workspaces: |
+            native/lean-crypto-ffi
+            native/lean-crypto-ffi-test
       - name: Cache integration test keys
         uses: actions/cache@v4
         with:

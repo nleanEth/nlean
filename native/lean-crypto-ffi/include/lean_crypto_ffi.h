@@ -35,6 +35,19 @@ int32_t leansig_verify(const uint8_t *pk_ptr,
                        uintptr_t msg_len,
                        uint8_t *out_is_valid);
 
+/**
+ * Verify an XMSS signature produced with the TEST scheme (leanSpec leanEnv=test).
+ * Mirrors `leansig_verify` but uses the short LOG_LIFETIME=8, DIMENSION=4 instantiation.
+ */
+int32_t leansig_verify_test(const uint8_t *pk_ptr,
+                            uintptr_t pk_len,
+                            const uint8_t *sig_ptr,
+                            uintptr_t sig_len,
+                            uint32_t epoch,
+                            const uint8_t *msg_ptr,
+                            uintptr_t msg_len,
+                            uint8_t *out_is_valid);
+
 int32_t leanmultisig_setup_prover(void);
 
 int32_t leanmultisig_setup_verifier(void);

@@ -24,6 +24,15 @@ public interface ILeanMultiSig
         ReadOnlySpan<byte> message,
         ReadOnlySpan<byte> aggregateSignature,
         uint epoch);
+
+    /// <summary>
+    /// Verify an aggregate produced under leanSpec's TEST scheme (leanEnv=test,
+    /// LOG_LIFETIME=8, DIMENSION=4). Backed by a separate cdylib.
+    /// </summary>
+    bool VerifyAggregateTest(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
+        ReadOnlySpan<byte> message,
+        ReadOnlySpan<byte> aggregateSignature,
+        uint epoch);
 }
 
 public sealed class RustLeanMultiSig : ILeanMultiSig
@@ -195,6 +204,42 @@ public sealed class RustLeanMultiSig : ILeanMultiSig
         }
     }
 
+    public bool VerifyAggregateTest(
+        IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
+        ReadOnlySpan<byte> message,
+        ReadOnlySpan<byte> aggregateSignature,
+        uint epoch)
+    {
+        if (message.Length != RustLeanSig.MessageLength)
+        {
+            throw new ArgumentException($"LeanMultiSig expects {RustLeanSig.MessageLength}-byte messages.");
+        }
+
+        SetupVerifierTest();
+
+        using var pkBuffers = new PinnedBufferArray(publicKeys);
+
+        unsafe
+        {
+            fixed (byte* msgPtr = message)
+            fixed (byte* aggPtr = aggregateSignature)
+            {
+                var error = (LeanCryptoError)NativeMethods.LeanMultiSigVerifyAggregateTest(
+                    pkBuffers.Pointer,
+                    pkBuffers.Length,
+                    (IntPtr)aggPtr,
+                    (nuint)aggregateSignature.Length,
+                    (IntPtr)msgPtr,
+                    (nuint)message.Length,
+                    epoch,
+                    out var isValid);
+
+                ThrowIfError(error, "leanmultisig_verify_aggregate_test");
+                return isValid != 0;
+            }
+        }
+    }
+
     private static void SetupProver()
     {
         var error = (LeanCryptoError)NativeMethods.LeanMultiSigSetupProver();
@@ -205,6 +250,12 @@ public sealed class RustLeanMultiSig : ILeanMultiSig
     {
         var error = (LeanCryptoError)NativeMethods.LeanMultiSigSetupVerifier();
         ThrowIfError(error, "leanmultisig_setup_verifier");
+    }
+
+    private static void SetupVerifierTest()
+    {
+        var error = (LeanCryptoError)NativeMethods.LeanMultiSigSetupVerifierTest();
+        ThrowIfError(error, "leanmultisig_setup_verifier_test");
     }
 
     private static byte[] CopyAndFree(IntPtr ptr, nuint len)

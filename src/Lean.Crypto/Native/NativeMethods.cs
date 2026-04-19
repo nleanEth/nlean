@@ -34,6 +34,17 @@ internal static partial class NativeMethods
         nuint messageLen,
         out byte isValid);
 
+    [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leansig_verify_test")]
+    internal static partial int LeanSigVerifyTest(
+        IntPtr publicKeyPtr,
+        nuint publicKeyLen,
+        IntPtr signaturePtr,
+        nuint signatureLen,
+        uint epoch,
+        IntPtr messagePtr,
+        nuint messageLen,
+        out byte isValid);
+
     [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leanmultisig_setup_prover")]
     internal static partial int LeanMultiSigSetupProver();
 
@@ -71,6 +82,20 @@ internal static partial class NativeMethods
 
     [LibraryImport(NativeLibraryResolver.LibraryName, EntryPoint = "leanmultisig_verify_aggregate")]
     internal static partial int LeanMultiSigVerifyAggregate(
+        IntPtr publicKeys,
+        nuint publicKeyCount,
+        IntPtr aggregatePtr,
+        nuint aggregateLen,
+        IntPtr messagePtr,
+        nuint messageLen,
+        uint epoch,
+        out byte isValid);
+
+    [LibraryImport(NativeLibraryResolver.TestLibraryName, EntryPoint = "leanmultisig_setup_verifier_test")]
+    internal static partial int LeanMultiSigSetupVerifierTest();
+
+    [LibraryImport(NativeLibraryResolver.TestLibraryName, EntryPoint = "leanmultisig_verify_aggregate_test")]
+    internal static partial int LeanMultiSigVerifyAggregateTest(
         IntPtr publicKeys,
         nuint publicKeyCount,
         IntPtr aggregatePtr,
