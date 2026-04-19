@@ -107,18 +107,24 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             // advances _latestJustified to a block that is in proto-array — which
             // never happens when ≥50% of validators restart together and the
             // remaining set cannot reach supermajority.
+            // Checkpoint-sync path: the historical Block objects aren't available, so the
+            // true proposer_index isn't known. leanSpec's proposer selection is deterministic
+            // (`slot % num_validators`), so we use the same formula as a canonical fallback.
+            var modulus = Math.Max(1UL, _validatorCount);
             var headParent = finalizedRoot;
             if (!justifiedRoot.Equals(finalizedRoot))
             {
                 _protoArray.RegisterBlock(justifiedRoot, finalizedRoot, loaded.LatestJustifiedSlot,
-                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot,
+                    loaded.LatestJustifiedSlot % modulus);
                 headParent = justifiedRoot;
             }
 
             if (!headRoot.Equals(finalizedRoot) && !headRoot.Equals(justifiedRoot))
             {
                 _protoArray.RegisterBlock(headRoot, headParent, loaded.HeadSlot,
-                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot,
+                    loaded.HeadSlot % modulus);
             }
 
             _logger.LogInformation(
@@ -129,7 +135,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         {
             var chainTransition = new ChainStateTransition(config);
             var genesisState = chainTransition.CreateGenesisState(_validatorCount);
-            var genesisRoot = new Bytes32(genesisState.LatestBlockHeader.HashTreeRoot());
+            var genesisRoot = ChainStateTransition.GenesisBlockRoot(genesisState);
 
             var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
             _latestJustified = genesisCheckpoint;
@@ -386,7 +392,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _protoArray.RegisterBlock(
             blockRoot, block.ParentRoot, block.Slot.Value,
             canonicalJustified.Slot.Value,
-            canonicalFinalized.Slot.Value);
+            canonicalFinalized.Slot.Value,
+            block.ProposerIndex);
 
         _validatorCount = Math.Max(_validatorCount, validatorCount);
 

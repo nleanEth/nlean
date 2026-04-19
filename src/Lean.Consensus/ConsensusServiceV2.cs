@@ -158,7 +158,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         var snap = _snapshot;
 
-        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> rawNodes;
+        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, ulong ProposerIndex, long Weight)> rawNodes;
         Bytes32 safeTarget;
         ulong validatorCount;
         lock (_storeLock)
@@ -169,12 +169,13 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         }
 
         var fcNodes = new List<ForkChoiceNode>(rawNodes.Count);
-        foreach (var (root, slot, parentRoot, weight) in rawNodes)
+        foreach (var (root, slot, parentRoot, proposerIndex, weight) in rawNodes)
         {
             fcNodes.Add(new ForkChoiceNode(
                 Convert.ToHexString(root.AsSpan()),
                 slot,
                 Convert.ToHexString(parentRoot.AsSpan()),
+                proposerIndex,
                 weight));
         }
 
@@ -206,19 +207,9 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 return null;
         }
 
-        // Fill in zeroed LatestBlockHeader.StateRoot before encoding.
-        // The state transition stores the header with StateRoot=0; the root
-        // is lazily filled during the next slot. Checkpoint consumers expect
-        // a non-zero state root for self-consistency verification.
-        if (state.LatestBlockHeader.StateRoot.Equals(Types.Bytes32.Zero()))
-        {
-            var stateRoot = new Types.Bytes32(state.HashTreeRoot());
-            state = state with
-            {
-                LatestBlockHeader = state.LatestBlockHeader with { StateRoot = stateRoot }
-            };
-        }
-
+        // leanSpec semantic: serialize the state as-is. `latest_block_header.state_root`
+        // is zero for genesis-era states (filled in by the next process_slot). Do not
+        // back-patch — that diverges from spec and fails the api_endpoint fixtures.
         return SszEncoding.Encode(state);
     }
 
@@ -615,7 +606,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             try
             {
-                IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> allNodes;
+                IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, ulong ProposerIndex, long Weight)> allNodes;
                 Bytes32 safeTarget;
                 lock (_storeLock)
                 {

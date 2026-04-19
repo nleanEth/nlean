@@ -13,7 +13,7 @@ public class ForkChoiceTreeFormatterTests
     public void EmptyBlocks_ReturnsEmptyMessage()
     {
         var result = ForkChoiceTreeFormatter.Format(
-            Array.Empty<(Bytes32, ulong, Bytes32, long)>(),
+            Array.Empty<(Bytes32, ulong, Bytes32, ulong, long)>(),
             Root(1), Root(1), 0, Root(1), 0, Root(1));
 
         Assert.That(result, Does.Contain("Fork Choice Tree:"));
@@ -26,11 +26,11 @@ public class ForkChoiceTreeFormatterTests
         var root = Root(1);
         var a = Root(2);
         var b = Root(3);
-        var nodes = new (Bytes32, ulong, Bytes32, long)[]
+        var nodes = new (Bytes32, ulong, Bytes32, ulong, long)[]
         {
-            (root, 0, Bytes32.Zero(), 0),
-            (a, 1, root, 0),
-            (b, 2, a, 0),
+            (root, 0, Bytes32.Zero(), 0, 0),
+            (a, 1, root, 0, 0),
+            (b, 2, a, 0, 0),
         };
 
         var result = ForkChoiceTreeFormatter.Format(
@@ -50,13 +50,13 @@ public class ForkChoiceTreeFormatterTests
         var b = Root(3);
         var c = Root(4);
         var d = Root(5);
-        var nodes = new (Bytes32, ulong, Bytes32, long)[]
+        var nodes = new (Bytes32, ulong, Bytes32, ulong, long)[]
         {
-            (root, 0, Bytes32.Zero(), 0),
-            (a, 1, root, 0),
-            (b, 2, a, 0),
-            (c, 3, b, 3),
-            (d, 3, b, 1),
+            (root, 0, Bytes32.Zero(), 0, 0),
+            (a, 1, root, 0, 0),
+            (b, 2, a, 0, 0),
+            (c, 3, b, 0, 3),
+            (d, 3, b, 0, 1),
         };
 
         var result = ForkChoiceTreeFormatter.Format(
@@ -72,10 +72,10 @@ public class ForkChoiceTreeFormatterTests
     {
         var root = Root(1);
         var a = Root(2);
-        var nodes = new (Bytes32, ulong, Bytes32, long)[]
+        var nodes = new (Bytes32, ulong, Bytes32, ulong, long)[]
         {
-            (root, 0, Bytes32.Zero(), 0),
-            (a, 2, root, 0),
+            (root, 0, Bytes32.Zero(), 0, 0),
+            (a, 2, root, 0, 0),
         };
 
         var result = ForkChoiceTreeFormatter.Format(
@@ -89,10 +89,10 @@ public class ForkChoiceTreeFormatterTests
     {
         var root = Root(1);
         var a = Root(2);
-        var nodes = new (Bytes32, ulong, Bytes32, long)[]
+        var nodes = new (Bytes32, ulong, Bytes32, ulong, long)[]
         {
-            (root, 0, Bytes32.Zero(), 0),
-            (a, 4, root, 0),
+            (root, 0, Bytes32.Zero(), 0, 0),
+            (a, 4, root, 0, 0),
         };
 
         var result = ForkChoiceTreeFormatter.Format(
@@ -105,13 +105,13 @@ public class ForkChoiceTreeFormatterTests
     public void DepthTruncation_ShowsEllipsis()
     {
         var roots = Enumerable.Range(1, 25).Select(i => Root((byte)i)).ToArray();
-        var nodes = new List<(Bytes32, ulong, Bytes32, long)>
+        var nodes = new List<(Bytes32, ulong, Bytes32, ulong, long)>
         {
-            (roots[0], 0, Bytes32.Zero(), 0)
+            (roots[0], 0, Bytes32.Zero(), 0, 0)
         };
         for (int i = 1; i < 25; i++)
         {
-            nodes.Add((roots[i], (ulong)i, roots[i - 1], 0));
+            nodes.Add((roots[i], (ulong)i, roots[i - 1], 0, 0));
         }
 
         var result = ForkChoiceTreeFormatter.Format(
@@ -131,16 +131,16 @@ public class ForkChoiceTreeFormatterTests
         var e = Root(6);
         var f = Root(7);
         var g = Root(8);
-        var nodes = new (Bytes32, ulong, Bytes32, long)[]
+        var nodes = new (Bytes32, ulong, Bytes32, ulong, long)[]
         {
-            (root, 0, Bytes32.Zero(), 0),
-            (a, 1, root, 0),
-            (b, 2, a, 0),
-            (c, 3, b, 5),
-            (d, 3, b, 2),
-            (e, 4, c, 4),
-            (f, 5, e, 4),
-            (g, 5, e, 1),
+            (root, 0, Bytes32.Zero(), 0, 0),
+            (a, 1, root, 0, 0),
+            (b, 2, a, 0, 0),
+            (c, 3, b, 0, 5),
+            (d, 3, b, 0, 2),
+            (e, 4, c, 0, 4),
+            (f, 5, e, 0, 4),
+            (g, 5, e, 0, 1),
         };
 
         var result = ForkChoiceTreeFormatter.Format(

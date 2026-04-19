@@ -12,9 +12,10 @@ public sealed class ProtoArray
     {
     }
 
-    public ProtoArray(Bytes32 genesisRoot, ulong slot, ulong justifiedSlot, ulong finalizedSlot)
+    public ProtoArray(Bytes32 genesisRoot, ulong slot, ulong justifiedSlot, ulong finalizedSlot,
+        ulong proposerIndex = 0)
     {
-        var genesis = new ProtoNode(genesisRoot, Bytes32.Zero(), slot, null, justifiedSlot, finalizedSlot);
+        var genesis = new ProtoNode(genesisRoot, Bytes32.Zero(), slot, null, justifiedSlot, finalizedSlot, proposerIndex);
         _nodes.Add(genesis);
         _indices[RootKey(genesisRoot)] = 0;
     }
@@ -33,12 +34,12 @@ public sealed class ProtoArray
     }
 
     public void RegisterBlock(Bytes32 root, Bytes32 parentRoot, ulong slot,
-        ulong justifiedSlot, ulong finalizedSlot)
+        ulong justifiedSlot, ulong finalizedSlot, ulong proposerIndex = 0)
     {
         var key = RootKey(root);
         if (_indices.ContainsKey(key)) return;
         int? parentIndex = _indices.TryGetValue(RootKey(parentRoot), out var pi) ? pi : null;
-        var node = new ProtoNode(root, parentRoot, slot, parentIndex, justifiedSlot, finalizedSlot);
+        var node = new ProtoNode(root, parentRoot, slot, parentIndex, justifiedSlot, finalizedSlot, proposerIndex);
         _indices[key] = _nodes.Count;
         _nodes.Add(node);
     }
@@ -212,11 +213,11 @@ public sealed class ProtoArray
     /// <summary>
     /// Returns all nodes as (root, slot, parentRoot, weight) tuples for snapshot export.
     /// </summary>
-    public IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> GetAllNodes()
+    public IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, ulong ProposerIndex, long Weight)> GetAllNodes()
     {
-        var result = new List<(Bytes32, ulong, Bytes32, long)>(_nodes.Count);
+        var result = new List<(Bytes32, ulong, Bytes32, ulong, long)>(_nodes.Count);
         foreach (var node in _nodes)
-            result.Add((node.Root, node.Slot, node.ParentRoot, node.Weight));
+            result.Add((node.Root, node.Slot, node.ParentRoot, node.ProposerIndex, node.Weight));
         return result;
     }
 

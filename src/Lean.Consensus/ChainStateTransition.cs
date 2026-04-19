@@ -19,6 +19,11 @@ internal sealed class ChainStateTransition
 
     public State CreateGenesisState(ulong initialValidatorCount)
     {
+        // leanSpec semantic: `latest_block_header.state_root` stays zero in the genesis
+        // state; it is back-filled by the next process_slot (pattern borrowed from beacon
+        // chain). Downstream callers that need the genesis *block* root should compute
+        // `GenesisBlockRoot(state)` below, which re-materialises a header with state_root
+        // filled in just for hashing.
         var validators = BuildGenesisValidators(initialValidatorCount);
         var emptyBodyRoot = new Bytes32(new BlockBody(Array.Empty<AggregatedAttestation>()).HashTreeRoot());
         var genesisHeader = new BlockHeader(
@@ -29,7 +34,7 @@ internal sealed class ChainStateTransition
             emptyBodyRoot);
 
         var genesisCheckpoint = Checkpoint.Default();
-        var state = new State(
+        return new State(
             new Config(_config.GenesisTimeUnix),
             new Slot(0),
             genesisHeader,
@@ -40,10 +45,18 @@ internal sealed class ChainStateTransition
             validators,
             Array.Empty<Bytes32>(),
             Array.Empty<bool>());
+    }
 
-        // Compute state root with zeroed header state_root, then fill it in.
-        var stateRoot = new Bytes32(state.HashTreeRoot());
-        return state with { LatestBlockHeader = genesisHeader with { StateRoot = stateRoot } };
+    /// <summary>
+    /// Compute the genesis block root from a genesis state whose
+    /// <see cref="State.LatestBlockHeader"/>.<see cref="BlockHeader.StateRoot"/> is zero.
+    /// Mirrors leanSpec: the genesis block's header has `state_root = hash_tree_root(state)`.
+    /// </summary>
+    public static Bytes32 GenesisBlockRoot(State genesisState)
+    {
+        var stateRoot = new Bytes32(genesisState.HashTreeRoot());
+        var headerWithStateRoot = genesisState.LatestBlockHeader with { StateRoot = stateRoot };
+        return new Bytes32(headerWithStateRoot.HashTreeRoot());
     }
 
     public bool TryComputeStateRoot(
