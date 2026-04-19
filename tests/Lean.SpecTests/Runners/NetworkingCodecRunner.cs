@@ -337,37 +337,37 @@ public sealed class NetworkingCodecRunner : ISpecTestRunner
                 });
                 break;
             case "findnode":
-            {
-                typeByte = 0x03;
-                var distances = test.Input.GetProperty("distances");
-                var distanceItems = distances.EnumerateArray()
-                    .Select(d => EnrDecoder.RlpIntBytes(d.GetUInt64()))
-                    .ToList();
-                var distancesList = EnrDecoder.RlpEncodeList(distanceItems);
-                rlpPayload = EnrDecoder.RlpEncodeListOfLists(new[]
                 {
+                    typeByte = 0x03;
+                    var distances = test.Input.GetProperty("distances");
+                    var distanceItems = distances.EnumerateArray()
+                        .Select(d => EnrDecoder.RlpIntBytes(d.GetUInt64()))
+                        .ToList();
+                    var distancesList = EnrDecoder.RlpEncodeList(distanceItems);
+                    rlpPayload = EnrDecoder.RlpEncodeListOfLists(new[]
+                    {
                     EnrDecoder.RlpEncodeString(requestId),
                     distancesList,
                 });
-                break;
-            }
+                    break;
+                }
             case "nodes":
-            {
-                typeByte = 0x04;
-                var enrs = test.Input.GetProperty("enrs");
-                var enrItems = enrs.EnumerateArray()
-                    .Select(e => ParseHex(e.GetString()!))
-                    .ToList();
-                var enrsList = EnrDecoder.RlpEncodeList(enrItems);
-
-                rlpPayload = EnrDecoder.RlpEncodeListOfLists(new[]
                 {
+                    typeByte = 0x04;
+                    var enrs = test.Input.GetProperty("enrs");
+                    var enrItems = enrs.EnumerateArray()
+                        .Select(e => ParseHex(e.GetString()!))
+                        .ToList();
+                    var enrsList = EnrDecoder.RlpEncodeList(enrItems);
+
+                    rlpPayload = EnrDecoder.RlpEncodeListOfLists(new[]
+                    {
                     EnrDecoder.RlpEncodeString(requestId),
                     EnrDecoder.RlpEncodeString(EnrDecoder.RlpIntBytes(test.Input.GetProperty("total").GetUInt64())),
                     enrsList,
                 });
-                break;
-            }
+                    break;
+                }
             case "talkreq":
                 typeByte = 0x05;
                 rlpPayload = EnrDecoder.RlpEncodeList(new[]
