@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Lean.SpecTests.Types;
@@ -11,6 +12,22 @@ public sealed record ForkChoiceTest(
     [property: JsonPropertyName("steps")] List<ForkChoiceStep> Steps,
     [property: JsonPropertyName("maxSlot")] ulong MaxSlot,
     [property: JsonPropertyName("_info")] TestInfo? Info);
+
+public sealed record VerifySignaturesTest(
+    [property: JsonPropertyName("network")] string Network,
+    [property: JsonPropertyName("leanEnv")] string LeanEnv,
+    [property: JsonPropertyName("anchorState")] TestState AnchorState,
+    [property: JsonPropertyName("signedBlock")] TestSignedBlock SignedBlock,
+    [property: JsonPropertyName("expectException")] string? ExpectException,
+    [property: JsonPropertyName("_info")] TestInfo? Info);
+
+public sealed record TestSignedBlock(
+    [property: JsonPropertyName("block")] TestBlock Block,
+    [property: JsonPropertyName("signature")] TestBlockSignatures Signature);
+
+public sealed record TestBlockSignatures(
+    [property: JsonPropertyName("attestationSignatures")] TestDataArray<JsonElement>? AttestationSignatures,
+    [property: JsonPropertyName("proposerSignature")] string ProposerSignature);
 
 public sealed record StateTransitionTest(
     [property: JsonPropertyName("network")] string Network,

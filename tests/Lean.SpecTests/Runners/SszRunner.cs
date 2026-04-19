@@ -8,6 +8,11 @@ namespace Lean.SpecTests.Runners;
 
 public sealed class SszRunner : ISpecTestRunner
 {
+    // leanSpec TEST scheme (LOG_LIFETIME=8): NODE_LIST_LIMIT = 1 << (LOG_LIFETIME/2 + 1) = 32.
+    // nlean's production XMSS types are pinned to PROD (1 << 17), so XMSS-bearing
+    // hash_tree_roots are computed scheme-aware here.
+    private const ulong TestSchemeNodeListLimit = 1UL << 5;
+
     public void Run(string testId, string testJson)
     {
         var test = JsonSerializer.Deserialize<SszTest>(testJson)
@@ -22,17 +27,7 @@ public sealed class SszRunner : ISpecTestRunner
         // the fixture count stays accurate but CI stays green.
         if (actualSerialized is null || actualRoot is null)
         {
-            var reason = test.TypeName switch
-            {
-                "Signature" or "HashTreeOpening" or "BlockSignatures" or
-                "SignedBlock" or "SignedAttestation" or "HashTreeLayer" or "PublicKey"
-                    => $"'{test.TypeName}' uses XMSS NODE_LIST_LIMIT derived from the active " +
-                       $"signature scheme (leanEnv={test.LeanEnv}). nlean hardcodes PROD while " +
-                       $"fixtures emit TEST — regenerate fixtures with --scheme=prod or add " +
-                       $"env-aware scheme selection to Lean.Consensus to lift this.",
-                _ => $"SSZ runner has no handler for type '{test.TypeName}' yet",
-            };
-            Assert.Inconclusive(reason);
+            Assert.Inconclusive($"SSZ runner has no handler for type '{test.TypeName}' yet");
             return;
         }
 
@@ -77,15 +72,31 @@ public sealed class SszRunner : ISpecTestRunner
             "AggregatedSignatureProof" => EncodeAggregatedSignatureProof(value),
             "SignedAggregatedAttestation" => EncodeSignedAggregatedAttestation(value),
 
-            // XMSS-bearing containers are scheme-dependent: leanSpec derives
-            // NODE_LIST_LIMIT from LOG_LIFETIME (TEST=8 → 1<<5 = 32,
-            // PROD=32 → 1<<17 = 131072). nlean's types are pinned to PROD,
-            // while spec fixtures are currently emitted under the TEST
-            // environment. Until nlean grows env-aware scheme selection
-            // or fixtures are re-run with --scheme=prod, these can't pass.
-            "Signature" or "HashTreeOpening" or "BlockSignatures"
-                or "SignedBlock" or "SignedAttestation" or "HashTreeLayer" or "PublicKey"
-                => (null, null),
+            // === leanSpec SSZ sample/reqresp types ===
+            "SampleBitvector8" => EncodeBitvector(value, 8),
+            "SampleBitvector64" or "AttestationSubnets" => EncodeBitvector(value, 64),
+            "SyncCommitteeSubnets" => EncodeBitvector(value, 4),
+            "SampleBitlist16" => EncodeBitlist(value, 16),
+            "ByteListMiB" => EncodeByteList(value, 1UL << 20),
+            "SampleBytes32List8" => EncodeBytes32List(value, 8),
+            "SampleUint16Vector3" => EncodeUintVector(value, 3, sizeof(ushort)),
+            "SampleUint64Vector4" => EncodeUintVector(value, 4, sizeof(ulong)),
+            "SampleUint32List16" => EncodeUintList(value, 16, sizeof(uint)),
+            "BlocksByRootRequest" => EncodeBlocksByRootRequest(value),
+            "Status" => EncodeStatus(value),
+            "SampleUnionTypes" => EncodeUnion(value, includeNone: false),
+            "SampleUnionNone" => EncodeUnion(value, includeNone: true),
+
+            // === XMSS containers (leanEnv=test only) ===
+            // PublicKey is scheme-independent (fixed-length Fp vectors).
+            // The rest use NODE_LIST_LIMIT = 1<<5 = 32 for the TEST scheme.
+            "PublicKey" => EncodePublicKey(value),
+            "HashTreeLayer" => EncodeHashTreeLayer(value),
+            "HashTreeOpening" => EncodeHashTreeOpeningTest(value),
+            "Signature" => EncodeSignatureTest(value),
+            "BlockSignatures" => EncodeBlockSignaturesTest(value),
+            "SignedBlock" => EncodeSignedBlockTest(value),
+            "SignedAttestation" => EncodeSignedAttestationTest(value),
 
             // Everything else: no handler yet.
             _ => (null, null),
@@ -371,6 +382,424 @@ public sealed class SszRunner : ISpecTestRunner
                 DeserializeAttestationData(att.GetProperty("data"))));
         }
         return new BlockBody(atts);
+    }
+
+    // === XMSS test-scheme encoders ===
+
+    // PublicKey: Container { root: Vector[Fp, 8], parameter: Vector[Fp, 5] }
+    // Scheme-independent: both PROD and TEST use HASH_LEN_FE=8 and PARAMETER_LEN=5.
+    private static (byte[] Serialized, Bytes32 Root) EncodePublicKey(JsonElement value)
+    {
+        var rootFp = DeserializeFpVector(value.GetProperty("root"), 8);
+        var parameterFp = DeserializeFpVector(value.GetProperty("parameter"), 5);
+
+        var serialized = new byte[(8 + 5) * Fp.ByteLength];
+        for (var i = 0; i < 8; i++)
+            SszEncoding.Encode(rootFp[i]).CopyTo(serialized, i * Fp.ByteLength);
+        for (var i = 0; i < 5; i++)
+            SszEncoding.Encode(parameterFp[i]).CopyTo(serialized, (8 + i) * Fp.ByteLength);
+
+        var rootBytes = new byte[8 * Fp.ByteLength];
+        Array.Copy(serialized, 0, rootBytes, 0, rootBytes.Length);
+        var paramBytes = new byte[5 * Fp.ByteLength];
+        Array.Copy(serialized, 8 * Fp.ByteLength, paramBytes, 0, paramBytes.Length);
+
+        var root = SszInterop.HashContainer(
+            SszInterop.HashBytesVector(rootBytes),
+            SszInterop.HashBytesVector(paramBytes));
+        return (serialized, new Bytes32(root));
+    }
+
+    // HashTreeLayer: Container { startIndex: uint64, nodes: HashDigestList }
+    private static (byte[] Serialized, Bytes32 Root) EncodeHashTreeLayer(JsonElement value)
+    {
+        var startIndex = ReadUInt(value.GetProperty("startIndex"));
+        var nodes = DeserializeHashDigestList(value.GetProperty("nodes"));
+
+        // Encode: fixed uint64 (8) + offset uint32 (4) + variable nodes bytes.
+        var nodesBytes = SszEncoding.Encode(nodes);
+        var fixedSize = 8 + 4;
+        var serialized = new byte[fixedSize + nodesBytes.Length];
+        BitConverter.GetBytes(startIndex).CopyTo(serialized, 0);
+        BitConverter.GetBytes((uint)fixedSize).CopyTo(serialized, 8);
+        nodesBytes.CopyTo(serialized, fixedSize);
+
+        var root = SszInterop.HashContainer(
+            SszInterop.HashUInt64(startIndex),
+            HashDigestListRootTest(nodes));
+        return (serialized, new Bytes32(root));
+    }
+
+    // HashTreeOpening: Container { siblings: HashDigestList }
+    private static (byte[] Serialized, Bytes32 Root) EncodeHashTreeOpeningTest(JsonElement value)
+    {
+        var opening = DeserializeHashTreeOpening(value);
+        return (SszEncoding.Encode(opening), new Bytes32(HashTreeOpeningRootTest(opening)));
+    }
+
+    // XmssSignature: Container { path: HashTreeOpening, rho: Randomness, hashes: HashDigestList }
+    // Fixture emits the SSZ-encoded bytes directly as a hex string in `value`.
+    private static (byte[] Serialized, Bytes32 Root) EncodeSignatureTest(JsonElement value)
+    {
+        var serialized = ParseHex(value.GetString()!);
+        var signature = XmssSignature.FromBytes(serialized);
+        return (serialized, new Bytes32(XmssSignatureRootTest(signature)));
+    }
+
+    // BlockSignatures: Container { attestationSignatures: List[AggregatedSignatureProof, VALIDATOR_REGISTRY_LIMIT], proposerSignature: XmssSignature }
+    private static (byte[] Serialized, Bytes32 Root) EncodeBlockSignaturesTest(JsonElement value)
+    {
+        var proofs = DeserializeAggregatedSignatureProofList(value.GetProperty("attestationSignatures"));
+        var proposerSig = XmssSignature.FromBytes(ParseHex(value.GetProperty("proposerSignature").GetString()!));
+        var signatures = new BlockSignatures(proofs, proposerSig);
+
+        var attRoots = proofs.Select(p => p.HashTreeRoot()).ToList();
+        var root = SszInterop.HashContainer(
+            SszInterop.HashList(attRoots, SszEncoding.ValidatorRegistryLimit),
+            XmssSignatureRootTest(proposerSig));
+        return (SszEncoding.Encode(signatures), new Bytes32(root));
+    }
+
+    // SignedBlock: Container { block: Block, signature: BlockSignatures }
+    private static (byte[] Serialized, Bytes32 Root) EncodeSignedBlockTest(JsonElement value)
+    {
+        var block = new Block(
+            new Slot(ReadUInt(value.GetProperty("block").GetProperty("slot"))),
+            ReadUInt(value.GetProperty("block").GetProperty("proposerIndex")),
+            new Bytes32(ParseHex(value.GetProperty("block").GetProperty("parentRoot").GetString()!)),
+            new Bytes32(ParseHex(value.GetProperty("block").GetProperty("stateRoot").GetString()!)),
+            DeserializeBlockBody(value.GetProperty("block").GetProperty("body")));
+
+        var sigValue = value.GetProperty("signature");
+        var proofs = DeserializeAggregatedSignatureProofList(sigValue.GetProperty("attestationSignatures"));
+        var proposerSig = XmssSignature.FromBytes(ParseHex(sigValue.GetProperty("proposerSignature").GetString()!));
+        var signatures = new BlockSignatures(proofs, proposerSig);
+        var signed = new SignedBlock(block, signatures);
+
+        var attRoots = proofs.Select(p => p.HashTreeRoot()).ToList();
+        var signaturesRoot = SszInterop.HashContainer(
+            SszInterop.HashList(attRoots, SszEncoding.ValidatorRegistryLimit),
+            XmssSignatureRootTest(proposerSig));
+        var root = SszInterop.HashContainer(block.HashTreeRoot(), signaturesRoot);
+        return (SszEncoding.Encode(signed), new Bytes32(root));
+    }
+
+    // SignedAttestation: Container { validatorId: uint64, data: AttestationData, signature: XmssSignature }
+    // nlean's SignedAttestation has no HashTreeRoot; compute inline.
+    private static (byte[] Serialized, Bytes32 Root) EncodeSignedAttestationTest(JsonElement value)
+    {
+        var validatorId = ReadUInt(value.GetProperty("validatorId"));
+        var data = DeserializeAttestationData(value.GetProperty("data"));
+        var signature = XmssSignature.FromBytes(ParseHex(value.GetProperty("signature").GetString()!));
+        var signed = new SignedAttestation(validatorId, data, signature);
+
+        var root = SszInterop.HashContainer(
+            SszInterop.HashUInt64(validatorId),
+            data.HashTreeRoot(),
+            XmssSignatureRootTest(signature));
+        return (SszEncoding.Encode(signed), new Bytes32(root));
+    }
+
+    // === XMSS test-scheme merkleization helpers ===
+
+    private static byte[] HashDigestListRootTest(HashDigestList list)
+    {
+        var roots = list.Elements.Select(e => e.HashTreeRoot()).ToList();
+        return SszInterop.HashList(roots, TestSchemeNodeListLimit);
+    }
+
+    private static byte[] HashTreeOpeningRootTest(HashTreeOpening opening)
+    {
+        return SszInterop.HashContainer(HashDigestListRootTest(opening.Siblings));
+    }
+
+    private static byte[] XmssSignatureRootTest(XmssSignature sig)
+    {
+        return SszInterop.HashContainer(
+            HashTreeOpeningRootTest(sig.Path),
+            sig.Rho.HashTreeRoot(),
+            HashDigestListRootTest(sig.Hashes));
+    }
+
+    // === XMSS deserializers ===
+
+    private static Fp[] DeserializeFpVector(JsonElement value, int expectedLength)
+    {
+        var data = value.GetProperty("data");
+        if (data.GetArrayLength() != expectedLength)
+            throw new InvalidOperationException($"expected Fp vector of length {expectedLength}");
+
+        var result = new Fp[expectedLength];
+        var i = 0;
+        foreach (var fp in data.EnumerateArray())
+            result[i++] = new Fp((uint)ReadUInt(fp));
+        return result;
+    }
+
+    private static HashDigestVector DeserializeHashDigestVector(JsonElement value)
+    {
+        var fps = DeserializeFpVector(value, HashDigestVector.Length);
+        return new HashDigestVector(fps);
+    }
+
+    private static HashDigestList DeserializeHashDigestList(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var vectors = new List<HashDigestVector>(data.GetArrayLength());
+        foreach (var v in data.EnumerateArray())
+            vectors.Add(DeserializeHashDigestVector(v));
+        return new HashDigestList(vectors);
+    }
+
+    private static HashTreeOpening DeserializeHashTreeOpening(JsonElement value)
+    {
+        return new HashTreeOpening(DeserializeHashDigestList(value.GetProperty("siblings")));
+    }
+
+    private static List<AggregatedSignatureProof> DeserializeAggregatedSignatureProofList(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var proofs = new List<AggregatedSignatureProof>(data.GetArrayLength());
+        foreach (var p in data.EnumerateArray())
+        {
+            proofs.Add(new AggregatedSignatureProof(
+                DeserializeAggregationBits(p.GetProperty("participants")),
+                ParseHex(p.GetProperty("proofData").GetProperty("data").GetString()!)));
+        }
+        return proofs;
+    }
+
+    // === leanSpec SSZ sample/reqresp encoders ===
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeBitvector(JsonElement value, int length)
+    {
+        var bits = ReadBoolArray(value);
+        if (bits.Length != length)
+            throw new InvalidOperationException($"expected Bitvector[{length}], got {bits.Length} bits");
+
+        var serialized = PackBits(bits);
+        var chunkCount = (ulong)((length + 255) / 256);
+        var root = MerkleizeBytesWithChunkLimit(serialized, chunkCount);
+        return (serialized, new Bytes32(root));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeBitlist(JsonElement value, int limit)
+    {
+        var bits = ReadBoolArray(value);
+        if (bits.Length > limit)
+            throw new InvalidOperationException($"Bitlist[{limit}] overflow: {bits.Length}");
+
+        var serialized = EncodeBitlistSerialized(bits);
+        var packed = PackBits(bits);
+        var chunkCount = (ulong)((limit + 255) / 256);
+        var merkleRoot = MerkleizeBytesWithChunkLimit(packed, chunkCount);
+        var root = MixInLength(merkleRoot, (ulong)bits.Length);
+        return (serialized, new Bytes32(root));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeByteList(JsonElement value, ulong byteLimit)
+    {
+        var bytes = ParseHex(value.GetProperty("data").GetString() ?? string.Empty);
+        return (bytes, new Bytes32(SszInterop.HashByteList(bytes, byteLimit)));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeBytes32List(JsonElement value, int limit)
+    {
+        var data = value.GetProperty("data");
+        var roots = new List<byte[]>(data.GetArrayLength());
+        var serialized = new List<byte>(data.GetArrayLength() * 32);
+        foreach (var item in data.EnumerateArray())
+        {
+            var b = ParseHex(item.GetString()!);
+            if (b.Length != 32) throw new InvalidOperationException("Bytes32 list element != 32 bytes");
+            serialized.AddRange(b);
+            roots.Add(b);
+        }
+        var root = SszInterop.HashList(roots, (ulong)limit);
+        return (serialized.ToArray(), new Bytes32(root));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeUintVector(JsonElement value, int length, int elementSize)
+    {
+        var elems = ReadUintArray(value);
+        if (elems.Length != length)
+            throw new InvalidOperationException($"expected Vector[uint{elementSize * 8},{length}], got {elems.Length}");
+
+        var serialized = new byte[length * elementSize];
+        for (var i = 0; i < length; i++)
+            WriteUintLE(serialized.AsSpan(i * elementSize, elementSize), elems[i]);
+
+        var chunkCount = (ulong)((length * elementSize + 31) / 32);
+        var root = MerkleizeBytesWithChunkLimit(serialized, chunkCount);
+        return (serialized, new Bytes32(root));
+    }
+
+    private static (byte[] Serialized, Bytes32 Root) EncodeUintList(JsonElement value, int limit, int elementSize)
+    {
+        var elems = ReadUintArray(value);
+        if (elems.Length > limit)
+            throw new InvalidOperationException($"List[uint,{limit}] overflow: {elems.Length}");
+
+        var serialized = new byte[elems.Length * elementSize];
+        for (var i = 0; i < elems.Length; i++)
+            WriteUintLE(serialized.AsSpan(i * elementSize, elementSize), elems[i]);
+
+        var chunkCount = (ulong)((limit * elementSize + 31) / 32);
+        var merkleRoot = MerkleizeBytesWithChunkLimit(serialized, chunkCount);
+        var root = MixInLength(merkleRoot, (ulong)elems.Length);
+        return (serialized, new Bytes32(root));
+    }
+
+    // BlocksByRootRequest: Container { roots: List[Bytes32, MAX_REQUEST_BLOCKS=1024] }
+    private static (byte[] Serialized, Bytes32 Root) EncodeBlocksByRootRequest(JsonElement value)
+    {
+        var (rootsSerialized, rootsRoot) = EncodeBytes32List(value.GetProperty("roots"), 1024);
+
+        // Container has one variable field: offset(4) || data
+        var serialized = new byte[4 + rootsSerialized.Length];
+        BitConverter.GetBytes((uint)4).CopyTo(serialized, 0);
+        rootsSerialized.CopyTo(serialized, 4);
+
+        var root = SszInterop.HashContainer(rootsRoot.AsSpan().ToArray());
+        return (serialized, new Bytes32(root));
+    }
+
+    // Status: Container { finalized: Checkpoint, head: Checkpoint }
+    private static (byte[] Serialized, Bytes32 Root) EncodeStatus(JsonElement value)
+    {
+        var finalized = DeserializeCheckpoint(value.GetProperty("finalized"));
+        var head = DeserializeCheckpoint(value.GetProperty("head"));
+
+        var serialized = new byte[80]; // 2 * (32 + 8)
+        finalized.Root.AsSpan().CopyTo(serialized);
+        BitConverter.GetBytes(finalized.Slot.Value).CopyTo(serialized, 32);
+        head.Root.AsSpan().CopyTo(serialized.AsSpan(40));
+        BitConverter.GetBytes(head.Slot.Value).CopyTo(serialized, 72);
+
+        var root = SszInterop.HashContainer(finalized.HashTreeRoot(), head.HashTreeRoot());
+        return (serialized, new Bytes32(root));
+    }
+
+    // Union: serialize as selector(1) || value; htr = mix_in_selector(htr(value), selector).
+    // None arm (selector 0 for Union[None, ...]) → htr(value) = zero32.
+    private static (byte[] Serialized, Bytes32 Root) EncodeUnion(JsonElement value, bool includeNone)
+    {
+        var selector = (byte)ReadUInt(value.GetProperty("selector"));
+        var valueElem = value.GetProperty("value");
+
+        byte[] valueSerialized;
+        byte[] innerRoot;
+        if (includeNone && selector == 0)
+        {
+            valueSerialized = Array.Empty<byte>();
+            innerRoot = new byte[32];
+        }
+        else
+        {
+            // Remaining arms are uintN; SampleUnionTypes = Union[uint8, uint16, uint32] (no None),
+            // SampleUnionNone = Union[None, uint16, uint32].
+            var byteSize = (selector, includeNone) switch
+            {
+                (0, false) => 1, // uint8
+                (1, false) => 2, // uint16
+                (2, false) => 4, // uint32
+                (1, true) => 2, // uint16
+                (2, true) => 4, // uint32
+                _ => throw new InvalidOperationException($"Unexpected union selector {selector} (includeNone={includeNone})"),
+            };
+            var u = ReadUInt(valueElem);
+            valueSerialized = new byte[byteSize];
+            WriteUintLE(valueSerialized, u);
+            var padded = new byte[32];
+            valueSerialized.CopyTo(padded, 0);
+            innerRoot = padded;
+        }
+
+        var serialized = new byte[1 + valueSerialized.Length];
+        serialized[0] = selector;
+        valueSerialized.CopyTo(serialized, 1);
+
+        var root = MixInLength(innerRoot, selector); // mix_in_selector shares the structure of mix_in_length
+        return (serialized, new Bytes32(root));
+    }
+
+    // === SSZ merkleization / mix helpers ===
+
+    private static byte[] MerkleizeBytesWithChunkLimit(byte[] bytes, ulong chunkCount)
+    {
+        if (chunkCount == 0)
+            return new byte[32];
+
+        var actualChunks = new List<byte[]>();
+        for (var i = 0; i < bytes.Length; i += 32)
+        {
+            var chunk = new byte[32];
+            var len = Math.Min(32, bytes.Length - i);
+            Array.Copy(bytes, i, chunk, 0, len);
+            actualChunks.Add(chunk);
+        }
+
+        // Pad to chunkCount (bounded by limit), then next power of two for merkle tree.
+        while ((ulong)actualChunks.Count < chunkCount)
+            actualChunks.Add(new byte[32]);
+
+        return MerkleiseChunks(actualChunks);
+    }
+
+    private static byte[] MixInLength(byte[] root, ulong length)
+    {
+        var combined = new byte[64];
+        root.CopyTo(combined, 0);
+        BitConverter.GetBytes(length).CopyTo(combined, 32);
+        return System.Security.Cryptography.SHA256.HashData(combined);
+    }
+
+    private static byte[] PackBits(bool[] bits)
+    {
+        var byteLen = (bits.Length + 7) / 8;
+        var bytes = new byte[byteLen];
+        for (var i = 0; i < bits.Length; i++)
+        {
+            if (bits[i]) bytes[i / 8] |= (byte)(1 << (i % 8));
+        }
+        return bytes;
+    }
+
+    private static byte[] EncodeBitlistSerialized(bool[] bits)
+    {
+        // Append a terminator bit set to 1 (marks the logical length).
+        var packedLen = (bits.Length / 8) + 1;
+        var bytes = new byte[packedLen];
+        for (var i = 0; i < bits.Length; i++)
+        {
+            if (bits[i]) bytes[i / 8] |= (byte)(1 << (i % 8));
+        }
+        bytes[bits.Length / 8] |= (byte)(1 << (bits.Length % 8));
+        return bytes;
+    }
+
+    private static bool[] ReadBoolArray(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var bits = new bool[data.GetArrayLength()];
+        var i = 0;
+        foreach (var b in data.EnumerateArray()) bits[i++] = b.GetBoolean();
+        return bits;
+    }
+
+    private static ulong[] ReadUintArray(JsonElement value)
+    {
+        var data = value.GetProperty("data");
+        var result = new ulong[data.GetArrayLength()];
+        var i = 0;
+        foreach (var item in data.EnumerateArray()) result[i++] = ReadUInt(item);
+        return result;
+    }
+
+    private static void WriteUintLE(Span<byte> dst, ulong value)
+    {
+        for (var i = 0; i < dst.Length; i++)
+            dst[i] = (byte)(value >> (8 * i));
     }
 
     // === Shared ===
