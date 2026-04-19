@@ -19,4 +19,14 @@ public sealed class ConsensusConfig
     public bool IsAggregator { get; set; } = false;
     public IReadOnlyList<int> AggregateSubnetIds { get; set; } = Array.Empty<int>();
     public IReadOnlySet<ulong> LocalValidatorIds { get; set; } = new HashSet<ulong> { 0 };
+
+    // Amortise ProtoArray.Prune cost AND provide a grace window for in-flight
+    // attestations whose source / target / head references a block that is
+    // about to fall outside the finalized boundary. When `finalizedIndex` in
+    // ProtoArray is below this threshold, UpdateStoreCheckpoints skips the
+    // rebuild and leaves the pre-finalized ancestors in place. lighthouse
+    // uses 256 for mainnet; 3SF-mini's faster finalization cadence makes a
+    // smaller value (≈1 eth epoch) preferable — race window is at most a
+    // few slots of gossip delay, so 64 is comfortable without wasting memory.
+    public int PruneNodeThreshold { get; set; } = 64;
 }

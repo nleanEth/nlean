@@ -1,0 +1,18 @@
+[package]
+name = "lean-crypto-ffi-test"
+version = "0.1.0"
+edition = "2021"
+
+# Dedicated shared library exposing the leanSpec TEST signature scheme
+# (LOG_LIFETIME=8, DIMENSION=4) for aggregate-verify spec fixtures.
+# The `rec_aggregation` crate compiles its bytecode against a single scheme
+# via the `test-config` feature, so the production FFI (which targets PROD)
+# and this test-scheme FFI must ship as separate cdylibs.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rec_aggregation = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6", features = ["test-config"] }
+leansig_wrapper = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6", features = ["test-config"] }
+backend = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6" }

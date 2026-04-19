@@ -788,6 +788,90 @@ public sealed class ProtoArrayForkChoiceStoreTests
         Assert.That(result.RejectReason, Is.EqualTo(ForkChoiceRejectReason.InvalidAttestation));
     }
 
+    [Test]
+    public void UpdateStoreCheckpoints_BelowPruneThreshold_LeavesPreFinalizedBlocksInTree()
+    {
+        // Regression: before PruneNodeThreshold gating, finalization advance
+        // immediately ran ProtoArray.Prune and dropped pre-finalized ancestors.
+        // An in-flight attestation whose source referenced a just-finalized
+        // block would then fail the ContainsBlock check in
+        // TryValidateAttestationData with "Unknown source root", even though
+        // the attestation was valid when the validator produced it.
+        //
+        // With threshold=64 and a short chain (only ~6 nodes), finalizedIdx
+        // never reaches the threshold, so Prune is skipped and the recently
+        // finalized ancestors stay addressable — attestations built around
+        // the finalization boundary still pass validation.
+        var config = new ConsensusConfig { InitialValidatorCount = 4, PruneNodeThreshold = 64 };
+        var store = new ProtoArrayForkChoiceStore(config);
+
+        var genesisCheckpoint = new Checkpoint(store.FinalizedRoot, new Slot(store.FinalizedSlot));
+        var parent = store.FinalizedRoot;
+        var roots = new Dictionary<int, Bytes32>();
+
+        for (ulong slot = 1; slot <= 4; slot++)
+        {
+            var block = CreateBlock(slot, parent, slot % 4);
+            var signed = WrapBlock(block);
+            var result = store.OnBlock(signed, genesisCheckpoint, genesisCheckpoint, 4);
+            Assert.That(result.Accepted, Is.True, $"Block at slot {slot} should be accepted");
+            var root = new Bytes32(block.HashTreeRoot());
+            roots[(int)slot] = root;
+            parent = root;
+        }
+
+        // Apply B5 while declaring canonical finalization at B3. Without the
+        // threshold gate, this call's UpdateStoreCheckpoints would rebuild the
+        // proto-array and drop genesis/B1/B2.
+        var b3Root = roots[3];
+        var b3Checkpoint = new Checkpoint(b3Root, new Slot(3));
+        var b5 = CreateBlock(5, parent, 1);
+        var b5Signed = WrapBlock(b5);
+        var b5Result = store.OnBlock(b5Signed, b3Checkpoint, b3Checkpoint, 4);
+        Assert.That(b5Result.Accepted, Is.True);
+
+        Assert.That(store.FinalizedRoot, Is.EqualTo(b3Root), "finalized should have advanced to B3");
+        Assert.That(store.ContainsBlock(roots[1]), Is.True,
+            "B1 should remain in proto-array because finalizedIdx (3) < threshold (64)");
+        Assert.That(store.ContainsBlock(roots[2]), Is.True,
+            "B2 should remain — threshold protects the whole pre-finalized prefix");
+    }
+
+    [Test]
+    public void UpdateStoreCheckpoints_AbovePruneThreshold_PrunesEagerly()
+    {
+        // Symmetric check: with threshold=0 (pre-fix behaviour) the same
+        // sequence drops pre-finalized ancestors as soon as finalization
+        // advances. This proves the gate actually gates — if the threshold
+        // field is ever accidentally ignored, this test regresses.
+        var config = new ConsensusConfig { InitialValidatorCount = 4, PruneNodeThreshold = 0 };
+        var store = new ProtoArrayForkChoiceStore(config);
+
+        var genesisCheckpoint = new Checkpoint(store.FinalizedRoot, new Slot(store.FinalizedSlot));
+        var parent = store.FinalizedRoot;
+        var roots = new Dictionary<int, Bytes32>();
+
+        for (ulong slot = 1; slot <= 4; slot++)
+        {
+            var block = CreateBlock(slot, parent, slot % 4);
+            store.OnBlock(WrapBlock(block), genesisCheckpoint, genesisCheckpoint, 4);
+            var root = new Bytes32(block.HashTreeRoot());
+            roots[(int)slot] = root;
+            parent = root;
+        }
+
+        var b3Checkpoint = new Checkpoint(roots[3], new Slot(3));
+        var b5 = CreateBlock(5, parent, 1);
+        store.OnBlock(WrapBlock(b5), b3Checkpoint, b3Checkpoint, 4);
+
+        Assert.That(store.ContainsBlock(roots[1]), Is.False,
+            "B1 should be pruned with threshold=0");
+        Assert.That(store.ContainsBlock(roots[2]), Is.False,
+            "B2 should be pruned with threshold=0");
+        Assert.That(store.ContainsBlock(roots[3]), Is.True,
+            "B3 (the finalized anchor) must remain after prune");
+    }
+
     private static ProtoArrayForkChoiceStore CreateStore(ulong validatorCount = 1)
     {
         var config = new ConsensusConfig { InitialValidatorCount = validatorCount };

@@ -73,19 +73,19 @@ public sealed class LeanApiServer
             switch (path)
             {
                 case "/lean/v0/health":
-                    WriteJson(response, 200, "{\"status\":\"ok\"}");
+                    WriteJson(response, 200, "{\"status\":\"healthy\",\"service\":\"lean-rpc-api\"}");
                     break;
 
                 case "/lean/v0/checkpoints/justified":
                     var snap1 = _getSnapshot();
                     WriteJson(response, 200,
-                        $"{{\"slot\":{snap1.JustifiedSlot},\"root\":\"{snap1.JustifiedRoot}\"}}");
+                        $"{{\"slot\":{snap1.JustifiedSlot},\"root\":\"0x{snap1.JustifiedRoot}\"}}");
                     break;
 
                 case "/lean/v0/checkpoints/finalized":
                     var snap2 = _getSnapshot();
                     WriteJson(response, 200,
-                        $"{{\"slot\":{snap2.FinalizedSlot},\"root\":\"{snap2.FinalizedRoot}\"}}");
+                        $"{{\"slot\":{snap2.FinalizedSlot},\"root\":\"0x{snap2.FinalizedRoot}\"}}");
                     break;
 
                 case "/lean/v0/states/finalized":
@@ -129,7 +129,9 @@ public sealed class LeanApiServer
                         sb.Append(n.Slot);
                         sb.Append(",\"parent_root\":\"0x");
                         sb.Append(n.ParentRoot);
-                        sb.Append("\",\"weight\":");
+                        sb.Append("\",\"proposer_index\":");
+                        sb.Append(n.ProposerIndex);
+                        sb.Append(",\"weight\":");
                         sb.Append(n.Weight);
                         sb.Append('}');
                     }
@@ -186,7 +188,7 @@ public sealed class LeanApiServer
 }
 
 public sealed record ForkChoiceNode(
-    string Root, ulong Slot, string ParentRoot, long Weight);
+    string Root, ulong Slot, string ParentRoot, ulong ProposerIndex, long Weight);
 
 public sealed record ForkChoiceSnapshot(
     IReadOnlyList<ForkChoiceNode> Nodes,

@@ -8,6 +8,11 @@ public interface ILeanSig
     LeanSigKeyPair GenerateKeyPair(uint activationEpoch, uint numActiveEpochs);
     byte[] Sign(ReadOnlySpan<byte> secretKey, uint epoch, ReadOnlySpan<byte> message);
     bool Verify(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature);
+
+    /// <summary>
+    /// Verify an XMSS signature produced with the TEST scheme (leanSpec leanEnv=test).
+    /// </summary>
+    bool VerifyTest(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature);
 }
 
 public sealed record LeanSigKeyPair(byte[] PublicKey, byte[] SecretKey);
@@ -84,6 +89,32 @@ public sealed class RustLeanSig : ILeanSig
                     out var isValid);
 
                 ThrowIfError(error, "leansig_verify");
+                return isValid != 0;
+            }
+        }
+    }
+
+    public bool VerifyTest(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
+    {
+        EnsureMessageLength(message);
+
+        unsafe
+        {
+            fixed (byte* pkPtr = publicKey)
+            fixed (byte* sigPtr = signature)
+            fixed (byte* msgPtr = message)
+            {
+                var error = (LeanCryptoError)NativeMethods.LeanSigVerifyTest(
+                    (IntPtr)pkPtr,
+                    (nuint)publicKey.Length,
+                    (IntPtr)sigPtr,
+                    (nuint)signature.Length,
+                    epoch,
+                    (IntPtr)msgPtr,
+                    (nuint)message.Length,
+                    out var isValid);
+
+                ThrowIfError(error, "leansig_verify_test");
                 return isValid != 0;
             }
         }

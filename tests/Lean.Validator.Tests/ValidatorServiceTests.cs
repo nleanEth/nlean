@@ -963,6 +963,11 @@ public sealed class ValidatorServiceTests
         {
             return true;
         }
+
+        public bool VerifyTest(ReadOnlySpan<byte> publicKey, uint epoch, ReadOnlySpan<byte> message, ReadOnlySpan<byte> signature)
+        {
+            return true;
+        }
     }
 
     private sealed class FakeConsensusService : IConsensusService
@@ -1133,6 +1138,14 @@ public sealed class ValidatorServiceTests
         }
 
         public bool VerifyAggregate(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
+            ReadOnlySpan<byte> message,
+            ReadOnlySpan<byte> aggregateSignature,
+            uint epoch)
+        {
+            return true;
+        }
+
+        public bool VerifyAggregateTest(IReadOnlyList<ReadOnlyMemory<byte>> publicKeys,
             ReadOnlySpan<byte> message,
             ReadOnlySpan<byte> aggregateSignature,
             uint epoch)

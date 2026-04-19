@@ -50,10 +50,10 @@ public sealed record State(
             LatestBlockHeader.HashTreeRoot(),
             LatestJustified.HashTreeRoot(),
             LatestFinalized.HashTreeRoot(),
-            SszInterop.HashList(historicalRoots, SszEncoding.NodeListLimit),
-            SszInterop.HashBitlist(JustifiedSlots.ToArray(), SszEncoding.NodeListLimit),
+            SszInterop.HashList(historicalRoots, SszEncoding.HistoricalRootsLimit),
+            SszInterop.HashBitlist(JustifiedSlots.ToArray(), SszEncoding.HistoricalRootsLimit),
             SszInterop.HashList(validatorRoots, SszEncoding.ValidatorRegistryLimit),
-            SszInterop.HashList(justificationRoots, SszEncoding.NodeListLimit),
+            SszInterop.HashList(justificationRoots, SszEncoding.HistoricalRootsLimit),
             SszInterop.HashBitlist(JustificationsValidators.ToArray(), JustificationsValidatorsLimit));
     }
 }

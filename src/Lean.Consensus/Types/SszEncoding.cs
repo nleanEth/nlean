@@ -14,8 +14,18 @@ public static class SszEncoding
     public const int RandomnessLength = Randomness.Length * FpLength;
     public const int HashDigestVectorLength = HashDigestVector.Length * FpLength;
     public const int ValidatorLength = Bytes52Length + Bytes52Length + UInt64Length;
-    public const int NodeListLimit = 1 << 18;
+    // SSZ list limits. These used to share a single `NodeListLimit` constant
+    // that happened to match HISTORICAL_ROOTS_LIMIT but silently mis-sized the
+    // XMSS `hashes` list merkleisation (spec wants 1 << 17 for LOG_LIFETIME=32,
+    // not 1 << 18). Split by semantic intent so every caller picks the right
+    // one and spec hash_tree_root parity stays green.
+    public const int HistoricalRootsLimit = 1 << 18;    // state historical lists / bitlists
+    public const int XmssNodeListLimit = 1 << 17;       // XMSS hashes list (LOG_LIFETIME/2+1)
     public const int ValidatorRegistryLimit = 1 << 12;
+
+    /// <summary>Obsolete alias retained for source compatibility; prefer HistoricalRootsLimit.</summary>
+    [Obsolete("Use HistoricalRootsLimit for state lists or XmssNodeListLimit for XMSS hashes")]
+    public const int NodeListLimit = HistoricalRootsLimit;
     public const int CheckpointLength = Bytes32Length + UInt64Length;
     public const int AttestationDataLength = UInt64Length + (CheckpointLength * 3);
     public const int AttestationLength = UInt64Length + AttestationDataLength;

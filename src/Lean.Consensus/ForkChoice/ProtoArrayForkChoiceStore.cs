@@ -59,6 +59,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     // SyncService's BackfillTrigger by ConsensusServiceV2. Optional so tests
     // that don't need sync behavior can skip it.
     private readonly Action<Bytes32>? _requestBlockByRoot;
+    private readonly int _pruneNodeThreshold;
 
     public ProtoArrayForkChoiceStore(
         ConsensusConfig config,
@@ -72,6 +73,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _validatorCount = Math.Max(1UL, config.InitialValidatorCount);
         _localValidatorIds = config.LocalValidatorIds;
         _attestationCommitteeCount = Math.Max(1, config.AttestationCommitteeCount);
+        _pruneNodeThreshold = Math.Max(0, config.PruneNodeThreshold);
         _logger = logger ?? (ILogger)NullLogger<ProtoArrayForkChoiceStore>.Instance;
 
         ConsensusHeadState? loaded = null;
@@ -105,18 +107,24 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             // advances _latestJustified to a block that is in proto-array — which
             // never happens when ≥50% of validators restart together and the
             // remaining set cannot reach supermajority.
+            // Checkpoint-sync path: the historical Block objects aren't available, so the
+            // true proposer_index isn't known. leanSpec's proposer selection is deterministic
+            // (`slot % num_validators`), so we use the same formula as a canonical fallback.
+            var modulus = Math.Max(1UL, _validatorCount);
             var headParent = finalizedRoot;
             if (!justifiedRoot.Equals(finalizedRoot))
             {
                 _protoArray.RegisterBlock(justifiedRoot, finalizedRoot, loaded.LatestJustifiedSlot,
-                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot,
+                    loaded.LatestJustifiedSlot % modulus);
                 headParent = justifiedRoot;
             }
 
             if (!headRoot.Equals(finalizedRoot) && !headRoot.Equals(justifiedRoot))
             {
                 _protoArray.RegisterBlock(headRoot, headParent, loaded.HeadSlot,
-                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot);
+                    loaded.LatestJustifiedSlot, loaded.LatestFinalizedSlot,
+                    loaded.HeadSlot % modulus);
             }
 
             _logger.LogInformation(
@@ -127,7 +135,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         {
             var chainTransition = new ChainStateTransition(config);
             var genesisState = chainTransition.CreateGenesisState(_validatorCount);
-            var genesisRoot = new Bytes32(genesisState.LatestBlockHeader.HashTreeRoot());
+            var genesisRoot = ChainStateTransition.GenesisBlockRoot(genesisState);
 
             var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
             _latestJustified = genesisCheckpoint;
@@ -384,7 +392,8 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         _protoArray.RegisterBlock(
             blockRoot, block.ParentRoot, block.Slot.Value,
             canonicalJustified.Slot.Value,
-            canonicalFinalized.Slot.Value);
+            canonicalFinalized.Slot.Value,
+            block.ProposerIndex);
 
         _validatorCount = Math.Max(_validatorCount, validatorCount);
 
@@ -841,10 +850,25 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 
         _latestFinalized = canonicalFinalized;
 
-        // Prune proto-array and remap attestation tracker indices
-        var indexMapping = _protoArray.Prune(_latestFinalized.Root);
-        if (indexMapping.Count > 0)
-            RemapAttestationTrackerIndices(indexMapping);
+        // Prune proto-array lazily, lighthouse-style: only fire when the
+        // finalized node has moved far enough from the array head to make
+        // the Vec rebuild + attestation-tracker remap worthwhile. The delay
+        // doubles as a grace window for in-flight attestations whose
+        // source/target/head points at a block near the finalization
+        // boundary — leaving them in proto-array lets TryValidateAttestationData
+        // pass its existence checks instead of failing with Unknown*Root.
+        //
+        // Only the block-tree prune is gated; attestation-pool cleanup
+        // (PruneFinalizedAttestationData) still tracks latest_finalized,
+        // because stale attestations are useless regardless of whether
+        // their target block is physically present.
+        var finalizedIdx = _protoArray.GetIndex(_latestFinalized.Root);
+        if (finalizedIdx is { } idx && idx >= _pruneNodeThreshold)
+        {
+            var indexMapping = _protoArray.Prune(_latestFinalized.Root);
+            if (indexMapping.Count > 0)
+                RemapAttestationTrackerIndices(indexMapping);
+        }
 
         PruneFinalizedAttestationData();
     }

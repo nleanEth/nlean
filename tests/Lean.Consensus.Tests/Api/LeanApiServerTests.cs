@@ -37,7 +37,8 @@ public sealed class LeanApiServerTests
         var resp = await _client.GetAsync("lean/v0/health");
         Assert.That((int)resp.StatusCode, Is.EqualTo(200));
         var body = await resp.Content.ReadAsStringAsync();
-        Assert.That(body, Does.Contain("ok"));
+        Assert.That(body, Does.Contain("healthy"));
+        Assert.That(body, Does.Contain("lean-rpc-api"));
     }
 
     [Test]

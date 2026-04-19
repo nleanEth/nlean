@@ -88,9 +88,11 @@ public sealed class SszRootTests
         var proof = new byte[] { 1, 2, 3, 4, 5 };
         var signature = new AggregatedSignatureProof(participants, proof);
 
+        // ProofData is a ByteList[1 MiB] — hash_tree_root must pad the merkle
+        // tree to ceil(limit / 32) chunks, not just to the actual payload size.
         var expected = HashContainer(
             participants.HashTreeRoot(),
-            HashBytes(proof));
+            HashByteList(proof, byteLimit: 1UL << 20));
 
         Assert.That(signature.HashTreeRoot(), Is.EqualTo(expected));
     }
@@ -209,6 +211,14 @@ public sealed class SszRootTests
     private static byte[] HashBytes(byte[] value)
     {
         Merkle.Merkleize(out UInt256 root, value);
+        Merkle.MixIn(ref root, value.Length);
+        return ToBytes(root);
+    }
+
+    private static byte[] HashByteList(byte[] value, ulong byteLimit)
+    {
+        var chunkCount = (byteLimit + 31UL) / 32UL;
+        Merkle.Merkleize(out UInt256 root, value, chunkCount);
         Merkle.MixIn(ref root, value.Length);
         return ToBytes(root);
     }

@@ -6,6 +6,10 @@ namespace Lean.Crypto.Native;
 internal static class NativeLibraryResolver
 {
     public const string LibraryName = "lean_crypto_ffi";
+    // Test-scheme (leanEnv=test) aggregate-verify FFI. rec_aggregation compiles its bytecode
+    // against a single scheme, so the TEST build ships as a separate cdylib.
+    public const string TestLibraryName = "lean_crypto_ffi_test";
+
     private static int _initialized;
 
     public static void EnsureInitialized()
@@ -20,14 +24,15 @@ internal static class NativeLibraryResolver
 
     private static IntPtr Resolve(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
-        if (!string.Equals(libraryName, LibraryName, StringComparison.Ordinal))
+        if (!string.Equals(libraryName, LibraryName, StringComparison.Ordinal) &&
+            !string.Equals(libraryName, TestLibraryName, StringComparison.Ordinal))
         {
             return IntPtr.Zero;
         }
 
         var baseDir = AppContext.BaseDirectory;
         var rid = GetRuntimeIdentifier();
-        var fileName = GetLibraryFileName();
+        var fileName = GetLibraryFileName(libraryName);
 
         // Prefer runtimes/{rid}/native/ layout (framework-dependent / portable publish)
         var candidate = Path.Combine(baseDir, "runtimes", rid, "native", fileName);
@@ -71,18 +76,18 @@ internal static class NativeLibraryResolver
         return "linux-x64";
     }
 
-    private static string GetLibraryFileName()
+    private static string GetLibraryFileName(string logicalName)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
-            return "liblean_crypto_ffi.dylib";
+            return $"lib{logicalName}.dylib";
         }
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return "lean_crypto_ffi.dll";
+            return $"{logicalName}.dll";
         }
 
-        return "liblean_crypto_ffi.so";
+        return $"lib{logicalName}.so";
     }
 }

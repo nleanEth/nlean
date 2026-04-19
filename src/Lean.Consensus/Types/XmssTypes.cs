@@ -57,7 +57,7 @@ public sealed class HashDigestList
     public byte[] HashTreeRoot()
     {
         var roots = _elements.Select(e => e.HashTreeRoot()).ToList();
-        return SszInterop.HashList(roots, (ulong)SszEncoding.NodeListLimit);
+        return SszInterop.HashList(roots, (ulong)SszEncoding.XmssNodeListLimit);
     }
 }
 

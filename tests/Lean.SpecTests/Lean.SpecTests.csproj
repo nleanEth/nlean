@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NUnit" />
+    <PackageReference Include="NUnit3TestAdapter" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="BouncyCastle.Cryptography" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Lean.Consensus/Lean.Consensus.csproj" />
+    <ProjectReference Include="../../src/Lean.Crypto/Lean.Crypto.csproj" />
+    <ProjectReference Include="../../src/Lean.Network/Lean.Network.csproj" />
+  </ItemGroup>
+
+  <Target Name="CopyNativeRuntimeFiles" AfterTargets="Build" Condition="Exists('$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes')">
+    <ItemGroup>
+      <NativeRuntimeFiles Include="$(MSBuildThisFileDirectory)../../src/Lean.Client/runtimes/**/native/*.*" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(NativeRuntimeFiles)"
+      DestinationFiles="@(NativeRuntimeFiles->'$(OutDir)runtimes/%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+</Project>

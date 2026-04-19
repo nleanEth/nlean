@@ -14,7 +14,7 @@ public static class ForkChoiceTreeFormatter
     private const int MaxDisplayDepth = 20;
 
     public static string Format(
-        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> nodes,
+        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, ulong ProposerIndex, long Weight)> nodes,
         Bytes32 head,
         Bytes32 justifiedRoot, ulong justifiedSlot,
         Bytes32 finalizedRoot, ulong finalizedSlot,
@@ -51,14 +51,14 @@ public static class ForkChoiceTreeFormatter
 
         // Build lookup maps
         var blockMap = new Dictionary<Bytes32, (ulong Slot, Bytes32 ParentRoot, long Weight)>();
-        foreach (var (root, slot, parentRoot, weight) in nodes)
+        foreach (var (root, slot, parentRoot, _, weight) in nodes)
         {
             blockMap[root] = (slot, parentRoot, weight);
         }
 
         // Build children map: parent -> children list
         var childrenMap = new Dictionary<Bytes32, List<Bytes32>>();
-        foreach (var (root, slot, parentRoot, weight) in nodes)
+        foreach (var (root, slot, parentRoot, _, weight) in nodes)
         {
             if (!parentRoot.Equals(Bytes32.Zero()) && blockMap.ContainsKey(parentRoot))
             {
@@ -142,13 +142,13 @@ public static class ForkChoiceTreeFormatter
     }
 
     private static Bytes32 FindTreeRoot(
-        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, long Weight)> nodes,
+        IReadOnlyList<(Bytes32 Root, ulong Slot, Bytes32 ParentRoot, ulong ProposerIndex, long Weight)> nodes,
         Dictionary<Bytes32, (ulong Slot, Bytes32 ParentRoot, long Weight)> blockMap)
     {
         Bytes32 bestRoot = nodes[0].Root;
         ulong bestSlot = ulong.MaxValue;
 
-        foreach (var (root, slot, parentRoot, _) in nodes)
+        foreach (var (root, slot, parentRoot, _, _) in nodes)
         {
             if (parentRoot.Equals(Bytes32.Zero()) || !blockMap.ContainsKey(parentRoot))
             {

@@ -36,7 +36,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/lean-crypto-ffi
+          workspaces: |
+            native/lean-crypto-ffi
+            native/lean-crypto-ffi-test
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Install dotnet-format
@@ -78,7 +80,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/lean-crypto-ffi
+          workspaces: |
+            native/lean-crypto-ffi
+            native/lean-crypto-ffi-test
       - name: Build patched pubsub package
         run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
       - name: Build patched quic package
@@ -151,6 +155,66 @@ jobs:
           name: testlogs-consensus-simulation
           path: artifacts/testlogs
 
+  spec-tests:
+    name: spec-tests
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+    steps:
+      - name: Checkout nlean
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Checkout leanSpec
+        uses: actions/checkout@v5
+        with:
+          repository: leanEthereum/leanSpec
+          path: leanSpec
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Packages.props', 'global.json', 'NuGet.config', 'scripts/libp2p/build-patched-pubsub-package.sh', 'scripts/libp2p/patches/pubsub-anonymous.patch') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: Build patched pubsub package
+        run: ./scripts/libp2p/build-patched-pubsub-package.sh --force
+      - name: Generate leanSpec fixtures
+        working-directory: leanSpec
+        run: |
+          uv sync
+          uv run fill --fork=Devnet --clean -n auto
+      - name: Run spec tests
+        env:
+          LEAN_SPECTEST_FIXTURES: ${{ github.workspace }}/leanSpec/fixtures/consensus
+        run: |
+          mkdir -p artifacts/testlogs
+          set -o pipefail
+          dotnet test tests/Lean.SpecTests/Lean.SpecTests.csproj \
+            -c Release \
+            --filter "Category=SpecTest" \
+            -v normal \
+            --logger "console;verbosity=detailed" \
+            --logger "trx;LogFileName=spec-tests.trx" \
+            2>&1 | tee artifacts/testlogs/spec-tests.log
+      - name: Upload spec test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testlogs-spec-tests
+          path: artifacts/testlogs
+
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
@@ -190,7 +254,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native/lean-crypto-ffi
+          workspaces: |
+            native/lean-crypto-ffi
+            native/lean-crypto-ffi-test
       - name: Cache integration test keys
         uses: actions/cache@v4
         with:

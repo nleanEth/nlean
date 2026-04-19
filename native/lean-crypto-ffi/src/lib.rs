@@ -16,6 +16,12 @@ type LeanSigHashsigPublicKey = <LeanSigHashsigScheme as leansig_hashsig::signatu
 type LeanSigHashsigSecretKey = <LeanSigHashsigScheme as leansig_hashsig::signature::SignatureScheme>::SecretKey;
 type LeanSigHashsigSignature = <LeanSigHashsigScheme as leansig_hashsig::signature::SignatureScheme>::Signature;
 
+// TEST scheme (leanSpec leanEnv=test): shorter LOG_LIFETIME=8, DIMENSION=4 for fast spec fixture filling
+pub type LeanSigHashsigSchemeTest = leansig_hashsig::signature::generalized_xmss::instantiations_aborting::lifetime_2_to_the_8::SchemeAbortingTargetSumLifetime8Dim46Base8;
+
+type LeanSigHashsigPublicKeyTest = <LeanSigHashsigSchemeTest as leansig_hashsig::signature::SignatureScheme>::PublicKey;
+type LeanSigHashsigSignatureTest = <LeanSigHashsigSchemeTest as leansig_hashsig::signature::SignatureScheme>::Signature;
+
 // ─── Recursive aggregation — leanMultisig ─────────────────────────────
 // leansig_wrapper re-exports the leanSig types that rec_aggregation accepts.
 // Since both leansig_hashsig and leansig_wrapper resolve to the same leansig
@@ -129,6 +135,38 @@ pub extern "C" fn leansig_verify(
 
         let message = read_message(msg_ptr, msg_len)?;
         let valid = LeanSigHashsigScheme::verify(&pk, epoch, &message, &sig);
+
+        unsafe {
+            *out_is_valid = if valid { 1 } else { 0 };
+        }
+        Ok(())
+    })
+}
+
+/// Verify an XMSS signature produced with the TEST scheme (leanSpec leanEnv=test).
+/// Mirrors `leansig_verify` but uses the short LOG_LIFETIME=8, DIMENSION=4 instantiation.
+#[no_mangle]
+pub extern "C" fn leansig_verify_test(
+    pk_ptr: *const u8,
+    pk_len: usize,
+    sig_ptr: *const u8,
+    sig_len: usize,
+    epoch: u32,
+    msg_ptr: *const u8,
+    msg_len: usize,
+    out_is_valid: *mut u8,
+) -> i32 {
+    wrap(|| {
+        ensure_out_ptrs(&[out_is_valid.cast()])?;
+
+        let pk_bytes = read_slice(pk_ptr, pk_len)?;
+        let sig_bytes = read_slice(sig_ptr, sig_len)?;
+
+        let pk = LeanSigHashsigPublicKeyTest::from_bytes(pk_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+        let sig = LeanSigHashsigSignatureTest::from_bytes(sig_bytes).map_err(|_| LeanCryptoError::DeserializeError)?;
+
+        let message = read_message(msg_ptr, msg_len)?;
+        let valid = LeanSigHashsigSchemeTest::verify(&pk, epoch, &message, &sig);
 
         unsafe {
             *out_is_valid = if valid { 1 } else { 0 };
