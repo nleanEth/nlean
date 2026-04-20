@@ -122,7 +122,9 @@ internal static class Program
         Console.WriteLine("                            Comma-separated extra subnet IDs for aggregators (requires --is-aggregator)");
         Console.WriteLine("  --attestation-committee-count N");
         Console.WriteLine("                            Committee count override");
-        Console.WriteLine("  --hash-sig-key-dir DIR    Hash-sig key directory (auto-resolves by validator index)");
+        Console.WriteLine("  --annotated-validators PATH");
+        Console.WriteLine("                            Path to annotated_validators.yaml (validator index + pubkey + privkey file per node)");
+        Console.WriteLine("  --hash-sig-key-dir DIR    Directory hosting the privkey_file entries listed in annotated_validators.yaml");
         Console.WriteLine("  --checkpoint-sync-url URL Bootstrap from a remote finalized state");
         Console.WriteLine("  --version, -v             Print version");
         Console.WriteLine("  --help, -h                Show help");

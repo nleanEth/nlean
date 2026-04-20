@@ -79,12 +79,14 @@ public sealed class DevnetFixture : IDisposable
         GenesisTime = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
         WriteConfigYaml(keyList);
         WriteValidatorConfigYaml();
+        WriteAnnotatedValidatorsYaml(keyList);
         WriteBootstrapConfig();
     }
 
     public NodeProcess CreateNodeProcess(int index, string? checkpointSyncUrl = null)
     {
         var validatorConfigPath = Path.Combine(ConfigDir, "validator-config.yaml");
+        var annotatedValidatorsPath = Path.Combine(ConfigDir, "annotated_validators.yaml");
         var nodeKeyPath = Path.Combine(ConfigDir, $"nlean_{index}.key");
         var isAggregator = NodeIsAggregator[index];
 
@@ -96,6 +98,7 @@ public sealed class DevnetFixture : IDisposable
         return new NodeProcess(
             BinaryPath,
             validatorConfigPath,
+            annotatedValidatorsPath,
             NodeNames[index],
             DataDirs[index],
             network: "integ-test",
@@ -234,6 +237,27 @@ public sealed class DevnetFixture : IDisposable
         }
 
         File.WriteAllText(Path.Combine(ConfigDir, "validator-config.yaml"), sb.ToString());
+    }
+
+    private void WriteAnnotatedValidatorsYaml(List<(string AttestHex, string ProposeHex)> keyList)
+    {
+        var sb = new StringBuilder();
+        for (int node = 0; node < NodeCount; node++)
+        {
+            sb.AppendLine($"nlean_{node}:");
+            for (int j = 0; j < ValidatorsPerNode; j++)
+            {
+                var idx = node * ValidatorsPerNode + j;
+                sb.AppendLine($"  - index: {idx}");
+                sb.AppendLine($"    pubkey_hex: \"{keyList[idx].AttestHex}\"");
+                sb.AppendLine($"    privkey_file: \"validator_{idx}_attester_key_sk.ssz\"");
+                sb.AppendLine($"  - index: {idx}");
+                sb.AppendLine($"    pubkey_hex: \"{keyList[idx].ProposeHex}\"");
+                sb.AppendLine($"    privkey_file: \"validator_{idx}_proposer_key_sk.ssz\"");
+            }
+        }
+
+        File.WriteAllText(Path.Combine(ConfigDir, "annotated_validators.yaml"), sb.ToString());
     }
 
     private void WriteBootstrapConfig()
