@@ -10,6 +10,13 @@ public static class LeanMetrics
     private static readonly double[] CommitteeSignaturesBuckets = { 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1 };
     private static readonly double[] StateTransitionBuckets = { 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4 };
     private static readonly double[] ReorgDepthBuckets = { 1, 2, 3, 5, 7, 10, 20, 30, 50, 100 };
+    private static readonly double[] BlockBuildingBuckets = { 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1 };
+    private static readonly double[] BlockBuildingPayloadAggregationBuckets = { 0.1, 0.25, 0.5, 0.75, 1, 2, 3, 4 };
+    private static readonly double[] BlockAggregatedPayloadsBuckets = { 1, 2, 4, 8, 16, 32, 64, 128 };
+    private static readonly double[] AttestationProductionBuckets = { 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1 };
+    private static readonly double[] GossipBlockSizeBuckets = { 10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 5_000_000 };
+    private static readonly double[] GossipAttestationSizeBuckets = { 512, 1024, 2048, 4096, 8192, 16384 };
+    private static readonly double[] GossipAggregationSizeBuckets = { 1024, 4096, 16_384, 65_536, 131_072, 262_144, 524_288, 1_048_576 };
 
     public static readonly Gauge NodeInfo = Prometheus.Metrics.CreateGauge(
         "lean_node_info",
@@ -283,6 +290,96 @@ public static class LeanMetrics
         "lean_proto_array_nodes",
         "Number of nodes in the proto-array fork choice.");
 
+    // --- State transition aliases (current head view) ---
+
+    public static readonly Gauge JustifiedSlot = Prometheus.Metrics.CreateGauge(
+        "lean_justified_slot",
+        "Current justified slot.");
+
+    public static readonly Gauge FinalizedSlot = Prometheus.Metrics.CreateGauge(
+        "lean_finalized_slot",
+        "Current finalized slot.");
+
+    // --- Block production metrics ---
+
+    public static readonly Histogram BlockBuildingTimeSeconds = Prometheus.Metrics.CreateHistogram(
+        "lean_block_building_time_seconds",
+        "Time taken to build a block.",
+        new HistogramConfiguration
+        {
+            Buckets = BlockBuildingBuckets
+        });
+
+    public static readonly Histogram BlockBuildingPayloadAggregationTimeSeconds = Prometheus.Metrics.CreateHistogram(
+        "lean_block_building_payload_aggregation_time_seconds",
+        "Time taken to build aggregated_payloads during block building.",
+        new HistogramConfiguration
+        {
+            Buckets = BlockBuildingPayloadAggregationBuckets
+        });
+
+    public static readonly Histogram BlockAggregatedPayloads = Prometheus.Metrics.CreateHistogram(
+        "lean_block_aggregated_payloads",
+        "Number of aggregated_payloads in a block.",
+        new HistogramConfiguration
+        {
+            Buckets = BlockAggregatedPayloadsBuckets
+        });
+
+    public static readonly Counter BlockBuildingSuccessTotal = Prometheus.Metrics.CreateCounter(
+        "lean_block_building_success_total",
+        "Successful block builds.");
+
+    public static readonly Counter BlockBuildingFailuresTotal = Prometheus.Metrics.CreateCounter(
+        "lean_block_building_failures_total",
+        "Failed block builds.");
+
+    // --- Validator: attestation production ---
+
+    public static readonly Histogram AttestationsProductionTimeSeconds = Prometheus.Metrics.CreateHistogram(
+        "lean_attestations_production_time_seconds",
+        "Time taken to produce an attestation.",
+        new HistogramConfiguration
+        {
+            Buckets = AttestationProductionBuckets
+        });
+
+    // --- Gossip message sizes ---
+
+    public static readonly Histogram GossipBlockSizeBytes = Prometheus.Metrics.CreateHistogram(
+        "lean_gossip_block_size_bytes",
+        "Bytes size of a gossip block message.",
+        new HistogramConfiguration
+        {
+            Buckets = GossipBlockSizeBuckets
+        });
+
+    public static readonly Histogram GossipAttestationSizeBytes = Prometheus.Metrics.CreateHistogram(
+        "lean_gossip_attestation_size_bytes",
+        "Bytes size of a gossip attestation message.",
+        new HistogramConfiguration
+        {
+            Buckets = GossipAttestationSizeBuckets
+        });
+
+    public static readonly Histogram GossipAggregationSizeBytes = Prometheus.Metrics.CreateHistogram(
+        "lean_gossip_aggregation_size_bytes",
+        "Bytes size of a gossip aggregated attestation message.",
+        new HistogramConfiguration
+        {
+            Buckets = GossipAggregationSizeBuckets
+        });
+
+    // --- Node sync status (labeled one-hot gauge complementing lean_sync_state) ---
+
+    public static readonly Gauge NodeSyncStatus = Prometheus.Metrics.CreateGauge(
+        "lean_node_sync_status",
+        "Node sync status (one-hot per label value).",
+        new GaugeConfiguration
+        {
+            LabelNames = new[] { "status" }
+        });
+
     public static void SetSyncState(int state)
     {
         SyncState.Set(state);
@@ -334,11 +431,54 @@ public static class LeanMetrics
     public static void SetJustifiedSlot(double slot)
     {
         LatestJustifiedSlot.Set(slot);
+        JustifiedSlot.Set(slot);
     }
 
     public static void SetFinalizedSlot(double slot)
     {
         LatestFinalizedSlot.Set(slot);
+        FinalizedSlot.Set(slot);
+    }
+
+    public static void RecordBlockBuilt(TimeSpan elapsed, TimeSpan payloadAggregationElapsed, int aggregatedPayloads)
+    {
+        BlockBuildingTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
+        BlockBuildingPayloadAggregationTimeSeconds.Observe(Math.Max(0d, payloadAggregationElapsed.TotalSeconds));
+        BlockAggregatedPayloads.Observe(Math.Max(0, aggregatedPayloads));
+        BlockBuildingSuccessTotal.Inc();
+    }
+
+    public static void RecordBlockBuildFailure()
+    {
+        BlockBuildingFailuresTotal.Inc();
+    }
+
+    public static void RecordAttestationProduction(TimeSpan elapsed)
+    {
+        AttestationsProductionTimeSeconds.Observe(Math.Max(0d, elapsed.TotalSeconds));
+    }
+
+    public static void ObserveGossipBlockSize(int sizeBytes)
+    {
+        GossipBlockSizeBytes.Observe(Math.Max(0, sizeBytes));
+    }
+
+    public static void ObserveGossipAttestationSize(int sizeBytes)
+    {
+        GossipAttestationSizeBytes.Observe(Math.Max(0, sizeBytes));
+    }
+
+    public static void ObserveGossipAggregationSize(int sizeBytes)
+    {
+        GossipAggregationSizeBytes.Observe(Math.Max(0, sizeBytes));
+    }
+
+    public static void SetNodeSyncStatus(string status)
+    {
+        // One-hot: only the active label value is set to 1; others are zeroed.
+        NodeSyncStatus.WithLabels("idle").Set(status == "idle" ? 1 : 0);
+        NodeSyncStatus.WithLabels("syncing").Set(status == "syncing" ? 1 : 0);
+        NodeSyncStatus.WithLabels("synced").Set(status == "synced" ? 1 : 0);
     }
 
     public static void SetSafeTargetSlot(double slot)

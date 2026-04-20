@@ -134,6 +134,7 @@ public sealed class SyncService : ISyncService
         {
             _state = SyncState.Idle;
             LeanMetrics.SetSyncState(0);
+            LeanMetrics.SetNodeSyncStatus("idle");
         }
         else
         {
@@ -144,11 +145,13 @@ public sealed class SyncService : ISyncService
             {
                 _state = SyncState.Synced;
                 LeanMetrics.SetSyncState(2);
+                LeanMetrics.SetNodeSyncStatus("synced");
             }
             else
             {
                 _state = SyncState.Syncing;
                 LeanMetrics.SetSyncState(1);
+                LeanMetrics.SetNodeSyncStatus("syncing");
             }
         }
 

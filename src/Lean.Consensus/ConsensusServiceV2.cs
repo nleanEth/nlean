@@ -1047,6 +1047,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private void HandleGossipBlock(byte[] payload)
     {
+        LeanMetrics.ObserveGossipBlockSize(payload.Length);
+
         _logger.LogTrace(
             "HandleGossipBlock: payloadLen={Len}",
             payload.Length);
@@ -1068,6 +1070,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private void HandleGossipAttestation(byte[] payload)
     {
+        LeanMetrics.ObserveGossipAttestationSize(payload.Length);
+
         var decode = _attestationDecoder.DecodeAndValidate(payload);
         if (!decode.IsSuccess || decode.Attestation is null)
         {
@@ -1092,6 +1096,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     private void HandleGossipAggregatedAttestation(byte[] payload)
     {
+        LeanMetrics.ObserveGossipAggregationSize(payload.Length);
+
         var decode = _aggregatedAttestationDecoder.DecodeAndValidate(payload);
         if (!decode.IsSuccess || decode.Attestation is null)
         {
