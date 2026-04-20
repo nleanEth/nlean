@@ -21,6 +21,7 @@ public sealed class NodeOptions
     public int ApiPort { get; set; } = 5052;
     public string? CheckpointSyncUrl { get; set; }
     public string? HashSigKeyDir { get; set; }
+    public string? AnnotatedValidatorsPath { get; set; }
 
     public static NodeOptions Load(NodeOptionsOverrides overrides)
     {
@@ -129,6 +130,11 @@ public sealed class NodeOptions
         if (!string.IsNullOrWhiteSpace(overrides.HashSigKeyDir))
         {
             options.HashSigKeyDir = overrides.HashSigKeyDir;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.AnnotatedValidatorsPath))
+        {
+            options.AnnotatedValidatorsPath = overrides.AnnotatedValidatorsPath;
         }
 
         if (overrides.AggregateSubnetIds is { Length: > 0 })
