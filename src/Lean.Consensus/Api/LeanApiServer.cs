@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
 
@@ -13,16 +14,19 @@ public sealed class LeanApiServer
     private readonly string _prefix;
     private readonly Func<ApiSnapshot> _getSnapshot;
     private readonly Func<byte[]?> _getFinalizedStateSsz;
+    private readonly AggregatorController? _aggregatorController;
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
     private Task? _listenTask;
 
     public LeanApiServer(string prefix, Func<ApiSnapshot> getSnapshot,
-        Func<byte[]?> getFinalizedStateSsz)
+        Func<byte[]?> getFinalizedStateSsz,
+        AggregatorController? aggregatorController = null)
     {
         _prefix = prefix.EndsWith('/') ? prefix : prefix + '/';
         _getSnapshot = getSnapshot;
         _getFinalizedStateSsz = getFinalizedStateSsz;
+        _aggregatorController = aggregatorController;
     }
 
     public Task StartAsync(CancellationToken ct)
@@ -162,6 +166,10 @@ public sealed class LeanApiServer
                     response.OutputStream.Write(htmlBytes);
                     break;
 
+                case "/lean/v0/admin/aggregator":
+                    HandleAdminAggregator(context.Request, response);
+                    break;
+
                 default:
                     WriteJson(response, 404, "{\"error\":\"not found\"}");
                     break;
@@ -175,6 +183,68 @@ public sealed class LeanApiServer
         {
             response.Close();
         }
+    }
+
+    private void HandleAdminAggregator(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        if (_aggregatorController is null)
+        {
+            WriteJson(response, 503, "{\"error\":\"aggregator controller not available\"}");
+            return;
+        }
+
+        var method = request.HttpMethod.ToUpperInvariant();
+        if (method == "GET")
+        {
+            var flag = _aggregatorController.IsEnabled ? "true" : "false";
+            WriteJson(response, 200, $"{{\"is_aggregator\":{flag}}}");
+            return;
+        }
+
+        if (method != "POST")
+        {
+            response.Headers["Allow"] = "GET, POST";
+            WriteJson(response, 405, "{\"error\":\"method not allowed\"}");
+            return;
+        }
+
+        string body;
+        using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+        {
+            body = reader.ReadToEnd();
+        }
+
+        bool enabled;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                !doc.RootElement.TryGetProperty("enabled", out var enabledElement))
+            {
+                WriteJson(response, 400, "{\"error\":\"missing 'enabled' field in body\"}");
+                return;
+            }
+
+            if (enabledElement.ValueKind != JsonValueKind.True &&
+                enabledElement.ValueKind != JsonValueKind.False)
+            {
+                WriteJson(response, 400, "{\"error\":\"'enabled' must be a boolean\"}");
+                return;
+            }
+
+            enabled = enabledElement.GetBoolean();
+        }
+        catch (JsonException)
+        {
+            WriteJson(response, 400, "{\"error\":\"invalid JSON body\"}");
+            return;
+        }
+
+        var previous = _aggregatorController.SetEnabled(enabled);
+        var enabledFlag = enabled ? "true" : "false";
+        var previousFlag = previous ? "true" : "false";
+        WriteJson(response, 200,
+            $"{{\"is_aggregator\":{enabledFlag},\"previous\":{previousFlag}}}");
     }
 
     private static void WriteJson(HttpListenerResponse response, int statusCode, string json)

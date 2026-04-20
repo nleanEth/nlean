@@ -45,6 +45,14 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
     private readonly IGossipTopicProvider _gossipTopics;
     private readonly ConsensusConfig _consensusConfig;
     private readonly ValidatorDutyConfig _validatorDutyConfig;
+
+    /// <summary>
+    /// Exposes the shared duty config so the admin API can toggle
+    /// PublishAggregates at runtime. The handler mutates the same instance
+    /// that is read on each slot/tick, so the change takes effect from the
+    /// next event onward.
+    /// </summary>
+    public ValidatorDutyConfig DutyConfig => _validatorDutyConfig;
     private readonly ILeanSig _leanSig;
     private readonly ILeanMultiSig _leanMultiSig;
     private readonly ISyncService? _syncService;

@@ -25,19 +25,6 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
         var test = JsonSerializer.Deserialize<ApiEndpointTest>(testJson)
             ?? throw new InvalidOperationException($"{testId}: failed to deserialize ApiEndpointTest");
 
-        // Skip aggregator fixtures — the /admin/aggregator endpoint is a substantial
-        // cross-cutting feature (needs to re-subscribe gossip topics, flip validator
-        // PublishAggregates, update metrics) and is better landed as its own PR than
-        // a half-wired HTTP shim. See planned follow-up PR.
-        if (test.Endpoint.StartsWith("/lean/v0/admin/aggregator", StringComparison.Ordinal))
-        {
-            Assert.Inconclusive(
-                "Runtime aggregator toggle (/admin/aggregator) not implemented — pending separate PR. " +
-                "Handler would need to mutate ConsensusConfig.IsAggregator + ValidatorService.PublishAggregates " +
-                "+ re-subscribe attestation subnet topics + refresh metrics.");
-            return;
-        }
-
         var validatorCount = test.GenesisParams.NumValidators;
         var genesisTime = test.GenesisParams.GenesisTime;
 
@@ -67,9 +54,14 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
                 genesisRootHex,
                 validatorCount));
 
+        var aggregatorController = test.Endpoint.StartsWith("/lean/v0/admin/aggregator", StringComparison.Ordinal)
+            ? new AggregatorController(test.InitialIsAggregator)
+            : null;
+
         var port = GetFreePort();
         var prefix = $"http://127.0.0.1:{port}/";
-        var server = new LeanApiServer(prefix, () => snapshot, () => SerializeGenesisStateSsz(genesisState));
+        var server = new LeanApiServer(prefix, () => snapshot, () => SerializeGenesisStateSsz(genesisState),
+            aggregatorController);
 
         try
         {

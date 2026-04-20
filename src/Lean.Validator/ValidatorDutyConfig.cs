@@ -31,5 +31,5 @@ public sealed class ValidatorDutyConfig
 
     public uint ActivationEpoch { get; init; }
     public uint NumActiveEpochs { get; init; } = 1024;
-    public bool PublishAggregates { get; init; } = false;
+    public bool PublishAggregates { get; set; } = false;
 }
