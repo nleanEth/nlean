@@ -228,6 +228,7 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private async Task PublishStandaloneAttestationAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
+        var productionStopwatch = Stopwatch.StartNew();
         var keys = _localValidators[validatorId];
         var attestationData = _consensusService.CreateAttestationData(slot);
         var headSlot = attestationData.Head.Slot.Value;
@@ -279,6 +280,9 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         var attestationPayload = SszEncoding.Encode(signedAttestation);
         var subnetId = new ValidatorIndex(validatorId).ComputeSubnetId(_consensusConfig.AttestationCommitteeCount);
         await PublishToTopicAsync(_gossipTopics.AttestationSubnetTopic(subnetId), attestationPayload, cancellationToken);
+
+        productionStopwatch.Stop();
+        LeanMetrics.RecordAttestationProduction(productionStopwatch.Elapsed);
 
         _logger.LogDebug(
             "Published attestation. Slot: {Slot}, ValidatorId: {ValidatorId}, HeadSlot: {HeadSlot}, TargetSlot: {TargetSlot}, SourceSlot: {SourceSlot}",
@@ -447,101 +451,122 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
     private async Task<bool> TryPublishProposerBlockAsync(ulong slot, ulong validatorId, CancellationToken cancellationToken)
     {
-        var keys = _localValidators[validatorId];
-        var (parentRootBytes, baseAttestationData) = _consensusService.GetProposalContext(slot);
-        if (parentRootBytes.Length != SszEncoding.Bytes32Length)
+        var buildStopwatch = Stopwatch.StartNew();
+        try
         {
-            _logger.LogWarning(
-                "Cannot construct proposer block for slot {Slot}: unexpected head root length {Length}.",
-                slot,
-                parentRootBytes.Length);
-            return false;
-        }
+            var keys = _localValidators[validatorId];
+            var (parentRootBytes, baseAttestationData) = _consensusService.GetProposalContext(slot);
+            if (parentRootBytes.Length != SszEncoding.Bytes32Length)
+            {
+                _logger.LogWarning(
+                    "Cannot construct proposer block for slot {Slot}: unexpected head root length {Length}.",
+                    slot,
+                    parentRootBytes.Length);
+                LeanMetrics.RecordBlockBuildFailure();
+                return false;
+            }
 
-        var parentRoot = new Bytes32(parentRootBytes);
-        _logger.LogDebug(
-            "Proposer checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
-            slot,
-            validatorId,
-            baseAttestationData.Source.Slot.Value,
-            baseAttestationData.Target.Slot.Value,
-            _consensusService.JustifiedSlot,
-            _consensusService.FinalizedSlot,
-            Convert.ToHexString(baseAttestationData.Source.Root.AsSpan()),
-            Convert.ToHexString(baseAttestationData.Target.Root.AsSpan()));
-        var (aggregatedAttestations, aggregatedProofs) = BuildAggregatedAttestations(slot, validatorId, parentRoot, baseAttestationData.Source);
-
-        var candidateBlock = new Block(
-            new Slot(slot),
-            validatorId,
-            parentRoot,
-            Bytes32.Zero(),
-            new BlockBody(aggregatedAttestations));
-
-        if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out var computedStateRoot, out var postJustified, out var computeReason))
-        {
-            _logger.LogWarning(
-                "Cannot construct proposer block for slot {Slot}: failed to compute state root. Reason: {Reason}",
-                slot,
-                computeReason);
-            return false;
-        }
-
-        // leanSpec PR 595 invariant: produced block must close any justified
-        // divergence between the store and the head chain. If the fixed-point
-        // attestation loop failed to converge (e.g. pool lacks attestations
-        // from a minority fork that advanced store.latest_justified), publishing
-        // this block would leave peers unable to see the justify advance —
-        // degrading liveness. Skip the slot rather than broadcast a stale block.
-        var storeJustifiedSlot = _consensusService.JustifiedSlot;
-        if (postJustified.Slot.Value < storeJustifiedSlot)
-        {
-            _logger.LogWarning(
-                "Skipping proposer block for slot {Slot}: produced block justified={ProducedJustified} < store justified={StoreJustified}. Fixed-point attestation loop did not converge.",
-                slot,
-                postJustified.Slot.Value,
-                storeJustifiedSlot);
-            return false;
-        }
-
-        var block = candidateBlock with { StateRoot = computedStateRoot };
-        var blockRoot = block.HashTreeRoot();
-
-        // Sign hash_tree_root(block) with PROPOSAL key
-        var proposerSigningStopwatch = Stopwatch.StartNew();
-        var proposerSignatureBytes = _leanSig.Sign(keys.ProposalSecretKey, ToSignatureEpoch(slot), blockRoot);
-        proposerSigningStopwatch.Stop();
-        LeanMetrics.RecordPqAttestationSigning(proposerSigningStopwatch.Elapsed);
-        var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
-
-        var signedBlock = new SignedBlock(
-            block,
-            new BlockSignatures(aggregatedProofs, proposerSignature));
-
-        if (!_consensusService.TryApplyLocalBlock(signedBlock, out var applyReason))
-        {
-            _logger.LogWarning(
-                "Proposer block rejected locally. Slot: {Slot}, ValidatorId: {ValidatorId}, Reason: {Reason}",
+            var parentRoot = new Bytes32(parentRootBytes);
+            _logger.LogDebug(
+                "Proposer checkpoint tuple. Slot: {Slot}, ValidatorId: {ValidatorId}, SourceSlot: {SourceSlot}, TargetSlot: {TargetSlot}, JustifiedSlot: {JustifiedSlot}, FinalizedSlot: {FinalizedSlot}, SourceRoot: {SourceRoot}, TargetRoot: {TargetRoot}",
                 slot,
                 validatorId,
-                applyReason);
-            return false;
+                baseAttestationData.Source.Slot.Value,
+                baseAttestationData.Target.Slot.Value,
+                _consensusService.JustifiedSlot,
+                _consensusService.FinalizedSlot,
+                Convert.ToHexString(baseAttestationData.Source.Root.AsSpan()),
+                Convert.ToHexString(baseAttestationData.Target.Root.AsSpan()));
+            var payloadAggregationStopwatch = Stopwatch.StartNew();
+            var (aggregatedAttestations, aggregatedProofs) = BuildAggregatedAttestations(slot, validatorId, parentRoot, baseAttestationData.Source);
+            payloadAggregationStopwatch.Stop();
+
+            var candidateBlock = new Block(
+                new Slot(slot),
+                validatorId,
+                parentRoot,
+                Bytes32.Zero(),
+                new BlockBody(aggregatedAttestations));
+
+            if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out var computedStateRoot, out var postJustified, out var computeReason))
+            {
+                _logger.LogWarning(
+                    "Cannot construct proposer block for slot {Slot}: failed to compute state root. Reason: {Reason}",
+                    slot,
+                    computeReason);
+                LeanMetrics.RecordBlockBuildFailure();
+                return false;
+            }
+
+            // leanSpec PR 595 invariant: produced block must close any justified
+            // divergence between the store and the head chain. If the fixed-point
+            // attestation loop failed to converge (e.g. pool lacks attestations
+            // from a minority fork that advanced store.latest_justified), publishing
+            // this block would leave peers unable to see the justify advance —
+            // degrading liveness. Skip the slot rather than broadcast a stale block.
+            var storeJustifiedSlot = _consensusService.JustifiedSlot;
+            if (postJustified.Slot.Value < storeJustifiedSlot)
+            {
+                _logger.LogWarning(
+                    "Skipping proposer block for slot {Slot}: produced block justified={ProducedJustified} < store justified={StoreJustified}. Fixed-point attestation loop did not converge.",
+                    slot,
+                    postJustified.Slot.Value,
+                    storeJustifiedSlot);
+                LeanMetrics.RecordBlockBuildFailure();
+                return false;
+            }
+
+            var block = candidateBlock with { StateRoot = computedStateRoot };
+            var blockRoot = block.HashTreeRoot();
+
+            // Sign hash_tree_root(block) with PROPOSAL key
+            var proposerSigningStopwatch = Stopwatch.StartNew();
+            var proposerSignatureBytes = _leanSig.Sign(keys.ProposalSecretKey, ToSignatureEpoch(slot), blockRoot);
+            proposerSigningStopwatch.Stop();
+            LeanMetrics.RecordPqAttestationSigning(proposerSigningStopwatch.Elapsed);
+            var proposerSignature = XmssSignature.FromBytes(proposerSignatureBytes);
+
+            var signedBlock = new SignedBlock(
+                block,
+                new BlockSignatures(aggregatedProofs, proposerSignature));
+
+            if (!_consensusService.TryApplyLocalBlock(signedBlock, out var applyReason))
+            {
+                _logger.LogWarning(
+                    "Proposer block rejected locally. Slot: {Slot}, ValidatorId: {ValidatorId}, Reason: {Reason}",
+                    slot,
+                    validatorId,
+                    applyReason);
+                LeanMetrics.RecordBlockBuildFailure();
+                return false;
+            }
+
+            var payload = SszEncoding.Encode(signedBlock);
+            var blockRootBytes32 = new Bytes32(blockRoot);
+            TryDumpProposerBlock(slot, payload, parentRoot, blockRootBytes32, signedBlock);
+            await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
+
+            buildStopwatch.Stop();
+            LeanMetrics.RecordBlockBuilt(
+                buildStopwatch.Elapsed,
+                payloadAggregationStopwatch.Elapsed,
+                aggregatedAttestations.Count);
+
+            _logger.LogInformation(
+                "Published proposer block. Slot: {Slot}, ValidatorId: {ValidatorId}, ParentRoot: {ParentRoot}, BlockRoot: {BlockRoot}, AggregatedAttestations: {AggregatedAttestations}, SignatureProofs: {SignatureProofs}",
+                slot,
+                validatorId,
+                Convert.ToHexString(parentRoot.AsSpan()),
+                Convert.ToHexString(blockRoot),
+                aggregatedAttestations.Count,
+                aggregatedProofs.Count);
+            return true;
         }
-
-        var payload = SszEncoding.Encode(signedBlock);
-        var blockRootBytes32 = new Bytes32(blockRoot);
-        TryDumpProposerBlock(slot, payload, parentRoot, blockRootBytes32, signedBlock);
-        await PublishToTopicAsync(_gossipTopics.BlockTopic, payload, cancellationToken);
-
-        _logger.LogInformation(
-            "Published proposer block. Slot: {Slot}, ValidatorId: {ValidatorId}, ParentRoot: {ParentRoot}, BlockRoot: {BlockRoot}, AggregatedAttestations: {AggregatedAttestations}, SignatureProofs: {SignatureProofs}",
-            slot,
-            validatorId,
-            Convert.ToHexString(parentRoot.AsSpan()),
-            Convert.ToHexString(blockRoot),
-            aggregatedAttestations.Count,
-            aggregatedProofs.Count);
-        return true;
+        catch
+        {
+            LeanMetrics.RecordBlockBuildFailure();
+            throw;
+        }
     }
 
     /// <summary>
