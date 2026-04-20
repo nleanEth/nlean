@@ -769,7 +769,6 @@ public static class NodeApp
         LeanChainConfig? chainConfig)
     {
         var baseIndex = options.Validator.ValidatorIndex;
-        var count = options.Validator.ValidatorCount;
 
         var validatorIndices = new List<ulong>();
         var allAttestationPublicKeyPaths = new List<string>();
@@ -780,8 +779,9 @@ public static class NodeApp
 
         // annotated_validators.yaml is the shared hive / interop format: it
         // explicitly names the XMSS private-key files per (node, validator
-        // index, role). When supplied, it overrides the pattern-based lookup
-        // driven by validator-config.yaml + --hash-sig-key-dir.
+        // index, role). Hash-sig duties are sourced exclusively from it;
+        // --hash-sig-key-dir only provides the base directory for the
+        // privkey_file entries.
         if (!string.IsNullOrWhiteSpace(options.AnnotatedValidatorsPath))
         {
             var annotated = AnnotatedValidatorsConfig.Load(options.AnnotatedValidatorsPath);
@@ -802,33 +802,19 @@ public static class NodeApp
                 allProposalSecretKeyPaths.Add(Path.Combine(dir, v.ProposalPrivkeyFile));
             }
 
-            // Seed per-index pubkeys so ValidatorService's known-key cache is
-            // populated without needing separate .pk.ssz files on disk.
-            var maxIndex = (int)resolved.Max(v => v.Index);
+            // Seed the full genesis roster (all nodes' validators) so
+            // ValidatorService's known-key cache and state transition have
+            // every pubkey, not just this node's.
+            var allResolved = annotated.ResolveAllValidators();
+            var maxIndex = (int)allResolved.Max(v => v.Index);
             var genesis = new (string attestation, string proposal)[maxIndex + 1];
-            foreach (var v in resolved)
+            foreach (var v in allResolved)
                 genesis[(int)v.Index] = (v.AttestationPubkeyHex, v.ProposalPubkeyHex);
             annotatedGenesisKeys = genesis
                 .Select(p => (p.attestation ?? string.Empty, p.proposal ?? string.Empty))
                 .ToList();
 
             baseIndex = resolved[0].Index;
-        }
-        else if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
-            string.IsNullOrWhiteSpace(options.Validator.PublicKeyPath) &&
-            string.IsNullOrWhiteSpace(options.Validator.SecretKeyPath))
-        {
-            var dir = options.HashSigKeyDir;
-            for (ulong offset = 0; offset < count; offset++)
-            {
-                var idx = baseIndex + offset;
-                validatorIndices.Add(idx);
-
-                allAttestationPublicKeyPaths.Add(Path.Combine(dir, $"validator_{idx}_attester_key_pk.ssz"));
-                allAttestationSecretKeyPaths.Add(Path.Combine(dir, $"validator_{idx}_attester_key_sk.ssz"));
-                allProposalPublicKeyPaths.Add(Path.Combine(dir, $"validator_{idx}_proposer_key_pk.ssz"));
-                allProposalSecretKeyPaths.Add(Path.Combine(dir, $"validator_{idx}_proposer_key_sk.ssz"));
-            }
         }
 
         var publicKeyPath = allAttestationPublicKeyPaths.Count > 0

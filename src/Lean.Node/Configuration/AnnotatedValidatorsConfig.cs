@@ -67,6 +67,21 @@ public sealed class AnnotatedValidatorsConfig
     }
 
     /// <summary>
+    /// Resolve every (node, validator index) entry across the whole file.
+    /// Used to seed the genesis validator roster when no separate chain
+    /// config provides one.
+    /// </summary>
+    public IReadOnlyList<ResolvedValidator> ResolveAllValidators()
+    {
+        var merged = new List<ResolvedValidator>();
+        foreach (var nodeName in _entriesByNode.Keys)
+        {
+            merged.AddRange(ResolveNodeValidators(nodeName));
+        }
+        return merged;
+    }
+
+    /// <summary>
     /// Split a node's entries into (attestation, proposal) key file paths per
     /// validator index. Identification rule (in priority order):
     ///   1. Filename contains `_proposer` — proposal key.

@@ -14,6 +14,7 @@ public sealed class NodeProcess : IDisposable
 
     private readonly string _binaryPath;
     private readonly string _validatorConfigPath;
+    private readonly string _annotatedValidatorsPath;
     private readonly string _nodeName;
     private readonly string _dataDir;
     private readonly string _network;
@@ -34,6 +35,7 @@ public sealed class NodeProcess : IDisposable
     public NodeProcess(
         string binaryPath,
         string validatorConfigPath,
+        string annotatedValidatorsPath,
         string nodeName,
         string dataDir,
         string network,
@@ -49,6 +51,7 @@ public sealed class NodeProcess : IDisposable
     {
         _binaryPath = binaryPath;
         _validatorConfigPath = validatorConfigPath;
+        _annotatedValidatorsPath = annotatedValidatorsPath;
         _nodeName = nodeName;
         _dataDir = dataDir;
         _network = network;
@@ -69,6 +72,7 @@ public sealed class NodeProcess : IDisposable
         var args = new StringBuilder();
         args.Append($"--config \"{configPath}\"");
         args.Append($" --validator-config \"{_validatorConfigPath}\"");
+        args.Append($" --annotated-validators \"{_annotatedValidatorsPath}\"");
         args.Append($" --node {_nodeName}");
         args.Append($" --data-dir \"{_dataDir}\"");
         args.Append($" --network {_network}");
