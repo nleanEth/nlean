@@ -19,6 +19,7 @@ internal sealed class CliOptions
     public int? AttestationCommitteeCount { get; set; }
     public int? ApiPort { get; set; }
     public string? HashSigKeyDir { get; set; }
+    public string? AnnotatedValidatorsPath { get; set; }
     public bool ShowHelp { get; set; }
     public bool ShowVersion { get; set; }
 
@@ -113,6 +114,9 @@ internal sealed class CliOptions
                     break;
                 case "hash-sig-key-dir":
                     options.HashSigKeyDir = value;
+                    break;
+                case "annotated-validators":
+                    options.AnnotatedValidatorsPath = value;
                     break;
                 case "aggregate-subnet-ids":
                     if (value is not null)

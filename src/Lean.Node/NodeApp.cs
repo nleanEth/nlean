@@ -776,8 +776,45 @@ public static class NodeApp
         var allAttestationSecretKeyPaths = new List<string>();
         var allProposalPublicKeyPaths = new List<string>();
         var allProposalSecretKeyPaths = new List<string>();
+        IReadOnlyList<(string, string)>? annotatedGenesisKeys = null;
 
-        if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
+        // annotated_validators.yaml is the shared hive / interop format: it
+        // explicitly names the XMSS private-key files per (node, validator
+        // index, role). When supplied, it overrides the pattern-based lookup
+        // driven by validator-config.yaml + --hash-sig-key-dir.
+        if (!string.IsNullOrWhiteSpace(options.AnnotatedValidatorsPath))
+        {
+            var annotated = AnnotatedValidatorsConfig.Load(options.AnnotatedValidatorsPath);
+            var resolved = annotated.ResolveNodeValidators(options.NodeName ?? string.Empty);
+            if (resolved.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"annotated_validators.yaml has no entry for node '{options.NodeName}' (path: {options.AnnotatedValidatorsPath}).");
+            }
+
+            var dir = options.HashSigKeyDir ?? Path.GetDirectoryName(options.AnnotatedValidatorsPath) ?? string.Empty;
+            foreach (var v in resolved)
+            {
+                validatorIndices.Add(v.Index);
+                allAttestationPublicKeyPaths.Add(string.Empty);
+                allAttestationSecretKeyPaths.Add(Path.Combine(dir, v.AttestationPrivkeyFile));
+                allProposalPublicKeyPaths.Add(string.Empty);
+                allProposalSecretKeyPaths.Add(Path.Combine(dir, v.ProposalPrivkeyFile));
+            }
+
+            // Seed per-index pubkeys so ValidatorService's known-key cache is
+            // populated without needing separate .pk.ssz files on disk.
+            var maxIndex = (int)resolved.Max(v => v.Index);
+            var genesis = new (string attestation, string proposal)[maxIndex + 1];
+            foreach (var v in resolved)
+                genesis[(int)v.Index] = (v.AttestationPubkeyHex, v.ProposalPubkeyHex);
+            annotatedGenesisKeys = genesis
+                .Select(p => (p.attestation ?? string.Empty, p.proposal ?? string.Empty))
+                .ToList();
+
+            baseIndex = resolved[0].Index;
+        }
+        else if (!string.IsNullOrWhiteSpace(options.HashSigKeyDir) &&
             string.IsNullOrWhiteSpace(options.Validator.PublicKeyPath) &&
             string.IsNullOrWhiteSpace(options.Validator.SecretKeyPath))
         {
@@ -830,7 +867,8 @@ public static class NodeApp
             AllProposalSecretKeyPaths = allProposalSecretKeyPaths,
             ActivationEpoch = options.Validator.ActivationEpoch,
             NumActiveEpochs = options.Validator.NumActiveEpochs,
-            GenesisValidatorKeys = chainConfig?.GenesisValidators?.Select(v => (v.AttestationPubkey, v.ProposalPubkey)).ToList()
+            GenesisValidatorKeys = annotatedGenesisKeys
+                ?? chainConfig?.GenesisValidators?.Select(v => (v.AttestationPubkey, v.ProposalPubkey)).ToList()
                 ?? (IReadOnlyList<(string, string)>)Array.Empty<(string, string)>(),
             PublishAggregates = options.Validator.PublishAggregates
         };

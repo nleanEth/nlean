@@ -78,7 +78,8 @@ internal static class Program
             cliOptions.AttestationCommitteeCount,
             cliOptions.ApiPort,
             cliOptions.HashSigKeyDir,
-            cliOptions.AggregateSubnetIds);
+            cliOptions.AggregateSubnetIds,
+            cliOptions.AnnotatedValidatorsPath);
 
         var nodeOptions = NodeOptions.Load(overrides);
 

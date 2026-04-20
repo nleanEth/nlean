@@ -17,4 +17,5 @@ public sealed record NodeOptionsOverrides(
     int? AttestationCommitteeCount = null,
     int? ApiPort = null,
     string? HashSigKeyDir = null,
-    int[]? AggregateSubnetIds = null);
+    int[]? AggregateSubnetIds = null,
+    string? AnnotatedValidatorsPath = null);
