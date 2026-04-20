@@ -99,10 +99,25 @@ public sealed class NodeService : BackgroundService
         try
         {
             var csv2ForApi = _consensusService as ConsensusServiceV2;
+            var aggregatorController = new AggregatorController(_options.Consensus.IsAggregator);
+            aggregatorController.Subscribe(enabled =>
+            {
+                _options.Consensus.IsAggregator = enabled;
+                if (_validatorService is ValidatorService vs)
+                {
+                    vs.DutyConfig.PublishAggregates = enabled;
+                }
+                LeanMetrics.SetIsAggregator(enabled);
+                _logger.LogInformation(
+                    "Aggregator role {State} via admin API.",
+                    enabled ? "activated" : "deactivated");
+            });
+
             _apiServer = new LeanApiServer(
                 $"http://+:{_options.ApiPort}/",
                 () => csv2ForApi?.GetApiSnapshot() ?? new ApiSnapshot(0, "", 0, ""),
-                () => csv2ForApi?.GetFinalizedStateSsz());
+                () => csv2ForApi?.GetFinalizedStateSsz(),
+                aggregatorController);
             await _apiServer.StartAsync(stoppingToken);
             _logger.LogInformation("LeanApiServer listening on port {Port}.", _options.ApiPort);
         }
