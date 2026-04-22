@@ -20,6 +20,7 @@ internal sealed class CliOptions
     public int? ApiPort { get; set; }
     public string? HashSigKeyDir { get; set; }
     public string? AnnotatedValidatorsPath { get; set; }
+    public string? CustomNetworkConfigDir { get; set; }
     public bool ShowHelp { get; set; }
     public bool ShowVersion { get; set; }
 
@@ -117,6 +118,9 @@ internal sealed class CliOptions
                     break;
                 case "annotated-validators":
                     options.AnnotatedValidatorsPath = value;
+                    break;
+                case "custom-network-config-dir":
+                    options.CustomNetworkConfigDir = value;
                     break;
                 case "aggregate-subnet-ids":
                     if (value is not null)

@@ -18,4 +18,5 @@ public sealed record NodeOptionsOverrides(
     int? ApiPort = null,
     string? HashSigKeyDir = null,
     int[]? AggregateSubnetIds = null,
-    string? AnnotatedValidatorsPath = null);
+    string? AnnotatedValidatorsPath = null,
+    string? CustomNetworkConfigDir = null);
