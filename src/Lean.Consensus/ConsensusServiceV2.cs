@@ -196,7 +196,12 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public byte[]? GetFinalizedStateSsz()
     {
         var snap = _snapshot;
-        if (snap.FinalizedSlot == 0)
+
+        // Genesis is the zeroth finalized checkpoint, so slot 0 is a legitimate
+        // response — leanpoint and other monitors rely on /lean/v0/states/finalized
+        // returning 200 even before the first justify→finalize cycle. Only bail
+        // out if the root is still the uninitialised zero (pre-construction).
+        if (snap.FinalizedRoot.Equals(Bytes32.Zero()))
         {
             return null;
         }
