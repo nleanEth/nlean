@@ -121,6 +121,33 @@ public class ForkChoiceTreeFormatterTests
     }
 
     [Test]
+    public void FinalizedAdvanced_TreeStartsFromFinalizedRoot()
+    {
+        var genesis = Root(1);
+        var a = Root(2);
+        var b = Root(3);
+        var c = Root(4);
+        var d = Root(5);
+        var nodes = new (Bytes32, ulong, Bytes32, ulong, long)[]
+        {
+            (genesis, 0, Bytes32.Zero(), 0, 0),
+            (a, 1, genesis, 0, 0),
+            (b, 2, a, 0, 0),
+            (c, 3, b, 0, 0),
+            (d, 4, c, 0, 0),
+        };
+
+        // Finalized at slot 2 (root = b). Tree should start from b, not genesis.
+        var result = ForkChoiceTreeFormatter.Format(
+            nodes, d, c, 3, b, 2, b);
+
+        var lineWithTrunk = result.Split('\n').First(l => l.Contains("(2)"));
+        Assert.That(lineWithTrunk, Does.Contain("(2)"), "Trunk should start at finalized slot");
+        Assert.That(lineWithTrunk, Does.Not.Contain("(0)"), "Tree should not include pre-finalization genesis");
+        Assert.That(lineWithTrunk, Does.Not.Contain("(1)"), "Tree should not include pre-finalization slot 1");
+    }
+
+    [Test]
     public void NestedFork_ShowsMultipleBranchLevels()
     {
         var root = Root(1);

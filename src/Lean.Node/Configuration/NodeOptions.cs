@@ -137,6 +137,44 @@ public sealed class NodeOptions
             options.AnnotatedValidatorsPath = overrides.AnnotatedValidatorsPath;
         }
 
+        // --custom-network-config-dir: single directory containing the shared
+        // lean runtime assets (config.yaml, nodes.yaml, annotated_validators.yaml,
+        // hash-sig-keys/, and optional <node>.key). Mirrors the flag accepted by
+        // ethlambda / gean / zeam so nlean can be launched with one path instead
+        // of four. Explicitly set per-file flags above still win.
+        if (!string.IsNullOrWhiteSpace(overrides.CustomNetworkConfigDir))
+        {
+            var dir = overrides.CustomNetworkConfigDir;
+
+            if (string.IsNullOrWhiteSpace(options.AnnotatedValidatorsPath))
+            {
+                options.AnnotatedValidatorsPath = Path.Combine(dir, "annotated_validators.yaml");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.HashSigKeyDir))
+            {
+                options.HashSigKeyDir = Path.Combine(dir, "hash-sig-keys");
+            }
+
+            // ValidatorConfigPath doubles as the anchor LeanChainConfig /
+            // ApplyBootstrapPeersFromNodesYaml use to find config.yaml and
+            // nodes.yaml; the file itself is optional under this layout.
+            if (string.IsNullOrWhiteSpace(options.ValidatorConfigPath))
+            {
+                options.ValidatorConfigPath = Path.Combine(dir, "validator-config.yaml");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.Libp2p.PrivateKeyPath) &&
+                !string.IsNullOrWhiteSpace(options.NodeName))
+            {
+                var nodeKeyPath = Path.Combine(dir, $"{options.NodeName}.key");
+                if (File.Exists(nodeKeyPath))
+                {
+                    options.Libp2p.PrivateKeyPath = nodeKeyPath;
+                }
+            }
+        }
+
         if (overrides.AggregateSubnetIds is { Length: > 0 })
         {
             options.Consensus.AggregateSubnetIds = overrides.AggregateSubnetIds;

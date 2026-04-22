@@ -79,7 +79,8 @@ internal static class Program
             cliOptions.ApiPort,
             cliOptions.HashSigKeyDir,
             cliOptions.AggregateSubnetIds,
-            cliOptions.AnnotatedValidatorsPath);
+            cliOptions.AnnotatedValidatorsPath,
+            cliOptions.CustomNetworkConfigDir);
 
         var nodeOptions = NodeOptions.Load(overrides);
 
@@ -125,6 +126,9 @@ internal static class Program
         Console.WriteLine("  --annotated-validators PATH");
         Console.WriteLine("                            Path to annotated_validators.yaml (validator index + pubkey + privkey file per node)");
         Console.WriteLine("  --hash-sig-key-dir DIR    Directory hosting the privkey_file entries listed in annotated_validators.yaml");
+        Console.WriteLine("  --custom-network-config-dir DIR");
+        Console.WriteLine("                            Shared lean runtime asset directory (config.yaml, nodes.yaml, annotated_validators.yaml, hash-sig-keys/).");
+        Console.WriteLine("                            Equivalent to ethlambda/gean/zeam's single-flag layout. Explicit per-file flags override discovery.");
         Console.WriteLine("  --checkpoint-sync-url URL Bootstrap from a remote finalized state");
         Console.WriteLine("  --version, -v             Print version");
         Console.WriteLine("  --help, -h                Show help");
