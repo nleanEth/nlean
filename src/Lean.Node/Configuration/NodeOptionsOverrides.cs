@@ -6,7 +6,6 @@ public sealed record NodeOptionsOverrides(
     string? ForkDigest,
     bool? MetricsEnabled,
     string? LogLevel,
-    string? ValidatorConfigPath,
     string? NodeName,
     string? CheckpointSyncUrl = null,
     string? NodeKeyPath = null,
@@ -16,7 +15,5 @@ public sealed record NodeOptionsOverrides(
     bool IsAggregator = false,
     int? AttestationCommitteeCount = null,
     int? ApiPort = null,
-    string? HashSigKeyDir = null,
     int[]? AggregateSubnetIds = null,
-    string? AnnotatedValidatorsPath = null,
     string? CustomNetworkConfigDir = null);

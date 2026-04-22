@@ -69,11 +69,6 @@ public sealed class NodeOptions
             options.Logging.Level = overrides.LogLevel;
         }
 
-        if (!string.IsNullOrWhiteSpace(overrides.ValidatorConfigPath))
-        {
-            options.ValidatorConfigPath = overrides.ValidatorConfigPath;
-        }
-
         if (!string.IsNullOrWhiteSpace(overrides.NodeName))
         {
             options.NodeName = overrides.NodeName;
@@ -127,42 +122,22 @@ public sealed class NodeOptions
             options.ApiPort = overrides.ApiPort.Value;
         }
 
-        if (!string.IsNullOrWhiteSpace(overrides.HashSigKeyDir))
-        {
-            options.HashSigKeyDir = overrides.HashSigKeyDir;
-        }
-
-        if (!string.IsNullOrWhiteSpace(overrides.AnnotatedValidatorsPath))
-        {
-            options.AnnotatedValidatorsPath = overrides.AnnotatedValidatorsPath;
-        }
-
-        // --custom-network-config-dir: single directory containing the shared
-        // lean runtime assets (config.yaml, nodes.yaml, annotated_validators.yaml,
-        // hash-sig-keys/, and optional <node>.key). Mirrors the flag accepted by
-        // ethlambda / gean / zeam so nlean can be launched with one path instead
-        // of four. Explicitly set per-file flags above still win.
+        // --custom-network-config-dir is the single-flag config entry point
+        // (matching ethlambda / gean / zeam). Everything inside is discovered
+        // by name: config.yaml, nodes.yaml, annotated_validators.yaml,
+        // hash-sig-keys/, and <node>.key.
         if (!string.IsNullOrWhiteSpace(overrides.CustomNetworkConfigDir))
         {
             var dir = overrides.CustomNetworkConfigDir;
 
-            if (string.IsNullOrWhiteSpace(options.AnnotatedValidatorsPath))
-            {
-                options.AnnotatedValidatorsPath = Path.Combine(dir, "annotated_validators.yaml");
-            }
+            options.AnnotatedValidatorsPath = Path.Combine(dir, "annotated_validators.yaml");
+            options.HashSigKeyDir = Path.Combine(dir, "hash-sig-keys");
 
-            if (string.IsNullOrWhiteSpace(options.HashSigKeyDir))
-            {
-                options.HashSigKeyDir = Path.Combine(dir, "hash-sig-keys");
-            }
-
-            // ValidatorConfigPath doubles as the anchor LeanChainConfig /
+            // ValidatorConfigPath doubles as the anchor LeanChainConfig and
             // ApplyBootstrapPeersFromNodesYaml use to find config.yaml and
-            // nodes.yaml; the file itself is optional under this layout.
-            if (string.IsNullOrWhiteSpace(options.ValidatorConfigPath))
-            {
-                options.ValidatorConfigPath = Path.Combine(dir, "validator-config.yaml");
-            }
+            // nodes.yaml; the validator-config.yaml file itself is optional
+            // under this layout.
+            options.ValidatorConfigPath = Path.Combine(dir, "validator-config.yaml");
 
             if (string.IsNullOrWhiteSpace(options.Libp2p.PrivateKeyPath) &&
                 !string.IsNullOrWhiteSpace(options.NodeName))

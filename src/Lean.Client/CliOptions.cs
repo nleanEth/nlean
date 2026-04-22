@@ -7,7 +7,6 @@ internal sealed class CliOptions
     public string? ForkDigest { get; set; }
     public bool? Metrics { get; set; }
     public string? LogLevel { get; set; }
-    public string? ValidatorConfig { get; set; }
     public string? NodeName { get; set; }
     public string? CheckpointSyncUrl { get; set; }
     public string? NodeKeyPath { get; set; }
@@ -18,8 +17,6 @@ internal sealed class CliOptions
     public int[]? AggregateSubnetIds { get; set; }
     public int? AttestationCommitteeCount { get; set; }
     public int? ApiPort { get; set; }
-    public string? HashSigKeyDir { get; set; }
-    public string? AnnotatedValidatorsPath { get; set; }
     public string? CustomNetworkConfigDir { get; set; }
     public bool ShowHelp { get; set; }
     public bool ShowVersion { get; set; }
@@ -81,9 +78,6 @@ internal sealed class CliOptions
                 case "log":
                     options.LogLevel = value;
                     break;
-                case "validator-config":
-                    options.ValidatorConfig = value;
-                    break;
                 case "node":
                 case "node-id":
                     options.NodeName = value;
@@ -112,12 +106,6 @@ internal sealed class CliOptions
                 case "api-port":
                     if (value is not null && int.TryParse(value, out var ap))
                         options.ApiPort = ap;
-                    break;
-                case "hash-sig-key-dir":
-                    options.HashSigKeyDir = value;
-                    break;
-                case "annotated-validators":
-                    options.AnnotatedValidatorsPath = value;
                     break;
                 case "custom-network-config-dir":
                     options.CustomNetworkConfigDir = value;
