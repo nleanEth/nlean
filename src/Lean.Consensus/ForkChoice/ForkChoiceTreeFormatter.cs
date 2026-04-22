@@ -89,8 +89,14 @@ public static class ForkChoiceTreeFormatter
             });
         }
 
-        // Find tree root (node whose parent is not in the map or is zero)
-        var treeRoot = FindTreeRoot(nodes, blockMap);
+        // Fork choice is anchored on the latest finalized checkpoint; nodes
+        // at or before that slot can never be un-finalized. Render from the
+        // finalized root so the tree reflects the live post-finalization
+        // state (proto-array may still hold pre-finalized nodes until the
+        // next prune, but they are dead weight for the viewer).
+        Bytes32 treeRoot = blockMap.ContainsKey(finalizedRoot)
+            ? finalizedRoot
+            : FindTreeRoot(nodes, blockMap);
 
         // Render linear trunk from root until a fork or leaf
         sb.AppendLine();
