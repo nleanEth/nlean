@@ -85,8 +85,6 @@ public sealed class DevnetFixture : IDisposable
 
     public NodeProcess CreateNodeProcess(int index, string? checkpointSyncUrl = null)
     {
-        var validatorConfigPath = Path.Combine(ConfigDir, "validator-config.yaml");
-        var annotatedValidatorsPath = Path.Combine(ConfigDir, "annotated_validators.yaml");
         var nodeKeyPath = Path.Combine(ConfigDir, $"nlean_{index}.key");
         var isAggregator = NodeIsAggregator[index];
 
@@ -97,17 +95,14 @@ public sealed class DevnetFixture : IDisposable
 
         return new NodeProcess(
             BinaryPath,
-            validatorConfigPath,
-            annotatedValidatorsPath,
+            ConfigDir,
             NodeNames[index],
             DataDirs[index],
-            network: "integ-test",
             nodeKeyPath,
             QuicPorts[index],
             ApiPorts[index],
             MetricsPorts[index],
             isAggregator,
-            HashSigKeyDir,
             checkpointSyncUrl: checkpointSyncUrl,
             attestationCommitteeCount: committeeCount,
             aggregateSubnetIds: aggregateSubnetIds);

@@ -67,7 +67,6 @@ internal static class Program
             cliOptions.ForkDigest,
             cliOptions.Metrics,
             cliOptions.LogLevel,
-            cliOptions.ValidatorConfig,
             cliOptions.NodeName,
             cliOptions.CheckpointSyncUrl,
             cliOptions.NodeKeyPath,
@@ -77,9 +76,7 @@ internal static class Program
             cliOptions.IsAggregator,
             cliOptions.AttestationCommitteeCount,
             cliOptions.ApiPort,
-            cliOptions.HashSigKeyDir,
             cliOptions.AggregateSubnetIds,
-            cliOptions.AnnotatedValidatorsPath,
             cliOptions.CustomNetworkConfigDir);
 
         var nodeOptions = NodeOptions.Load(overrides);
@@ -113,8 +110,10 @@ internal static class Program
         Console.WriteLine("  --metrics-port PORT       Metrics endpoint port");
         Console.WriteLine("  --metrics-address HOST    Metrics listen host");
         Console.WriteLine("  --log LEVEL               Log level (Trace, Debug, Information, Warning, Error)");
-        Console.WriteLine("  --validator-config PATH   Path to validator-config.yaml");
-        Console.WriteLine("  --node, --node-id NAME    Node name inside validator-config.yaml");
+        Console.WriteLine("  --custom-network-config-dir DIR");
+        Console.WriteLine("                            Shared lean runtime asset directory (config.yaml, nodes.yaml, annotated_validators.yaml, hash-sig-keys/, <node>.key).");
+        Console.WriteLine("                            Matches the single-flag convention used by ethlambda / gean / zeam.");
+        Console.WriteLine("  --node, --node-id NAME    Node name used to select the local validator set inside annotated_validators.yaml");
         Console.WriteLine("  --node-key PATH           Path to libp2p private key file");
         Console.WriteLine("  --socket-port PORT        QUIC transport port");
         Console.WriteLine("  --api-port PORT           HTTP API port");
@@ -123,12 +122,6 @@ internal static class Program
         Console.WriteLine("                            Comma-separated extra subnet IDs for aggregators (requires --is-aggregator)");
         Console.WriteLine("  --attestation-committee-count N");
         Console.WriteLine("                            Committee count override");
-        Console.WriteLine("  --annotated-validators PATH");
-        Console.WriteLine("                            Path to annotated_validators.yaml (validator index + pubkey + privkey file per node)");
-        Console.WriteLine("  --hash-sig-key-dir DIR    Directory hosting the privkey_file entries listed in annotated_validators.yaml");
-        Console.WriteLine("  --custom-network-config-dir DIR");
-        Console.WriteLine("                            Shared lean runtime asset directory (config.yaml, nodes.yaml, annotated_validators.yaml, hash-sig-keys/).");
-        Console.WriteLine("                            Equivalent to ethlambda/gean/zeam's single-flag layout. Explicit per-file flags override discovery.");
         Console.WriteLine("  --checkpoint-sync-url URL Bootstrap from a remote finalized state");
         Console.WriteLine("  --version, -v             Print version");
         Console.WriteLine("  --help, -h                Show help");
