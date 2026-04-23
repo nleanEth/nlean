@@ -681,10 +681,17 @@ public static class NodeApp
         }
         ApplyGenesisValidatorKeys(options, chainConfig);
 
-        // validator-config.yaml is part of the shared派 A layout (ethlambda /
-        // gean / lean-quickstart all emit it) and supplies the telemetry
-        // peer-ID→name registry. Missing it is a setup bug; surface it instead
-        // of silently running with unnamed peers.
+        // validator-config.yaml supplies the telemetry peer-ID→name registry
+        // and legacy validator-count inference; both are non-critical once
+        // annotated_validators.yaml is in play. lean-quickstart's generated
+        // layouts (local-devnet-nlean / local-devnet-interop) do not ship it,
+        // so treat a missing file as a soft miss and continue with chainConfig
+        // only. Malformed files still raise — the silent catch is gone.
+        if (!File.Exists(options.ValidatorConfigPath))
+        {
+            return (null, null, chainConfig);
+        }
+
         var validatorConfig = ValidatorConfig.Load(options.ValidatorConfigPath);
 
         ApplyInitialValidatorCount(options, validatorConfig, chainConfig);
