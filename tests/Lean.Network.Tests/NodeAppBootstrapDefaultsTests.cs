@@ -239,6 +239,15 @@ public sealed class NodeAppBootstrapDefaultsTests
 
     private static NodeOptions CreateOptions(string tempRoot, string validatorConfigPath)
     {
+        // NodeApp.Build now fails fast when config.yaml is absent, so every
+        // test needs a minimal genesis config alongside the validator-config.
+        var configYamlPath = Path.Combine(tempRoot, "config.yaml");
+        if (!File.Exists(configYamlPath))
+        {
+            File.WriteAllText(configYamlPath,
+                "GENESIS_TIME: 1\nVALIDATOR_COUNT: 1\n");
+        }
+
         return new NodeOptions
         {
             ValidatorConfigPath = validatorConfigPath,
