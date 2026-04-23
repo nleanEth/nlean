@@ -201,14 +201,21 @@ public static class NodeApp
         var anchorRoot = state.LatestBlockHeader.HashTreeRoot();
         var anchorSlot = state.LatestBlockHeader.Slot.Value;
 
+        // Seed both checkpoints from the anchor block itself, following
+        // leanSpec PR #677. The anchor state's embedded latest_justified /
+        // latest_finalized slots can be strictly less than the anchor slot;
+        // combining those pre-anchor slots with the anchor block root produced
+        // a slot/root-inconsistent checkpoint (observed externally as
+        // "finalized > justified" once the local chain advanced past the
+        // checkpoint-sync anchor).
         return new ConsensusHeadState(
             anchorSlot,
             anchorRoot,
-            state.LatestJustified.Slot.Value,
+            anchorSlot,
             anchorRoot,
-            state.LatestFinalized.Slot.Value,
+            anchorSlot,
             anchorRoot,
-            state.LatestFinalized.Slot.Value,
+            anchorSlot,
             anchorRoot);
     }
 
