@@ -666,51 +666,53 @@ public static class NodeApp
             return (null, null, null);
         }
 
-        try
+        // config.yaml (chain timing + GENESIS_VALIDATORS) lives beside
+        // validator-config.yaml but is consumed independently. Every supported
+        // layout (--validator-config and --custom-network-config-dir) must
+        // expose a config.yaml or the chain has no GenesisTime anchor — bail
+        // loudly instead of silently continuing with GenesisTimeUnix=0.
+        var chainConfig = ApplyChainTimingConfig(options);
+        if (chainConfig is null)
         {
-            var validatorConfig = ValidatorConfig.Load(options.ValidatorConfigPath);
-            var chainConfig = ApplyChainTimingConfig(options);
-            ApplyInitialValidatorCount(options, validatorConfig, chainConfig);
-            var node = validatorConfig.FindNode(options.NodeName);
+            var configDir = Path.GetDirectoryName(options.ValidatorConfigPath);
+            throw new FileNotFoundException(
+                $"config.yaml not found under '{configDir}'. The genesis config file is required to anchor checkpoint-sync and state-transition timing.",
+                Path.Combine(configDir ?? string.Empty, "config.yaml"));
+        }
+        ApplyGenesisValidatorKeys(options, chainConfig);
 
-            if (node is not null && options.Validator.ValidatorIndex == 0)
+        // validator-config.yaml is part of the shared派 A layout (ethlambda /
+        // gean / lean-quickstart all emit it) and supplies the telemetry
+        // peer-ID→name registry. Missing it is a setup bug; surface it instead
+        // of silently running with unnamed peers.
+        var validatorConfig = ValidatorConfig.Load(options.ValidatorConfigPath);
+
+        ApplyInitialValidatorCount(options, validatorConfig, chainConfig);
+        var node = validatorConfig.FindNode(options.NodeName);
+
+        if (node is not null && options.Validator.ValidatorIndex == 0)
+        {
+            ulong cumulativeIndex = 0;
+            for (var i = 0; i < validatorConfig.Validators.Count; i++)
             {
-                ulong cumulativeIndex = 0;
-                for (var i = 0; i < validatorConfig.Validators.Count; i++)
+                if (string.Equals(validatorConfig.Validators[i].Name, node.Name, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(validatorConfig.Validators[i].Name, node.Name, StringComparison.OrdinalIgnoreCase))
-                    {
-                        options.Validator.ValidatorIndex = cumulativeIndex;
-                        options.Validator.ValidatorCount = (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
-                        break;
-                    }
-
-                    cumulativeIndex += (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
+                    options.Validator.ValidatorIndex = cumulativeIndex;
+                    options.Validator.ValidatorCount = (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
+                    break;
                 }
-            }
 
-            return (validatorConfig, node, chainConfig);
+                cumulativeIndex += (ulong)Math.Max(1, validatorConfig.Validators[i].Count);
+            }
         }
-        catch
-        {
-            // Runtime startup will surface config loading errors in NodeService logs.
-            return (null, null, null);
-        }
+
+        return (validatorConfig, node, chainConfig);
     }
 
     private static LeanChainConfig? ApplyChainTimingConfig(NodeOptions options)
     {
         var validatorConfigPath = options.ValidatorConfigPath;
-        LeanChainConfig? chainConfig;
-        try
-        {
-            chainConfig = LeanChainConfig.TryLoad(validatorConfigPath!);
-        }
-        catch
-        {
-            return null;
-        }
-
+        var chainConfig = LeanChainConfig.TryLoad(validatorConfigPath!);
         if (chainConfig is null)
         {
             return null;
@@ -729,10 +731,7 @@ public static class NodeApp
         return chainConfig;
     }
 
-    private static void ApplyInitialValidatorCount(
-        NodeOptions options,
-        ValidatorConfig validatorConfig,
-        LeanChainConfig? chainConfig)
+    private static void ApplyGenesisValidatorKeys(NodeOptions options, LeanChainConfig? chainConfig)
     {
         if (chainConfig?.GenesisValidators is { Count: > 0 } genesisValidators)
         {
@@ -748,6 +747,18 @@ public static class NodeApp
         if (configuredValidatorCount > 0)
         {
             options.Consensus.InitialValidatorCount = configuredValidatorCount;
+        }
+    }
+
+    private static void ApplyInitialValidatorCount(
+        NodeOptions options,
+        ValidatorConfig validatorConfig,
+        LeanChainConfig? chainConfig)
+    {
+        ApplyGenesisValidatorKeys(options, chainConfig);
+
+        if (options.Consensus.InitialValidatorCount > 0)
+        {
             return;
         }
 
