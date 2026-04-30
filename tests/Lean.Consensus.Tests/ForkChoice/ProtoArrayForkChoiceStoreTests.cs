@@ -99,6 +99,9 @@ public sealed class ProtoArrayForkChoiceStoreTests
         var config = new ConsensusConfig { InitialValidatorCount = 4 };
         var store = new ProtoArrayForkChoiceStore(config, stateStore);
 
+        // Tick into slot 51 so the slot-51 attestation passes the future-slot bound.
+        store.TickInterval(51, 0);
+
         var attestation = new SignedAttestation(
             0,
             new AttestationData(

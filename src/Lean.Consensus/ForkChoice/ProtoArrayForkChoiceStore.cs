@@ -26,6 +26,12 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public const int JustificationLookbackSlots = 3;
     public const int MaxAttestationAgeSlots = 16;
 
+    // Future-slot tolerance for gossip attestations, in intervals.
+    // Bounds the clock skew the time check is willing to absorb when admitting
+    // a vote whose slot has not yet started locally. One interval is ~800 ms.
+    // (leanSpec GOSSIP_DISPARITY_INTERVALS, see #682.)
+    public const ulong GossipDisparityIntervals = 1;
+
     public object SyncRoot { get; } = new object();
 
     private readonly ProtoArray _protoArray;
@@ -40,6 +46,11 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private Bytes32 _headRoot;
     private ulong _headSlot;
     private ulong _currentSlot;
+
+    // Total intervals elapsed since genesis (= _currentSlot * IntervalsPerSlot
+    // + intervalInSlot). Mirrors the spec's `Store.time`, in intervals. Used
+    // by the gossip-attestation future-slot bound.
+    private ulong _currentTimeIntervals;
     private Checkpoint _latestJustified;
     private Checkpoint _latestFinalized;
     private Bytes32 _safeTarget;
@@ -92,6 +103,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _latestJustified = new Checkpoint(justifiedRoot, new Slot(loaded.LatestJustifiedSlot));
             _latestFinalized = new Checkpoint(finalizedRoot, new Slot(loaded.LatestFinalizedSlot));
             _currentSlot = loaded.HeadSlot;
+            _currentTimeIntervals = loaded.HeadSlot * (ulong)IntervalsPerSlot;
             _safeTarget = new Bytes32(loaded.SafeTargetRoot);
 
             var rootSlot = headRoot.Equals(finalizedRoot) && loaded.HeadSlot != loaded.LatestFinalizedSlot
@@ -143,6 +155,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _headRoot = genesisRoot;
             _headSlot = 0;
             _currentSlot = 0;
+            _currentTimeIntervals = 0;
             _protoArray = new ProtoArray(genesisRoot, 0, 0);
             _safeTarget = genesisRoot;
         }
@@ -549,6 +562,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     public void TickInterval(ulong slot, int intervalInSlot, bool hasProposal = false, ulong maxPeerHeadSlot = 0UL)
     {
         _currentSlot = slot;
+        _currentTimeIntervals = slot * (ulong)IntervalsPerSlot + (ulong)intervalInSlot;
         _maxPeerHeadSlot = maxPeerHeadSlot;
 
         switch (intervalInSlot)
@@ -1050,9 +1064,15 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             return false;
         }
 
-        if (data.Slot.Value > _currentSlot + 1)
+        // Honest validators emit votes only after their slot has begun.
+        // Allow at most GossipDisparityIntervals (~one interval, ~800 ms) of
+        // clock skew. The bound is in intervals, not slots: a whole-slot
+        // margin would let an adversary pre-publish next-slot aggregates
+        // ahead of any honest validator. (leanSpec #682.)
+        var attestationStartInterval = data.Slot.Value * (ulong)IntervalsPerSlot;
+        if (attestationStartInterval > _currentTimeIntervals + GossipDisparityIntervals)
         {
-            reason = $"Attestation slot {data.Slot.Value} is too far in the future for current slot {_currentSlot}.";
+            reason = $"Attestation slot {data.Slot.Value} is too far in the future (start interval {attestationStartInterval}, store time {_currentTimeIntervals}).";
             return false;
         }
 

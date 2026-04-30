@@ -201,6 +201,8 @@ public sealed class ConsensusServiceV2Tests
             block1Checkpoint,
             genesisCheckpoint);
 
+        // Tick into slot 1 so the slot-1 attestation passes the future-slot bound.
+        store.TickInterval(1, 0);
         Assert.That(store.TryOnAttestation(new SignedAttestation(0, attData, XmssSignature.Empty()), out var reason0), Is.True, reason0);
         Assert.That(store.TryOnAttestation(new SignedAttestation(1, attData, XmssSignature.Empty()), out var reason1), Is.True, reason1);
         store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
@@ -242,6 +244,8 @@ public sealed class ConsensusServiceV2Tests
             new Checkpoint(block1Root, new Slot(1)),
             genesisCheckpoint);
 
+        // Tick into slot 1 so the slot-1 attestation passes the future-slot bound.
+        store.TickInterval(1, 0);
         Assert.That(store.TryOnAttestation(new SignedAttestation(0, payloadBackedData, XmssSignature.Empty()), out var reason0), Is.True, reason0);
         store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
