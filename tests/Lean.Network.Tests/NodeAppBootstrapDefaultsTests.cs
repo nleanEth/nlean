@@ -198,9 +198,11 @@ public sealed class NodeAppBootstrapDefaultsTests
 
         var headState = NodeApp.CreateCheckpointHeadState(state);
 
+        // leanSpec PR #677: anchor checkpoints are seeded from the anchor slot
+        // regardless of the state's embedded pre-anchor latest_finalized.slot.
         Assert.That(headState.HeadSlot, Is.EqualTo(182UL));
         Assert.That(headState.LatestJustifiedSlot, Is.EqualTo(182UL));
-        Assert.That(headState.LatestFinalizedSlot, Is.EqualTo(169UL));
+        Assert.That(headState.LatestFinalizedSlot, Is.EqualTo(182UL));
         Assert.That(headState.HeadRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
         Assert.That(headState.LatestJustifiedRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
         Assert.That(headState.LatestFinalizedRoot, Is.EqualTo(anchorRoot.AsSpan().ToArray()));
