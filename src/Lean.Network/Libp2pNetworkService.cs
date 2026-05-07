@@ -655,12 +655,6 @@ public sealed class Libp2pNetworkService : INetworkService
                 continue;
             }
 
-            if (!ShouldInitiateBootstrapDial(localPeerId, peerKey))
-            {
-                _logger.LogDebug("Skipping symmetric bootstrap dial to {Address}; waiting for inbound/outbound peer side.", peerKey);
-                continue;
-            }
-
             if (!TryReserveBootstrapPeerConnection(peerKey))
             {
                 continue;
@@ -784,11 +778,6 @@ public sealed class Libp2pNetworkService : INetworkService
             cancellationToken.ThrowIfCancellationRequested();
 
             if (peerKey.Contains($"/p2p/{localPeerId}", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!ShouldInitiateBootstrapDial(localPeerId, peerKey))
             {
                 continue;
             }
@@ -1176,22 +1165,6 @@ public sealed class Libp2pNetworkService : INetworkService
         }
 
         return peerKey[peerIdStart..];
-    }
-
-    private static bool ShouldInitiateBootstrapDial(string localPeerId, string peerKey)
-    {
-        var remotePeerId = ExtractPeerId(peerKey);
-        if (string.IsNullOrWhiteSpace(localPeerId) || string.IsNullOrWhiteSpace(remotePeerId))
-        {
-            return true;
-        }
-
-        if (string.Equals(localPeerId, remotePeerId, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        return string.CompareOrdinal(localPeerId, remotePeerId) < 0;
     }
 
     private ISession? TryFindBootstrapSession(string peerKey)
