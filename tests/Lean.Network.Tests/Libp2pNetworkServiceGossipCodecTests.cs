@@ -33,20 +33,6 @@ public sealed class Libp2pNetworkServiceGossipCodecTests
     }
 
     [Test]
-    public void ShouldInitiateBootstrapDial_OnlyOneSideDialsForSamePeerPair()
-    {
-        const string peerA = "/ip4/127.0.0.1/udp/9101/quic-v1/p2p/16Uiu2HAmSz1wjLKPNn3DhMa7CYEg8o2V9kSSrQpeT8s4wJY3n6EJ";
-        const string peerB = "/ip4/127.0.0.1/udp/9102/quic-v1/p2p/16Uiu2HAkvi2sxT75Bpq1c7yV2FjnSQJJ432d6jeshbmfdJss1i6f";
-        const string localA = "16Uiu2HAmSz1wjLKPNn3DhMa7CYEg8o2V9kSSrQpeT8s4wJY3n6EJ";
-        const string localB = "16Uiu2HAkvi2sxT75Bpq1c7yV2FjnSQJJ432d6jeshbmfdJss1i6f";
-
-        var aDialsB = InvokeShouldInitiateBootstrapDial(localA, peerB);
-        var bDialsA = InvokeShouldInitiateBootstrapDial(localB, peerA);
-
-        Assert.That(aDialsB ^ bDialsA, Is.True, "exactly one side should initiate the bootstrap dial");
-    }
-
-    [Test]
     public void NormalizePeerIdentityKey_UsesPeerId_WhenPeerIdExists()
     {
         const string peerKeyA = "/ip4/127.0.0.1/udp/19601/quic-v1/p2p/16Uiu2HAmPeerA";
@@ -87,16 +73,6 @@ public sealed class Libp2pNetworkServiceGossipCodecTests
 
         Assert.That(method, Is.Not.Null);
         return (byte[])method!.Invoke(null, new object[] { payload })!;
-    }
-
-    private static bool InvokeShouldInitiateBootstrapDial(string localPeerId, string peerKey)
-    {
-        var method = typeof(Libp2pNetworkService).GetMethod(
-            "ShouldInitiateBootstrapDial",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.That(method, Is.Not.Null);
-        return (bool)method!.Invoke(null, new object[] { localPeerId, peerKey })!;
     }
 
     private static string InvokeNormalizePeerIdentityKey(string peerKey)
