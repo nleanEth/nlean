@@ -695,7 +695,10 @@ public sealed class Libp2pNetworkService : INetworkService
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
                 RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
-                _logger.LogWarning(ex, "Failed to connect to bootstrap peer {Address}", peerKey);
+                var deepest = UnwrapInnermostException(ex);
+                _logger.LogWarning(ex,
+                    "Failed to connect to bootstrap peer {Address}. RootCause={CauseType}: {CauseMessage}",
+                    peerKey, deepest.GetType().FullName, deepest.Message);
             }
         }
     }
@@ -834,7 +837,10 @@ public sealed class Libp2pNetworkService : INetworkService
             {
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
-                _logger.LogWarning(ex, "Failed to reconnect to bootstrap peer {Address}", peerKey);
+                var deepest = UnwrapInnermostException(ex);
+                _logger.LogWarning(ex,
+                    "Failed to reconnect to bootstrap peer {Address}. RootCause={CauseType}: {CauseMessage}",
+                    peerKey, deepest.GetType().FullName, deepest.Message);
             }
         }
     }
@@ -1314,6 +1320,25 @@ public sealed class Libp2pNetworkService : INetworkService
     private static string MapConnectionFailureResult(Exception exception)
     {
         return exception is OperationCanceledException ? ConnectionResultTimeout : ConnectionResultError;
+    }
+
+    private static Exception UnwrapInnermostException(Exception exception)
+    {
+        var current = exception;
+        while (true)
+        {
+            if (current is AggregateException agg && agg.InnerExceptions.Count > 0)
+            {
+                current = agg.InnerExceptions[0];
+                continue;
+            }
+            if (current.InnerException is not null)
+            {
+                current = current.InnerException;
+                continue;
+            }
+            return current;
+        }
     }
 
     private static byte[] EncodeGossipPayload(ReadOnlyMemory<byte> payload)

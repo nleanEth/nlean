@@ -10,6 +10,7 @@ This file provides guidance for AI coding assistants working on this codebase.
 - **Native crypto**: `./scripts/build-native.sh`
 - **Patched pubsub**: `./scripts/libp2p/build-patched-pubsub-package.sh`
 - **Patched quic**: `./scripts/libp2p/build-patched-quic-package.sh`
+- **Patched libp2p (Identify best-effort)**: `./scripts/libp2p/build-patched-libp2p-package.sh`
 
 ## Project Structure
 

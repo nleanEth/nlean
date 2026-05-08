@@ -22,6 +22,12 @@ internal sealed class GossipSignatureEntryByValidatorComparer : IEqualityCompare
 
 public sealed class ProtoArrayForkChoiceStore : IAttestationSink
 {
+    // LEAN_TRACE_JUSTIFICATION=1 enables verbose [JTRACE] logs for cross-client interop debugging:
+    // genesis state root, per-validator vote acceptance, post-accept tally. Read once at process
+    // start so flipping the env mid-run has no effect.
+    private static readonly bool TraceJustification =
+        string.Equals(Environment.GetEnvironmentVariable("LEAN_TRACE_JUSTIFICATION"), "1", StringComparison.Ordinal);
+
     public const int IntervalsPerSlot = 5;
     public const int JustificationLookbackSlots = 3;
     public const int MaxAttestationAgeSlots = 16;
@@ -149,6 +155,24 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             var genesisState = chainTransition.CreateGenesisState(_validatorCount);
             var genesisRoot = ChainStateTransition.GenesisBlockRoot(genesisState);
 
+            if (TraceJustification)
+            {
+                var stateRoot = Convert.ToHexString(genesisState.HashTreeRoot());
+                var blockRoot = Convert.ToHexString(genesisRoot.AsSpan());
+                _logger.LogInformation(
+                    "[JTRACE] Genesis. ValidatorCount: {Count}, GenesisTime: {Time}, StateRoot: {StateRoot}, BlockRoot: {BlockRoot}",
+                    _validatorCount, config.GenesisTimeUnix, stateRoot, blockRoot);
+                for (var i = 0; i < genesisState.Validators.Count; i++)
+                {
+                    var v = genesisState.Validators[i];
+                    _logger.LogInformation(
+                        "[JTRACE] Validator {Index}: AttestPubkey={A}, ProposalPubkey={P}",
+                        i,
+                        Convert.ToHexString(v.AttestationPubkey.AsSpan())[..16],
+                        Convert.ToHexString(v.ProposalPubkey.AsSpan())[..16]);
+                }
+            }
+
             var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
             _latestJustified = genesisCheckpoint;
             _latestFinalized = genesisCheckpoint;
@@ -251,8 +275,25 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     {
         if (!signed.Proof.Participants.TryToValidatorIndices(out var participantIds) || participantIds.Count == 0)
         {
+            if (TraceJustification)
+            {
+                _logger.LogInformation(
+                    "[JTRACE] Recv aggregation REJECTED (no participants). Slot={Slot}, Head={Head}",
+                    signed.Data.Slot.Value,
+                    Convert.ToHexString(signed.Data.Head.Root.AsSpan())[..8]);
+            }
             reason = "Aggregated attestation must include at least one participant.";
             return false;
+        }
+
+        if (TraceJustification)
+        {
+            _logger.LogInformation(
+                "[JTRACE] Recv aggregation. Slot={Slot}, Participants=[{Pids}], Head={Head}, Target={Target}/{TargetSlot}, Source={Source}/{SourceSlot}",
+                signed.Data.Slot.Value, string.Join(",", participantIds),
+                Convert.ToHexString(signed.Data.Head.Root.AsSpan())[..8],
+                Convert.ToHexString(signed.Data.Target.Root.AsSpan())[..8], signed.Data.Target.Slot.Value,
+                Convert.ToHexString(signed.Data.Source.Root.AsSpan())[..8], signed.Data.Source.Slot.Value);
         }
 
         var dataRootKey = ToDataRootKey(signed.Data);
@@ -596,7 +637,18 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         {
             var headIndex = _protoArray.GetIndex(data.Head.Root);
             if (!headIndex.HasValue)
+            {
+                if (TraceJustification)
+                {
+                    _logger.LogInformation(
+                        "[JTRACE] Drop payload (unknown head). Slot={Slot}, Head={Head}, Target={Target}/{TargetSlot}, Source={Source}/{SourceSlot}",
+                        data.Slot.Value,
+                        Convert.ToHexString(data.Head.Root.AsSpan())[..8],
+                        Convert.ToHexString(data.Target.Root.AsSpan())[..8], data.Target.Slot.Value,
+                        Convert.ToHexString(data.Source.Root.AsSpan())[..8], data.Source.Slot.Value);
+                }
                 continue;
+            }
 
             foreach (var proof in proofs)
             {
@@ -604,7 +656,19 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                     continue;
 
                 foreach (var pid in pids)
+                {
+                    if (TraceJustification)
+                    {
+                        var prev = _attestationTrackers.GetValueOrDefault(pid).LatestNew?.Slot ?? 0UL;
+                        _logger.LogInformation(
+                            "[JTRACE] Vote. ValidatorId={Pid}, Slot={Slot}, PrevSlot={PrevSlot}, Head={Head}, Target={Target}/{TargetSlot}, Source={Source}/{SourceSlot}",
+                            pid, data.Slot.Value, prev,
+                            Convert.ToHexString(data.Head.Root.AsSpan())[..8],
+                            Convert.ToHexString(data.Target.Root.AsSpan())[..8], data.Target.Slot.Value,
+                            Convert.ToHexString(data.Source.Root.AsSpan())[..8], data.Source.Slot.Value);
+                    }
                     UpdateTrackerFromGossip(pid, headIndex.Value, data.Slot.Value, data);
+                }
             }
         }
 
@@ -646,6 +710,36 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         var head = ComputeForkChoiceHead(VoteSource.Known, cutoffWeight: 0);
         _headRoot = head.Root;
         _headSlot = head.Slot;
+
+        if (TraceJustification)
+        {
+            // Per-target tally over accepted votes (latestKnown). Shows whether each side of
+            // the chain has reached the 2/3 quorum that drives justification advance.
+            var byTarget = new Dictionary<string, (ulong TargetSlot, int Count, List<ulong> Voters)>();
+            foreach (var (vid, t) in _attestationTrackers)
+            {
+                var lk = t.LatestKnown;
+                if (!lk.HasValue || lk.Value.Data is null) continue;
+                var data = lk.Value.Data;
+                var key = Convert.ToHexString(data.Target.Root.AsSpan())[..8];
+                if (!byTarget.TryGetValue(key, out var bucket))
+                    bucket = (data.Target.Slot.Value, 0, new List<ulong>());
+                bucket.Count++;
+                bucket.Voters.Add(vid);
+                byTarget[key] = bucket;
+            }
+            foreach (var (target, b) in byTarget)
+            {
+                _logger.LogInformation(
+                    "[JTRACE] Tally. Target={Target}/{TargetSlot}, Voters=[{Voters}], Count={Count}/{ValidatorCount}",
+                    target, b.TargetSlot, string.Join(",", b.Voters), b.Count, _validatorCount);
+            }
+            _logger.LogInformation(
+                "[JTRACE] Post-accept. Head={Head}/{HeadSlot}, Justified={Just}/{JustSlot}, Finalized={Fin}/{FinSlot}",
+                Convert.ToHexString(_headRoot.AsSpan())[..8], _headSlot,
+                Convert.ToHexString(_latestJustified.Root.AsSpan())[..8], _latestJustified.Slot.Value,
+                Convert.ToHexString(_latestFinalized.Root.AsSpan())[..8], _latestFinalized.Slot.Value);
+        }
 
         // Slot-based pruning of attestation data
         if (_currentSlot > (ulong)MaxAttestationAgeSlots)

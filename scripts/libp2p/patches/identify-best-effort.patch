@@ -1,0 +1,32 @@
+diff --git a/src/libp2p/Libp2p/Libp2pPeerFactory.cs b/src/libp2p/Libp2p/Libp2pPeerFactory.cs
+index c31eb9f..1dd5a77 100644
+--- a/src/libp2p/Libp2p/Libp2pPeerFactory.cs
++++ b/src/libp2p/Libp2p/Libp2pPeerFactory.cs
+@@ -29,8 +29,25 @@ class Libp2pPeer : LocalPeer
+         identifyNotifier.TrackChanges(this);
+     }
+ 
+-    protected override async Task ConnectedTo(ISession session, bool isDialer)
++    protected override Task ConnectedTo(ISession session, bool isDialer)
+     {
+-        await session.DialAsync<IdentifyProtocol>();
++        // Identify is informational, not a connection prerequisite.
++        // Run it as fire-and-forget so peers that don't speak Identify
++        // (e.g. lean-spec mock helpers that never respond on
++        // /ipfs/id/1.0.0) cannot hang or fail the dial. Matching
++        // rust-libp2p / go-libp2p semantics: the connection is usable
++        // immediately after transport handshake; Identify is auxiliary.
++        _ = Task.Run(async () =>
++        {
++            try
++            {
++                await session.DialAsync<IdentifyProtocol>();
++            }
++            catch (Exception ex)
++            {
++                _logger?.LogDebug(ex, "Identify failed for {Peer}; proceeding without it.", session.RemoteAddress);
++            }
++        });
++        return Task.CompletedTask;
+     }
+ }

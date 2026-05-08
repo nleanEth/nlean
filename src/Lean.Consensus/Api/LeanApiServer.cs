@@ -93,13 +93,10 @@ public sealed class LeanApiServer
                     break;
 
                 case "/lean/v0/states/finalized":
-                    var accept = context.Request.Headers["Accept"] ?? "";
-                    if (!accept.Contains("application/octet-stream"))
-                    {
-                        WriteJson(response, 406, "{\"error\":\"Accept: application/octet-stream required\"}");
-                        break;
-                    }
-
+                    // Serve SSZ regardless of Accept header. Hive's reqresp tests
+                    // hit this without a specific Accept; matching ream/grandine
+                    // tolerance here. If the client wants a specific format only
+                    // they'd negotiate with q= weights, which we ignore safely.
                     var ssz = _getFinalizedStateSsz();
                     if (ssz is null)
                     {

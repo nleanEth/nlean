@@ -62,10 +62,15 @@ public sealed class LeanApiServerTests
     }
 
     [Test]
-    public async Task FinalizedState_WithoutAcceptHeader_Returns406()
+    public async Task FinalizedState_WithoutAcceptHeader_ServesSsz()
     {
+        // Hive's reqresp tests hit /lean/v0/states/finalized without an
+        // Accept header and expect 200; align with ream/grandine tolerance.
         var resp = await _client.GetAsync("lean/v0/states/finalized");
-        Assert.That((int)resp.StatusCode, Is.EqualTo(406));
+        Assert.That((int)resp.StatusCode, Is.EqualTo(200));
+        Assert.That(resp.Content.Headers.ContentType?.MediaType, Is.EqualTo("application/octet-stream"));
+        var bytes = await resp.Content.ReadAsByteArrayAsync();
+        Assert.That(bytes, Is.EqualTo(new byte[] { 0x01, 0x02, 0x03 }));
     }
 
     [Test]

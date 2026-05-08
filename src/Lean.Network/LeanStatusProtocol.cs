@@ -78,12 +78,16 @@ public sealed class LeanStatusProtocol : ISessionProtocol<LeanStatusMessage, Lea
                 }
                 catch (Exception ex)
                 {
-                    // Ream/Zeam interop can send status payload variants during startup.
-                    // We serve our local status regardless to keep negotiation forward-progressing.
+                    // Spec: a non-decodable status payload is an InvalidRequest. We must
+                    // not reply with a success-coded local status — hive
+                    // reqresp/status/malformed_ssz checks this explicitly.
                     _logger.LogInformation(
                         ex,
-                        "status RPC request payload is non-canonical. PayloadLength={PayloadLength}",
+                        "status RPC request payload is malformed. PayloadLength={PayloadLength}",
                         requestPayload.Length);
+                    await TrySendErrorAsync(channel, LeanRpcResponseCodes.InvalidRequest, "malformed status payload", channel.CancellationToken);
+                    responseWritten = true;
+                    return;
                 }
             }
 
