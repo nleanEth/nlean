@@ -612,11 +612,51 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
                 AcceptNewAttestations();
                 break;
             case 3:
+                // leanSpec update_safe_target reads from the current slot's
+                // latest_new_aggregated_payloads. In nlean those payloads only
+                // get unpacked into per-validator LatestNew during
+                // AcceptNewAttestations (intervals 0 and 4), so without this
+                // pre-step UpdateSafeTarget would see stale (previous-slot)
+                // votes — making nlean's safe_target lag a slot behind zeam,
+                // which made cross-client validators pick different
+                // attestation targets and prevented justification from
+                // advancing.
+                UnpackNewPayloadsIntoTrackers();
                 UpdateSafeTarget();
                 break;
             case 4:
                 AcceptNewAttestations();
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Unpack <see cref="_newAggregatedPayloads"/> into each validator's
+    /// <c>LatestNew</c> tracker without migrating to known or recomputing the
+    /// head. Used at interval 3 so safe_target sees the current slot's votes.
+    /// Idempotent: <see cref="UpdateTrackerFromGossip"/> only advances slot.
+    /// </summary>
+    private void UnpackNewPayloadsIntoTrackers()
+    {
+        foreach (var (_, (data, proofs)) in _newAggregatedPayloads)
+        {
+            var headIndex = _protoArray.GetIndex(data.Head.Root);
+            if (!headIndex.HasValue)
+            {
+                continue;
+            }
+
+            foreach (var proof in proofs)
+            {
+                if (!proof.Participants.TryToValidatorIndices(out var pids))
+                {
+                    continue;
+                }
+                foreach (var pid in pids)
+                {
+                    UpdateTrackerFromGossip(pid, headIndex.Value, data.Slot.Value, data);
+                }
+            }
         }
     }
 
