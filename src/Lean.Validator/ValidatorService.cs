@@ -255,9 +255,20 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         var signatureBytes = _leanSig.Sign(keys.AttestationSecretKey, epoch, messageRoot);
         signingStopwatch.Stop();
         LeanMetrics.RecordPqAttestationSigning(signingStopwatch.Elapsed);
+        _logger.LogInformation(
+            "XMSS attestation sign timing. Slot: {Slot}, ValidatorId: {ValidatorId}, ElapsedMs: {ElapsedMs}",
+            slot,
+            validatorId,
+            signingStopwatch.Elapsed.TotalMilliseconds);
 
+        // Self-verification roughly doubles the per-attestation hash-sig cost
+        // without providing security value: the signature was just produced by
+        // our own key against our own message. Gate behind a debug env flag so
+        // the hot path stays fast for cross-client interop where peers (e.g.
+        // grandine) trigger aggregation on a tight window after broadcast.
         var selfVerificationOk = true;
-        if (keys.AttestationPublicKey.Length > 0)
+        if (keys.AttestationPublicKey.Length > 0 &&
+            IsTruthyEnvironmentValue("NLEAN_DEBUG_SELF_VERIFY_ATTESTATION"))
         {
             var verificationStopwatch = Stopwatch.StartNew();
             selfVerificationOk = _leanSig.Verify(keys.AttestationPublicKey, epoch, messageRoot, signatureBytes);
