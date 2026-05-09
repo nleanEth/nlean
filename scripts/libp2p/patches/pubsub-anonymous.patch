@@ -78,10 +78,51 @@ index 4663ba6..fddeb64 100644
          context.Activity?.AddEvent(new ActivityEvent($"Finished dial({context.Id}) {context.State.RemoteAddress}"));
      }
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
-index 53840a6..47115cf 100644
+index 53840a6..9b7ddb0 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
 +++ b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.Topics.cs
-@@ -128,7 +128,13 @@ public partial class PubsubRouter
+@@ -29,24 +29,27 @@ public partial class PubsubRouter
+     {
+         topicState.GetOrAdd(topicId, (id) => new Topic(this, topicId)).IsSubscribed = true;
+ 
+-        if (!fPeers.TryAdd(topicId, []))
+-        {
+-            // Already exists
+-            return;
+-        }
++        // Always (re)broadcast topic announcement so peers connected after the
++        // initial subscribe also learn about our interest. The original early-return
++        // skipped the broadcast for repeated Subscribe calls (idempotent app code),
++        // which could leave peers connected mid-subscription unaware of our topics.
++        bool isNew = fPeers.TryAdd(topicId, []);
+ 
+-        gPeers.TryAdd(topicId, []);
++        if (isNew)
++        {
++            gPeers.TryAdd(topicId, []);
+ 
+-        HashSet<PeerId> meshPeers = mesh.GetOrAdd(topicId, []);
++            HashSet<PeerId> meshPeers = mesh.GetOrAdd(topicId, []);
+ 
+-        if (fanout.TryGetValue(topicId, out HashSet<PeerId>? fanoutPeers))
+-        {
+-            foreach (PeerId peerId in fanoutPeers.ToList())
++            if (fanout.TryGetValue(topicId, out HashSet<PeerId>? fanoutPeers))
+             {
+-                meshPeers.Add(peerId);
+-            }
++                foreach (PeerId peerId in fanoutPeers.ToList())
++                {
++                    meshPeers.Add(peerId);
++                }
+ 
+-            fanoutPeers.Clear();
++                fanoutPeers.Clear();
++            }
+         }
+ 
+         Rpc topicUpdate = new Rpc().WithTopics([topicId], []);
+@@ -128,40 +131,70 @@ public partial class PubsubRouter
          ulong seqNo = this.seqNo++;
          Span<byte> seqNoBytes = stackalloc byte[8];
          BinaryPrimitives.WriteUInt64BigEndian(seqNoBytes, seqNo);
@@ -93,9 +134,83 @@ index 53840a6..47115cf 100644
 +            message,
 +            localPeer.Identity,
 +            _settings.DefaultSignaturePolicy);
++
++        // Track who's already received the message so we don't double-send.
++        HashSet<PeerId> sent = [];
  
          foreach (PeerId peerId in fPeers[topicId])
          {
+-            peerState.GetValueOrDefault(peerId)?.Send(rpc);
++            if (sent.Add(peerId))
++            {
++                peerState.GetValueOrDefault(peerId)?.Send(rpc);
++            }
+         }
+ 
+-        if (mesh.ContainsKey(topicId))
++        // Gossipsub v1.1 FloodPublish: when WE originate a message, send to all
++        // peers known to be subscribed to this topic, regardless of mesh state.
++        // The original code only sent to mesh members, but mesh formation is
++        // probabilistic and biased toward homogeneous peers (e.g. nlean-to-nlean
++        // sometimes meshes before nlean-to-other-impl). Without flood-publish a
++        // partial mesh strands messages to a subset of subscribed peers.
++        // Send order: mesh first (the "preferred" peers), then any remaining
++        // gPeers (gossipsub-aware peers who advertised subscription) as flood.
++        if (mesh.TryGetValue(topicId, out HashSet<PeerId>? meshPeers))
+         {
+-            foreach (PeerId peerId in mesh[topicId].ToList())
++            foreach (PeerId peerId in meshPeers.ToList())
+             {
+-                peerState.GetValueOrDefault(peerId)?.Send(rpc);
++                if (sent.Add(peerId))
++                {
++                    peerState.GetValueOrDefault(peerId)?.Send(rpc);
++                }
+             }
+         }
+-        else
+-        {
+-            fanoutLastPublished[topicId] = DateTime.Now;
+-            HashSet<PeerId> topicFanout = fanout.GetOrAdd(topicId, _ => []);
+ 
+-            if (topicFanout.Count == 0)
++        if (gPeers.TryGetValue(topicId, out HashSet<PeerId>? gossipsubPeers))
++        {
++            foreach (PeerId peerId in gossipsubPeers.ToList())
+             {
+-                HashSet<PeerId>? topicPeers = gPeers.GetValueOrDefault(topicId);
+-                if (topicPeers is { Count: > 0 })
++                if (sent.Add(peerId))
+                 {
+-                    foreach (PeerId peer in topicPeers.Take(_settings.Degree))
+-                    {
+-                        topicFanout.Add(peer);
+-                    }
++                    peerState.GetValueOrDefault(peerId)?.Send(rpc);
+                 }
+             }
++        }
++
++        // Catch-all flood: also send to any connected gossipsub peer that
++        // wasn't in mesh or gPeers yet. The peer's SUBSCRIBE RPC may still be
++        // in flight (small networks, post-connection race). Receivers ignore
++        // messages on topics they're not subscribed to, so the cost is one
++        // extra send per connected peer per local publish — small price for
++        // determinism. Mirrors rust-libp2p's FloodPublish=true default behavior.
++        fanoutLastPublished[topicId] = DateTime.Now;
++        HashSet<PeerId> topicFanout = fanout.GetOrAdd(topicId, _ => []);
+ 
+-            foreach (PeerId peerId in topicFanout)
++        foreach (KeyValuePair<PeerId, PubsubPeer> peer in peerState)
++        {
++            if (peer.Value.IsGossipSub && sent.Add(peer.Key))
+             {
+-                peerState.GetValueOrDefault(peerId)?.Send(rpc);
++                topicFanout.Add(peer.Key);
++                peer.Value.Send(rpc);
+             }
+         }
+     }
 diff --git a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs b/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
 index 4e732c4..d70045e 100644
 --- a/src/libp2p/Libp2p.Protocols.Pubsub/PubsubRouter.cs
