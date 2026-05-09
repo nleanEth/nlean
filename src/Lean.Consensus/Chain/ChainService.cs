@@ -27,24 +27,30 @@ public sealed class ChainService
         if (!_initialized)
         {
             _initialized = true;
-            // Skip to current position — no historical replay.
-            // Other clients (Lighthouse, Prysm, Teku, Nimbus) all start from
-            // the current slot without replaying past intervals.
+            // Skip to current interval — no historical replay.
+            // Fire OnTick for the current wall-clock interval immediately, then
+            // advance the cursor so subsequent ticks fire on time.
             _lastProcessedTotalInterval = currentTotal;
 
             if (currentTotal == 0)
                 return;
 
-            var slot = (currentTotal - 1) / (ulong)_intervalsPerSlot;
-            var interval = (int)((currentTotal - 1) % (ulong)_intervalsPerSlot);
+            var slot = currentTotal / (ulong)_intervalsPerSlot;
+            var interval = (int)(currentTotal % (ulong)_intervalsPerSlot);
             _logger.LogInformation(
                 "ChainService initialized at interval {CurrentTotal} (slot {Slot}, interval {Interval})",
                 currentTotal, slot, interval);
             _target.OnTick(slot, interval);
+            _lastProcessedTotalInterval = currentTotal + 1;
             return;
         }
 
-        while (_lastProcessedTotalInterval < currentTotal)
+        // Fire each interval at wall-clock interval start: OnTick(slot, N) must
+        // fire when currentTotal == N, not N+1. The previous `<` condition
+        // delayed every duty by one full interval (~800ms), causing nlean's
+        // attestations to broadcast at slot+1.6s instead of slot+0.8s and miss
+        // grandine's interval-2 aggregation snapshot.
+        while (_lastProcessedTotalInterval <= currentTotal)
         {
             var slot = _lastProcessedTotalInterval / (ulong)_intervalsPerSlot;
             var interval = (int)(_lastProcessedTotalInterval % (ulong)_intervalsPerSlot);
