@@ -114,7 +114,7 @@ public sealed class NodeService : BackgroundService
             });
 
             _apiServer = new LeanApiServer(
-                $"http://+:{_options.ApiPort}/",
+                _options.ApiPort,
                 () => csv2ForApi?.GetApiSnapshot() ?? new ApiSnapshot(0, "", 0, ""),
                 () => csv2ForApi?.GetFinalizedStateSsz(),
                 aggregatorController);

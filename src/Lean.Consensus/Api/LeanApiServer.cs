@@ -1,256 +1,185 @@
-using System.Net;
+using System.Text;
 using System.Text.Json;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Lean.Consensus.Api;
 
 /// <summary>
-/// Lightweight HTTP API server for lean consensus endpoints.
-/// Uses HttpListener to avoid ASP.NET Core dependency.
+/// Lean consensus HTTP API server, hosted on Kestrel. Replaces an earlier
+/// System.Net.HttpListener implementation which crashed with a
+/// NullReferenceException inside HttpEndPointListener.ProcessAccept on Linux
+/// x86_64 (a known race in .NET's managed HttpListener).
 /// </summary>
 public sealed class LeanApiServer
 {
-    private readonly string _prefix;
+    private readonly int _port;
     private readonly Func<ApiSnapshot> _getSnapshot;
     private readonly Func<byte[]?> _getFinalizedStateSsz;
     private readonly AggregatorController? _aggregatorController;
-    private HttpListener? _listener;
-    private CancellationTokenSource? _cts;
-    private Task? _listenTask;
+    private WebApplication? _app;
 
-    public LeanApiServer(string prefix, Func<ApiSnapshot> getSnapshot,
+    public LeanApiServer(int port, Func<ApiSnapshot> getSnapshot,
         Func<byte[]?> getFinalizedStateSsz,
         AggregatorController? aggregatorController = null)
     {
-        _prefix = prefix.EndsWith('/') ? prefix : prefix + '/';
+        _port = port;
         _getSnapshot = getSnapshot;
         _getFinalizedStateSsz = getFinalizedStateSsz;
         _aggregatorController = aggregatorController;
     }
 
-    public Task StartAsync(CancellationToken ct)
+    public async Task StartAsync(CancellationToken ct)
     {
-        _listener = new HttpListener();
-        _listener.Prefixes.Add(_prefix);
-        _listener.Start();
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _listenTask = ListenLoopAsync(_cts.Token);
-        return Task.CompletedTask;
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.ConfigureKestrel(opts => opts.ListenAnyIP(_port));
+        builder.Logging.ClearProviders();
+
+        _app = builder.Build();
+
+        _app.MapGet("/lean/v0/health",
+            () => Results.Content("{\"status\":\"healthy\",\"service\":\"lean-rpc-api\"}", "application/json"));
+
+        _app.MapGet("/lean/v0/checkpoints/justified", () =>
+        {
+            var s = _getSnapshot();
+            return Results.Content($"{{\"slot\":{s.JustifiedSlot},\"root\":\"0x{s.JustifiedRoot}\"}}", "application/json");
+        });
+
+        _app.MapGet("/lean/v0/checkpoints/finalized", () =>
+        {
+            var s = _getSnapshot();
+            return Results.Content($"{{\"slot\":{s.FinalizedSlot},\"root\":\"0x{s.FinalizedRoot}\"}}", "application/json");
+        });
+
+        _app.MapGet("/lean/v0/states/finalized", () =>
+        {
+            var ssz = _getFinalizedStateSsz();
+            return ssz is null
+                ? Results.Json(new { error = "finalized state not available" }, statusCode: 404)
+                : Results.Bytes(ssz, "application/octet-stream");
+        });
+
+        _app.MapGet("/lean/v0/fork_choice", () =>
+        {
+            var snap = _getSnapshot();
+            if (snap.ForkChoice is null)
+            {
+                return Results.Json(new { error = "fork choice not available" }, statusCode: 503);
+            }
+            return Results.Content(BuildForkChoiceJson(snap), "application/json");
+        });
+
+        _app.MapGet("/lean/v0/fork_choice/ui",
+            () => Results.Content(ForkChoiceHtml.Content, "text/html; charset=utf-8"));
+
+        _app.MapGet("/lean/v0/admin/aggregator", () =>
+        {
+            if (_aggregatorController is null)
+            {
+                return Results.Json(new { error = "aggregator controller not available" }, statusCode: 503);
+            }
+            var flag = _aggregatorController.IsEnabled ? "true" : "false";
+            return Results.Content($"{{\"is_aggregator\":{flag}}}", "application/json");
+        });
+
+        _app.MapPost("/lean/v0/admin/aggregator", async (HttpContext ctx) =>
+        {
+            if (_aggregatorController is null)
+            {
+                return Results.Json(new { error = "aggregator controller not available" }, statusCode: 503);
+            }
+
+            using var reader = new StreamReader(ctx.Request.Body, Encoding.UTF8);
+            var body = await reader.ReadToEndAsync();
+
+            bool enabled;
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                    !doc.RootElement.TryGetProperty("enabled", out var enabledElement))
+                {
+                    return Results.Json(new { error = "missing 'enabled' field in body" }, statusCode: 400);
+                }
+
+                if (enabledElement.ValueKind != JsonValueKind.True &&
+                    enabledElement.ValueKind != JsonValueKind.False)
+                {
+                    return Results.Json(new { error = "'enabled' must be a boolean" }, statusCode: 400);
+                }
+
+                enabled = enabledElement.GetBoolean();
+            }
+            catch (JsonException)
+            {
+                return Results.Json(new { error = "invalid JSON body" }, statusCode: 400);
+            }
+
+            var previous = _aggregatorController.SetEnabled(enabled);
+            var enabledFlag = enabled ? "true" : "false";
+            var previousFlag = previous ? "true" : "false";
+            return Results.Content(
+                $"{{\"is_aggregator\":{enabledFlag},\"previous\":{previousFlag}}}",
+                "application/json");
+        });
+
+        await _app.StartAsync(ct);
     }
 
     public async Task StopAsync()
     {
-        if (_cts is not null)
-            await _cts.CancelAsync();
-        _listener?.Stop();
-        if (_listenTask is not null)
+        if (_app is not null)
         {
-            try { await _listenTask; }
-            catch (OperationCanceledException) { }
-        }
-
-        _listener?.Close();
-    }
-
-    private async Task ListenLoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested && _listener is { IsListening: true })
-        {
-            try
-            {
-                var context = await _listener.GetContextAsync().WaitAsync(ct);
-                _ = Task.Run(() => HandleRequest(context), ct);
-            }
-            catch (OperationCanceledException) { break; }
-            catch (HttpListenerException) { break; }
+            await _app.StopAsync();
+            await _app.DisposeAsync();
+            _app = null;
         }
     }
 
-    private void HandleRequest(HttpListenerContext context)
+    private static string BuildForkChoiceJson(ApiSnapshot snap)
     {
-        var path = context.Request.Url?.AbsolutePath ?? "";
-        var response = context.Response;
-
-        try
+        var fc = snap.ForkChoice!;
+        var sb = new StringBuilder(4096);
+        sb.Append("{\"nodes\":[");
+        for (int i = 0; i < fc.Nodes.Count; i++)
         {
-            switch (path)
-            {
-                case "/lean/v0/health":
-                    WriteJson(response, 200, "{\"status\":\"healthy\",\"service\":\"lean-rpc-api\"}");
-                    break;
-
-                case "/lean/v0/checkpoints/justified":
-                    var snap1 = _getSnapshot();
-                    WriteJson(response, 200,
-                        $"{{\"slot\":{snap1.JustifiedSlot},\"root\":\"0x{snap1.JustifiedRoot}\"}}");
-                    break;
-
-                case "/lean/v0/checkpoints/finalized":
-                    var snap2 = _getSnapshot();
-                    WriteJson(response, 200,
-                        $"{{\"slot\":{snap2.FinalizedSlot},\"root\":\"0x{snap2.FinalizedRoot}\"}}");
-                    break;
-
-                case "/lean/v0/states/finalized":
-                    // Serve SSZ regardless of Accept header. Hive's reqresp tests
-                    // hit this without a specific Accept; matching ream/grandine
-                    // tolerance here. If the client wants a specific format only
-                    // they'd negotiate with q= weights, which we ignore safely.
-                    var ssz = _getFinalizedStateSsz();
-                    if (ssz is null)
-                    {
-                        WriteJson(response, 404, "{\"error\":\"finalized state not available\"}");
-                        break;
-                    }
-
-                    response.StatusCode = 200;
-                    response.ContentType = "application/octet-stream";
-                    response.ContentLength64 = ssz.Length;
-                    response.OutputStream.Write(ssz);
-                    break;
-
-                case "/lean/v0/fork_choice":
-                    var fcSnap = _getSnapshot();
-                    if (fcSnap.ForkChoice is null)
-                    {
-                        WriteJson(response, 503, "{\"error\":\"fork choice not available\"}");
-                        break;
-                    }
-                    var fc = fcSnap.ForkChoice;
-                    var sb = new System.Text.StringBuilder(4096);
-                    sb.Append("{\"nodes\":[");
-                    for (int i = 0; i < fc.Nodes.Count; i++)
-                    {
-                        if (i > 0) sb.Append(',');
-                        var n = fc.Nodes[i];
-                        sb.Append("{\"root\":\"0x");
-                        sb.Append(n.Root);
-                        sb.Append("\",\"slot\":");
-                        sb.Append(n.Slot);
-                        sb.Append(",\"parent_root\":\"0x");
-                        sb.Append(n.ParentRoot);
-                        sb.Append("\",\"proposer_index\":");
-                        sb.Append(n.ProposerIndex);
-                        sb.Append(",\"weight\":");
-                        sb.Append(n.Weight);
-                        sb.Append('}');
-                    }
-                    sb.Append("],\"head\":\"0x");
-                    sb.Append(fc.Head);
-                    sb.Append("\",\"justified\":{\"slot\":");
-                    sb.Append(fcSnap.JustifiedSlot);
-                    sb.Append(",\"root\":\"0x");
-                    sb.Append(fcSnap.JustifiedRoot);
-                    sb.Append("\"},\"finalized\":{\"slot\":");
-                    sb.Append(fcSnap.FinalizedSlot);
-                    sb.Append(",\"root\":\"0x");
-                    sb.Append(fcSnap.FinalizedRoot);
-                    sb.Append("\"},\"safe_target\":\"0x");
-                    sb.Append(fc.SafeTarget);
-                    sb.Append("\",\"validator_count\":");
-                    sb.Append(fc.ValidatorCount);
-                    sb.Append('}');
-                    WriteJson(response, 200, sb.ToString());
-                    break;
-
-                case "/lean/v0/fork_choice/ui":
-                    var html = ForkChoiceHtml.Content;
-                    response.StatusCode = 200;
-                    response.ContentType = "text/html; charset=utf-8";
-                    var htmlBytes = System.Text.Encoding.UTF8.GetBytes(html);
-                    response.ContentLength64 = htmlBytes.Length;
-                    response.OutputStream.Write(htmlBytes);
-                    break;
-
-                case "/lean/v0/admin/aggregator":
-                    HandleAdminAggregator(context.Request, response);
-                    break;
-
-                default:
-                    WriteJson(response, 404, "{\"error\":\"not found\"}");
-                    break;
-            }
+            if (i > 0) sb.Append(',');
+            var n = fc.Nodes[i];
+            sb.Append("{\"root\":\"0x");
+            sb.Append(n.Root);
+            sb.Append("\",\"slot\":");
+            sb.Append(n.Slot);
+            sb.Append(",\"parent_root\":\"0x");
+            sb.Append(n.ParentRoot);
+            sb.Append("\",\"proposer_index\":");
+            sb.Append(n.ProposerIndex);
+            sb.Append(",\"weight\":");
+            sb.Append(n.Weight);
+            sb.Append('}');
         }
-        catch
-        {
-            WriteJson(response, 500, "{\"error\":\"internal server error\"}");
-        }
-        finally
-        {
-            response.Close();
-        }
-    }
-
-    private void HandleAdminAggregator(HttpListenerRequest request, HttpListenerResponse response)
-    {
-        if (_aggregatorController is null)
-        {
-            WriteJson(response, 503, "{\"error\":\"aggregator controller not available\"}");
-            return;
-        }
-
-        var method = request.HttpMethod.ToUpperInvariant();
-        if (method == "GET")
-        {
-            var flag = _aggregatorController.IsEnabled ? "true" : "false";
-            WriteJson(response, 200, $"{{\"is_aggregator\":{flag}}}");
-            return;
-        }
-
-        if (method != "POST")
-        {
-            response.Headers["Allow"] = "GET, POST";
-            WriteJson(response, 405, "{\"error\":\"method not allowed\"}");
-            return;
-        }
-
-        string body;
-        using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
-        {
-            body = reader.ReadToEnd();
-        }
-
-        bool enabled;
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
-                !doc.RootElement.TryGetProperty("enabled", out var enabledElement))
-            {
-                WriteJson(response, 400, "{\"error\":\"missing 'enabled' field in body\"}");
-                return;
-            }
-
-            if (enabledElement.ValueKind != JsonValueKind.True &&
-                enabledElement.ValueKind != JsonValueKind.False)
-            {
-                WriteJson(response, 400, "{\"error\":\"'enabled' must be a boolean\"}");
-                return;
-            }
-
-            enabled = enabledElement.GetBoolean();
-        }
-        catch (JsonException)
-        {
-            WriteJson(response, 400, "{\"error\":\"invalid JSON body\"}");
-            return;
-        }
-
-        var previous = _aggregatorController.SetEnabled(enabled);
-        var enabledFlag = enabled ? "true" : "false";
-        var previousFlag = previous ? "true" : "false";
-        WriteJson(response, 200,
-            $"{{\"is_aggregator\":{enabledFlag},\"previous\":{previousFlag}}}");
-    }
-
-    private static void WriteJson(HttpListenerResponse response, int statusCode, string json)
-    {
-        response.StatusCode = statusCode;
-        response.ContentType = "application/json";
-        var bytes = System.Text.Encoding.UTF8.GetBytes(json);
-        response.ContentLength64 = bytes.Length;
-        response.OutputStream.Write(bytes);
+        sb.Append("],\"head\":\"0x");
+        sb.Append(fc.Head);
+        sb.Append("\",\"justified\":{\"slot\":");
+        sb.Append(snap.JustifiedSlot);
+        sb.Append(",\"root\":\"0x");
+        sb.Append(snap.JustifiedRoot);
+        sb.Append("\"},\"finalized\":{\"slot\":");
+        sb.Append(snap.FinalizedSlot);
+        sb.Append(",\"root\":\"0x");
+        sb.Append(snap.FinalizedRoot);
+        sb.Append("\"},\"safe_target\":\"0x");
+        sb.Append(fc.SafeTarget);
+        sb.Append("\",\"validator_count\":");
+        sb.Append(fc.ValidatorCount);
+        sb.Append('}');
+        return sb.ToString();
     }
 }
 
