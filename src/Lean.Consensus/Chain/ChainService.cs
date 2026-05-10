@@ -27,9 +27,7 @@ public sealed class ChainService
         if (!_initialized)
         {
             _initialized = true;
-            // Skip to current interval — no historical replay.
-            // Fire OnTick for the current wall-clock interval immediately, then
-            // advance the cursor so subsequent ticks fire on time.
+            // Skip historical replay; fire only the current interval.
             _lastProcessedTotalInterval = currentTotal;
 
             if (currentTotal == 0)
@@ -45,11 +43,7 @@ public sealed class ChainService
             return;
         }
 
-        // Fire each interval at wall-clock interval start: OnTick(slot, N) must
-        // fire when currentTotal == N, not N+1. The previous `<` condition
-        // delayed every duty by one full interval (~800ms), causing nlean's
-        // attestations to broadcast at slot+1.6s instead of slot+0.8s and miss
-        // grandine's interval-2 aggregation snapshot.
+        // OnTick(slot, N) fires when currentTotal == N (interval N start).
         while (_lastProcessedTotalInterval <= currentTotal)
         {
             var slot = _lastProcessedTotalInterval / (ulong)_intervalsPerSlot;

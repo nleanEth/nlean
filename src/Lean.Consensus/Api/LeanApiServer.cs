@@ -11,12 +11,6 @@ using Microsoft.Extensions.Logging;
 
 namespace Lean.Consensus.Api;
 
-/// <summary>
-/// Lean consensus HTTP API server, hosted on Kestrel. Replaces an earlier
-/// System.Net.HttpListener implementation which crashed with a
-/// NullReferenceException inside HttpEndPointListener.ProcessAccept on Linux
-/// x86_64 (a known race in .NET's managed HttpListener).
-/// </summary>
 public sealed class LeanApiServer
 {
     private readonly int _port;

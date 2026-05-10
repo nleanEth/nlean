@@ -18,12 +18,10 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // Advance 1600ms = 2 total intervals (we are at the start of interval 2).
-        // First call skips replay and fires OnTick for the CURRENT interval.
+        // 1600ms = totalIntervals=2 → tick at (slot=0, interval=2)
         time.UtcNow = GenesisTime.AddMilliseconds(1600);
         chain.TickToCurrent();
 
-        // totalIntervals=2 → tick at slot=2/5=0, interval=2%5=2 (current interval, not previous).
         Assert.That(target.Ticks.Count, Is.EqualTo(1));
         Assert.That(target.Ticks[0], Is.EqualTo((0UL, 2)));
     }
@@ -36,16 +34,13 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // First advance: 1600ms = 2 total intervals → 1 init tick at (0, 2)
         time.UtcNow = GenesisTime.AddMilliseconds(1600);
         chain.TickToCurrent();
         Assert.That(target.Ticks.Count, Is.EqualTo(1));
 
-        // Second advance: same time — no new ticks
         chain.TickToCurrent();
         Assert.That(target.Ticks.Count, Is.EqualTo(1));
 
-        // Third advance: 2400ms = 3 total intervals — 1 new tick at (0, 3)
         time.UtcNow = GenesisTime.AddMilliseconds(2400);
         chain.TickToCurrent();
         Assert.That(target.Ticks.Count, Is.EqualTo(2));
@@ -60,12 +55,10 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // Jump to 4800ms = 6 total intervals.
-        // First call skips replay and emits one tick at the CURRENT interval.
+        // 4800ms = totalIntervals=6 → tick at (slot=1, interval=1)
         time.UtcNow = GenesisTime.AddMilliseconds(4800);
         chain.TickToCurrent();
 
-        // totalIntervals=6 → tick at slot=6/5=1, interval=6%5=1
         Assert.That(target.Ticks.Count, Is.EqualTo(1));
         Assert.That(target.Ticks[0], Is.EqualTo((1UL, 1)));
     }
