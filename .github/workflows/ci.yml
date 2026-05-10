@@ -194,7 +194,7 @@ jobs:
         working-directory: leanSpec
         run: |
           uv sync
-          uv run fill --fork=Devnet --clean -n auto
+          uv run fill --fork=Lstar --clean -n auto
       - name: Run spec tests
         env:
           LEAN_SPECTEST_FIXTURES: ${{ github.workspace }}/leanSpec/fixtures/consensus
