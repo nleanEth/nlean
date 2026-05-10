@@ -78,24 +78,11 @@ public sealed class NodeService : BackgroundService
             await _validatorService.StartAsync(stoppingToken);
         }
 
-        // Connect to bootstrap peers AFTER starting the validator service.
-        // This is best-effort — the reconnect loop (started inside ConnectToPeersAsync)
-        // handles ongoing connectivity regardless of initial connection results.
-        // We must not let bootstrap failures prevent the node from starting:
-        // consensus, validator, and the QUIC listener are already active and
-        // peers can connect inbound while the reconnect loop retries outbound.
-        try
-        {
-            _logger.LogInformation("NodeService startup: connecting to bootstrap peers.");
-            await _networkService.ConnectToPeersAsync(stoppingToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Initial bootstrap connection failed; reconnect loop will retry.");
-        }
-
-        _logger.LogInformation("Lean node started. Network: {Network}", _options.ForkDigest);
-
+        // Start API server before bootstrap dial. Bootstrap dial timeout can
+        // be 10s+ per peer when the bootnode is unreachable (e.g. cross-subnet
+        // docker bridge), and hive's gossip suite probes /lean/v0/health to
+        // gate test readiness. Keeping the API gated behind a slow outbound
+        // dial made nlean appear dead long after the QUIC listener was up.
         try
         {
             var csv2ForApi = _consensusService as ConsensusServiceV2;
@@ -125,6 +112,24 @@ public sealed class NodeService : BackgroundService
         {
             _logger.LogWarning(ex, "LeanApiServer failed to start; continuing without API.");
         }
+
+        // Bootstrap dial is fire-and-forget. The reconnect loop inside
+        // ConnectToPeersAsync handles retries; consensus, validator, the QUIC
+        // listener, and the API are already serving inbound traffic.
+        _logger.LogInformation("NodeService startup: connecting to bootstrap peers.");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _networkService.ConnectToPeersAsync(stoppingToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Initial bootstrap connection failed; reconnect loop will retry.");
+            }
+        }, stoppingToken);
+
+        _logger.LogInformation("Lean node started. Network: {Network}", _options.ForkDigest);
 
         try
         {
