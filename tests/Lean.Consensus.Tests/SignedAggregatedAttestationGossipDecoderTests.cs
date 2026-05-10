@@ -130,6 +130,34 @@ public sealed class SignedAggregatedAttestationGossipDecoderTests
         Assert.That(decoded.Proof.ProofData, Is.EqualTo(original.Proof.ProofData));
     }
 
+    [TestCase(2 * 1024 * 1024, TestName = "DecodeAndValidate_RoundTrip_2MB_StarkSizedProof")]
+    [TestCase(12 * 1024 * 1024 - 1024, TestName = "DecodeAndValidate_RoundTrip_NearlyMaxGossip_12MB")]
+    public void DecodeAndValidate_RoundTrip_LargeProofData_Succeeds(int proofBytes)
+    {
+        var decoder = new SignedAggregatedAttestationGossipDecoder();
+        var data = new AttestationData(
+            new Slot(10),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x10, 32).ToArray()), new Slot(9)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x20, 32).ToArray()), new Slot(8)),
+            new Checkpoint(new Bytes32(Enumerable.Repeat((byte)0x30, 32).ToArray()), new Slot(7)));
+
+        var proofData = new byte[proofBytes];
+        new Random(unchecked((int)0xDEADBEEF)).NextBytes(proofData);
+        var proof = new AggregatedSignatureProof(
+            new AggregationBits(new[] { true, true, true }),
+            proofData);
+        var original = new SignedAggregatedAttestation(data, proof);
+
+        var payload = SszEncoding.Encode(original);
+        Assert.That(payload.Length, Is.GreaterThan(proofBytes), "payload must contain proof bytes");
+
+        var result = decoder.DecodeAndValidate(payload);
+        Assert.That(result.IsSuccess, Is.True, $"Decode failed: {result.Failure} - {result.Reason}");
+        Assert.That(result.Attestation!.Proof.ProofData.Length, Is.EqualTo(proofBytes));
+        Assert.That(result.Attestation.Proof.ProofData[0], Is.EqualTo(proofData[0]));
+        Assert.That(result.Attestation.Proof.ProofData[^1], Is.EqualTo(proofData[^1]));
+    }
+
     private static SignedAggregatedAttestation CreateSignedAggregatedAttestation()
     {
         var data = new AttestationData(

@@ -59,8 +59,7 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
             : null;
 
         var port = GetFreePort();
-        var prefix = $"http://127.0.0.1:{port}/";
-        var server = new LeanApiServer(prefix, () => snapshot, () => SerializeGenesisStateSsz(genesisState),
+        var server = new LeanApiServer(port, () => snapshot, () => SerializeGenesisStateSsz(genesisState),
             aggregatorController);
 
         try

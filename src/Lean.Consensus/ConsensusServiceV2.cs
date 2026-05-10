@@ -1103,12 +1103,19 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     {
         LeanMetrics.ObserveGossipAggregationSize(payload.Length);
 
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "HandleGossipAggregatedAttestation: payloadLen={Len}",
+                payload.Length);
+        }
+
         var decode = _aggregatedAttestationDecoder.DecodeAndValidate(payload);
         if (!decode.IsSuccess || decode.Attestation is null)
         {
-            _logger.LogDebug(
-                "Dropped gossip aggregated attestation. PayloadLen: {PayloadLen}",
-                payload.Length);
+            _logger.LogWarning(
+                "Dropped gossip aggregated attestation. PayloadLen: {PayloadLen}, Failure: {Failure}, Reason: {Reason}",
+                payload.Length, decode.Failure, decode.Reason);
             return;
         }
 

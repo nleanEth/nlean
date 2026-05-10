@@ -32,6 +32,24 @@ public sealed class Libp2pNetworkServiceGossipCodecTests
                 .With.InnerException.TypeOf<InvalidOperationException>());
     }
 
+    [TestCase(2 * 1024 * 1024, TestName = "EncodeDecode_RoundTrip_2MB")]
+    [TestCase(12 * 1024 * 1024 - 1024, TestName = "EncodeDecode_RoundTrip_NearlyMaxGossip")]
+    public void EncodeDecode_RoundTrip_LargePayload_Succeeds(int payloadSize)
+    {
+        // Lean gossip spec allows up to 12 MB compressed payload size.
+        // Verify nlean's gossip codec round-trips representative STARK-aggregation sizes.
+        var rawPayload = new byte[payloadSize];
+        new Random(unchecked((int)0xCAFEBABE)).NextBytes(rawPayload);
+
+        var encoded = InvokeEncode(rawPayload);
+        var decoded = InvokeDecode(encoded);
+
+        Assert.That(decoded.Length, Is.EqualTo(rawPayload.Length));
+        Assert.That(decoded[0], Is.EqualTo(rawPayload[0]));
+        Assert.That(decoded[^1], Is.EqualTo(rawPayload[^1]));
+        Assert.That(decoded, Is.EqualTo(rawPayload));
+    }
+
     [Test]
     public void NormalizePeerIdentityKey_UsesPeerId_WhenPeerIdExists()
     {

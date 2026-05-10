@@ -252,6 +252,24 @@ public sealed class Libp2pNetworkService : INetworkService
 
         var topicHandle = GetOrCreateTopic(topic);
         var encodedPayload = EncodeGossipPayload(payload);
+
+        if (_logger.IsEnabled(LogLevel.Trace) &&
+            _pubsubRouter is Nethermind.Libp2p.Protocols.Pubsub.IRoutingStateContainer state)
+        {
+            state.GossipsubPeers.TryGetValue(topic, out var gPeers);
+            state.Mesh.TryGetValue(topic, out var meshPeers);
+            state.Fanout.TryGetValue(topic, out var fanoutPeers);
+            _logger.LogTrace(
+                "Gossip publish. Topic: {Topic}, PayloadLen: {Len}, EncodedLen: {EncLen}, GPeers: {GPeers}, Mesh: {Mesh}, Fanout: {Fanout}, Connected: {Connected}",
+                topic,
+                payload.Length,
+                encodedPayload.Length,
+                gPeers?.Count ?? 0,
+                meshPeers?.Count ?? 0,
+                fanoutPeers?.Count ?? 0,
+                state.ConnectedPeers.Count);
+        }
+
         topicHandle.Publish(encodedPayload);
         return Task.CompletedTask;
     }
@@ -266,6 +284,14 @@ public sealed class Libp2pNetworkService : INetworkService
         var topicHandle = GetOrCreateTopic(topic, subscribe: true);
         topicHandle.OnMessage += payload =>
         {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Received gossip envelope on topic {Topic}. CompressedLen: {Len}",
+                    topic,
+                    payload.Length);
+            }
+
             byte[] decodedPayload;
             try
             {
@@ -273,10 +299,11 @@ public sealed class Libp2pNetworkService : INetworkService
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogDebug(
+                _logger.LogWarning(
                     ex,
-                    "Dropped gossip payload on topic {Topic}: invalid snappy payload.",
-                    topic);
+                    "Dropped gossip payload on topic {Topic}: invalid snappy payload. CompressedLen: {Len}",
+                    topic,
+                    payload.Length);
                 return;
             }
 
@@ -695,7 +722,10 @@ public sealed class Libp2pNetworkService : INetworkService
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
                 RecordPeerConnectionFailure(ConnectionDirectionOutbound, MapConnectionFailureResult(ex));
-                _logger.LogWarning(ex, "Failed to connect to bootstrap peer {Address}", peerKey);
+                var deepest = UnwrapInnermostException(ex);
+                _logger.LogWarning(ex,
+                    "Failed to connect to bootstrap peer {Address}. RootCause={CauseType}: {CauseMessage}",
+                    peerKey, deepest.GetType().FullName, deepest.Message);
             }
         }
     }
@@ -834,7 +864,10 @@ public sealed class Libp2pNetworkService : INetworkService
             {
                 _blocksByRootPeerSelector.MarkDisconnected(peerKey);
                 ReleaseBootstrapPeerConnection(peerKey);
-                _logger.LogWarning(ex, "Failed to reconnect to bootstrap peer {Address}", peerKey);
+                var deepest = UnwrapInnermostException(ex);
+                _logger.LogWarning(ex,
+                    "Failed to reconnect to bootstrap peer {Address}. RootCause={CauseType}: {CauseMessage}",
+                    peerKey, deepest.GetType().FullName, deepest.Message);
             }
         }
     }
@@ -1314,6 +1347,25 @@ public sealed class Libp2pNetworkService : INetworkService
     private static string MapConnectionFailureResult(Exception exception)
     {
         return exception is OperationCanceledException ? ConnectionResultTimeout : ConnectionResultError;
+    }
+
+    private static Exception UnwrapInnermostException(Exception exception)
+    {
+        var current = exception;
+        while (true)
+        {
+            if (current is AggregateException agg && agg.InnerExceptions.Count > 0)
+            {
+                current = agg.InnerExceptions[0];
+                continue;
+            }
+            if (current.InnerException is not null)
+            {
+                current = current.InnerException;
+                continue;
+            }
+            return current;
+        }
     }
 
     private static byte[] EncodeGossipPayload(ReadOnlyMemory<byte> payload)
