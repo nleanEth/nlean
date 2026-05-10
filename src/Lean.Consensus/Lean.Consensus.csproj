@@ -18,11 +18,6 @@
     <ProjectReference Include="..\..\vendor\nethermind\src\Nethermind\Nethermind.Serialization.Ssz\Nethermind.Serialization.Ssz.csproj" />
     <ProjectReference Include="..\..\vendor\nethermind\src\Nethermind\Nethermind.Merkleization\Nethermind.Merkleization.csproj" />
     <PackageReference Include="prometheus-net" />
-    <!-- Kestrel for the lean RPC API (replaces System.Net.HttpListener which
-         crashes with NullReferenceException inside HttpEndPointListener.ProcessAccept
-         on Linux x86_64 docker — a known .NET managed-implementation race).
-         Microsoft.AspNetCore.App brings logging abstractions transitively, so no
-         separate Logging.Abstractions PackageReference is needed. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>

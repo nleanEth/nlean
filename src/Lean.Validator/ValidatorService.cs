@@ -261,10 +261,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             validatorId,
             signingStopwatch.Elapsed.TotalMilliseconds);
 
-        // Self-verification roughly doubles the per-attestation hash-sig cost
-        // without providing security value: the signature was just produced by
-        // our own key against our own message. Gate behind a debug env flag so
-        // the hot path stays fast.
+        // Verifying our own freshly-signed signature has no security value;
+        // gate behind an env flag for diagnostics only.
         var selfVerificationOk = true;
         if (keys.AttestationPublicKey.Length > 0 &&
             IsTruthyEnvironmentValue("NLEAN_DEBUG_SELF_VERIFY_ATTESTATION"))

@@ -78,11 +78,9 @@ public sealed class NodeService : BackgroundService
             await _validatorService.StartAsync(stoppingToken);
         }
 
-        // Start API server before bootstrap dial. Bootstrap dial timeout can
-        // be 10s+ per peer when the bootnode is unreachable (e.g. cross-subnet
-        // docker bridge), and hive's gossip suite probes /lean/v0/health to
-        // gate test readiness. Keeping the API gated behind a slow outbound
-        // dial made nlean appear dead long after the QUIC listener was up.
+        // Start API before bootstrap dial: an unreachable bootnode can stall
+        // the dial up to BootstrapDialTimeout, during which /lean/v0/health
+        // would 404 and external probes treat the node as dead.
         try
         {
             var csv2ForApi = _consensusService as ConsensusServiceV2;
@@ -113,9 +111,7 @@ public sealed class NodeService : BackgroundService
             _logger.LogWarning(ex, "LeanApiServer failed to start; continuing without API.");
         }
 
-        // Bootstrap dial is fire-and-forget. The reconnect loop inside
-        // ConnectToPeersAsync handles retries; consensus, validator, the QUIC
-        // listener, and the API are already serving inbound traffic.
+        // Fire-and-forget; ConnectToPeersAsync owns the reconnect loop.
         _logger.LogInformation("NodeService startup: connecting to bootstrap peers.");
         _ = Task.Run(async () =>
         {
