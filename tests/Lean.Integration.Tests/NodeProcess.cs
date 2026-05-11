@@ -28,6 +28,8 @@ public sealed class NodeProcess : IDisposable
     public string DataDir => _dataDir;
     public int ApiPort { get; }
     public bool IsRunning => _process is { HasExited: false };
+    public int? ExitCode => _process is { HasExited: true } p ? p.ExitCode : null;
+    public DateTime? ExitTime => _process is { HasExited: true } p ? p.ExitTime : null;
 
     public NodeProcess(
         string binaryPath,
@@ -106,6 +108,16 @@ public sealed class NodeProcess : IDisposable
         {
             ConfigureMacOsDyld(psi);
         }
+
+        // Capture native crash dumps so we can debug post-mortem when a child node SIGSEGVs.
+        // Type=4 is "Full" (heap+threads); name uses %p for PID. Path overridable via env.
+        var dumpDir = Environment.GetEnvironmentVariable("NLEAN_INTEG_DUMP_DIR")
+            ?? Path.Combine(Path.GetTempPath(), "nlean-integ-dumps");
+        Directory.CreateDirectory(dumpDir);
+        psi.Environment["DOTNET_DbgEnableMiniDump"] = "1";
+        psi.Environment["DOTNET_DbgMiniDumpType"] = "4";
+        psi.Environment["DOTNET_DbgMiniDumpName"] = Path.Combine(dumpDir, $"{_nodeName}.%p.dmp");
+        psi.Environment["DOTNET_CreateDumpDiagnostics"] = "1";
 
         _stdout.Clear();
         _stderr.Clear();

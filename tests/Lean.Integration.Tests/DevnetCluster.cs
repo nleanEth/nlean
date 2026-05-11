@@ -87,6 +87,15 @@ public sealed class DevnetCluster : IDisposable
 
         while (DateTimeOffset.UtcNow < deadline)
         {
+            // Fail-fast: any expected-running node that exited unexpectedly aborts the wait.
+            var deadIndex = indices.FirstOrDefault(i => _nodes[i] is { IsRunning: false }, -1);
+            if (deadIndex >= 0)
+            {
+                var deadDiag = await BuildDiagnosticsAsync(indices);
+                throw new InvalidOperationException(
+                    $"Node {deadIndex} exited unexpectedly while waiting for finalization >= {targetSlot}.\n{deadDiag}");
+            }
+
             var allReached = true;
             foreach (var i in indices)
             {
@@ -118,7 +127,10 @@ public sealed class DevnetCluster : IDisposable
         foreach (var i in indices)
         {
             var node = _nodes[i];
-            var status = node is null ? "null" : node.IsRunning ? "running" : "exited";
+            string status;
+            if (node is null) status = "null";
+            else if (node.IsRunning) status = "running";
+            else status = $"exited code={node.ExitCode?.ToString() ?? "?"} at={node.ExitTime?.ToString("HH:mm:ss.fff") ?? "?"}";
             var checkpoint = await GetFinalizedCheckpoint(i);
             var checkpointText = checkpoint is null
                 ? $"api={ApiPort(i)} finalized=<unavailable>"
