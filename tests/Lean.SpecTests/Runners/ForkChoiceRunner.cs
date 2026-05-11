@@ -2,7 +2,7 @@ using System.Text.Json;
 using Lean.Consensus;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
-using Lean.SpecTests.Types;
+using Lean.Consensus.TestDriver.Fixtures;
 using NUnit.Framework;
 
 namespace Lean.SpecTests.Runners;
@@ -26,21 +26,51 @@ public sealed class ForkChoiceRunner : ISpecTestRunner
 
         var config = BuildConfigFromAnchor(test.AnchorState);
         var chainTransition = new ChainStateTransition(config);
-        var anchorState = chainTransition.CreateGenesisState(config.InitialValidatorCount);
-        var store = new ProtoArrayForkChoiceStore(config);
-        var genesisRoot = store.FinalizedRoot;
+
+        ProtoArrayForkChoiceStore store;
+        Bytes32 anchorRoot;
+        State anchorState;
+
+        if (test.AnchorState.Slot == 0)
+        {
+            anchorState = chainTransition.CreateGenesisState(config.InitialValidatorCount);
+            store = new ProtoArrayForkChoiceStore(config);
+            anchorRoot = store.FinalizedRoot;
+        }
+        else
+        {
+            // Non-genesis anchor (checkpoint-sync scenario): rebuild the State and
+            // anchor Block from the fixture, then seed ProtoArrayForkChoiceStore via
+            // an in-memory IConsensusStateStore stub so its checkpoint-load path
+            // populates head/justified/finalized to match the fixture's view.
+            anchorState = ReconstructState(test.AnchorState);
+            var anchorBlock = ConvertBlock(test.AnchorBlock);
+            anchorRoot = new Bytes32(anchorBlock.HashTreeRoot());
+
+            // Per leanSpec create_store_from_anchor: the anchor block becomes BOTH
+            // the head and the justified+finalized checkpoint, regardless of what
+            // the anchor's State carries internally. This treats the anchor as a
+            // trusted starting point (checkpoint-sync semantic).
+            var headState = new ConsensusHeadState(
+                test.AnchorBlock.Slot, anchorRoot.AsSpan(),
+                test.AnchorBlock.Slot, anchorRoot.AsSpan(),
+                test.AnchorBlock.Slot, anchorRoot.AsSpan(),
+                test.AnchorBlock.Slot, anchorRoot.AsSpan());
+            store = new ProtoArrayForkChoiceStore(config, stateStore: new StubStateStore(headState));
+        }
 
         // Canonical state lookup by block root — needed so OnBlock receives the
         // same canonical checkpoints the production ConsensusServiceV2 derives
-        // from the post-transition state.
+        // from the post-transition state. For non-genesis anchors the runner uses
+        // the anchor block root as the "genesis" label per the fixture convention.
         var stateByRoot = new Dictionary<Bytes32, State>
         {
-            [genesisRoot] = anchorState,
+            [anchorRoot] = anchorState,
         };
 
         var blockRegistry = new Dictionary<string, Bytes32>(StringComparer.Ordinal)
         {
-            ["genesis"] = genesisRoot,
+            ["genesis"] = anchorRoot,
         };
 
         for (var stepIdx = 0; stepIdx < test.Steps.Count; stepIdx++)
@@ -309,4 +339,69 @@ public sealed class ForkChoiceRunner : ISpecTestRunner
 
     private static byte[] ParseHex(string hex) =>
         Convert.FromHexString(hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex);
+
+    private static State ReconstructState(TestState ts)
+    {
+        var validators = (ts.Validators?.Data ?? new List<TestValidator>())
+            .Select(v => new Validator(
+                new Bytes52(ParseHex(v.AttestationKeyHex)),
+                new Bytes52(ParseHex(v.ProposalKeyHex)),
+                v.Index))
+            .ToList();
+
+        var header = new BlockHeader(
+            new Slot(ts.LatestBlockHeader.Slot),
+            ts.LatestBlockHeader.ProposerIndex,
+            new Bytes32(ParseHex(ts.LatestBlockHeader.ParentRoot)),
+            new Bytes32(ParseHex(ts.LatestBlockHeader.StateRoot)),
+            new Bytes32(ParseHex(ts.LatestBlockHeader.BodyRoot)));
+
+        var justified = new Checkpoint(
+            new Bytes32(ParseHex(ts.LatestJustified.Root)), new Slot(ts.LatestJustified.Slot));
+        var finalized = new Checkpoint(
+            new Bytes32(ParseHex(ts.LatestFinalized.Root)), new Slot(ts.LatestFinalized.Slot));
+
+        var historical = (ts.HistoricalBlockHashes?.Data ?? new List<string>())
+            .Select(h => new Bytes32(ParseHex(h)))
+            .ToList();
+        var justifiedSlots = ts.JustifiedSlots?.Data ?? new List<bool>();
+        var justificationsRoots = (ts.JustificationsRoots?.Data ?? new List<string>())
+            .Select(h => new Bytes32(ParseHex(h)))
+            .ToList();
+        var justificationsValidators = ts.JustificationsValidators?.Data ?? new List<bool>();
+
+        return new State(
+            new Config(ts.Config.GenesisTime),
+            new Slot(ts.Slot),
+            header,
+            justified,
+            finalized,
+            historical,
+            justifiedSlots,
+            validators,
+            justificationsRoots,
+            justificationsValidators);
+    }
+
+    private sealed class StubStateStore : IConsensusStateStore
+    {
+        private readonly ConsensusHeadState _state;
+        public StubStateStore(ConsensusHeadState state) => _state = state;
+        public bool TryLoad([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ConsensusHeadState? state)
+        {
+            state = _state;
+            return true;
+        }
+        public bool TryLoad(
+            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ConsensusHeadState? state,
+            out State? headChainState)
+        {
+            state = _state;
+            headChainState = null;
+            return true;
+        }
+        public void Save(ConsensusHeadState state) { }
+        public void Save(ConsensusHeadState state, State headChainState) { }
+        public void Delete() { }
+    }
 }

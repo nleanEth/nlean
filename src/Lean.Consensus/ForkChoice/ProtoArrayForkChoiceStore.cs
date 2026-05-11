@@ -202,6 +202,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         }
     }
     public Bytes32 SafeTarget => _safeTarget;
+    public ulong CurrentTimeIntervals => _currentTimeIntervals;
     public ProtoArray ProtoArray => _protoArray;
     public ulong ValidatorCount => _validatorCount;
     public bool ContainsBlock(Bytes32 root) => _protoArray.ContainsBlock(root);

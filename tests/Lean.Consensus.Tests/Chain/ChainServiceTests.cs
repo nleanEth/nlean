@@ -18,7 +18,7 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // 1600ms = totalIntervals=2 → tick at (slot=0, interval=2)
+        // 1600ms = totalIntervals=2 → init fires for current wall-clock interval (slot=0, interval=2).
         time.UtcNow = GenesisTime.AddMilliseconds(1600);
         chain.TickToCurrent();
 
@@ -55,7 +55,7 @@ public sealed class ChainServiceTests
         var target = new FakeTickTarget();
         var chain = new ChainService(clock, target, IntervalsPerSlot);
 
-        // 4800ms = totalIntervals=6 → tick at (slot=1, interval=1)
+        // 4800ms = totalIntervals=6 → init fires for current wall-clock interval (slot=1, interval=1).
         time.UtcNow = GenesisTime.AddMilliseconds(4800);
         chain.TickToCurrent();
 

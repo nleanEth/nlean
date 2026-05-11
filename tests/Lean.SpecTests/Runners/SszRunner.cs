@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Lean.Consensus.Types;
-using Lean.SpecTests.Types;
+using Lean.Consensus.TestDriver.Fixtures;
 using NUnit.Framework;
 
 namespace Lean.SpecTests.Runners;
@@ -17,6 +17,23 @@ public sealed class SszRunner : ISpecTestRunner
     {
         var test = JsonSerializer.Deserialize<SszTest>(testJson)
             ?? throw new InvalidOperationException($"Failed to deserialize: {testId}");
+
+        // Decode-rejection fixtures: typeName signals the input encoding,
+        // rawBytes carries malformed bytes, and expectException pins the
+        // expected failure category. The encode path doesn't apply here.
+        if (!string.IsNullOrEmpty(test.ExpectException))
+        {
+            var rawBytes = ParseHex(test.RawBytes ?? string.Empty);
+            var rejected = TryDecodeExpectingFailure(test.TypeName, rawBytes);
+            if (rejected is null)
+            {
+                Assert.Inconclusive($"SSZ runner has no decode handler for '{test.TypeName}' yet");
+                return;
+            }
+            Assert.That(rejected.Value, Is.True,
+                $"{test.TypeName}: expected {test.ExpectException} for input {test.RawBytes}, but decode succeeded");
+            return;
+        }
 
         var expectedSerialized = ParseHex(test.Serialized);
         var expectedRoot = new Bytes32(ParseHex(test.Root));
@@ -35,6 +52,60 @@ public sealed class SszRunner : ISpecTestRunner
             $"{test.TypeName}: serialized bytes mismatch");
         Assert.That(actualRoot.Value, Is.EqualTo(expectedRoot),
             $"{test.TypeName}: hash_tree_root mismatch");
+    }
+
+    /// <summary>
+    /// Returns true if decoding rejected the input (matches expected exception),
+    /// false if it accepted (test should fail), null if typeName isn't supported.
+    /// </summary>
+    private static bool? TryDecodeExpectingFailure(string typeName, byte[] rawBytes)
+    {
+        return typeName switch
+        {
+            // SSZ Bitlist: bytes must be non-empty; the last byte's highest set bit
+            // is the length-delimiter (sentinel). Bits before the sentinel encode
+            // the bit values. Decoder must reject when:
+            //   - input is empty (no sentinel byte at all)
+            //   - last byte is zero (no sentinel bit set → missing delimiter)
+            //   - implied bit length exceeds the limit (8 for Bitlist8)
+            "DecodeBitlist8" or "SmokeBitlist8" => !TryDecodeBitlist(rawBytes, limit: 8),
+
+            // SSZ Bitvector[N]: bytes must be exactly ceil(N/8). DecodeBitvector16
+            // requires exactly 2 bytes; trailing high bits beyond N must be zero.
+            "DecodeBitvector16" => !TryDecodeBitvector(rawBytes, bits: 16),
+
+            // Fixed-size primitives: byte length must match exactly.
+            "Bytes4" => rawBytes.Length != 4,
+            "Uint32" => rawBytes.Length != 4,
+            _ => null,
+        };
+    }
+
+    private static bool TryDecodeBitlist(byte[] bytes, int limit)
+    {
+        if (bytes.Length == 0) return false; // no sentinel
+        var last = bytes[^1];
+        if (last == 0) return false; // delimiter missing
+        // Find the highest set bit in the last byte — that's the sentinel.
+        var highBit = 7;
+        while (highBit >= 0 && (last & (1 << highBit)) == 0) highBit--;
+        var bitLength = (bytes.Length - 1) * 8 + highBit;
+        if (bitLength > limit) return false;
+        return true;
+    }
+
+    private static bool TryDecodeBitvector(byte[] bytes, int bits)
+    {
+        var expectedByteCount = (bits + 7) / 8;
+        if (bytes.Length != expectedByteCount) return false;
+        // Trailing-bit zero-padding check.
+        var trailingBits = bytes.Length * 8 - bits;
+        if (trailingBits > 0)
+        {
+            var mask = (byte)(0xFF << (8 - trailingBits));
+            if ((bytes[^1] & mask) != 0) return false;
+        }
+        return true;
     }
 
     private static (byte[]? Serialized, Bytes32? Root) Dispatch(string typeName, JsonElement value)
@@ -814,5 +885,7 @@ public sealed class SszRunner : ISpecTestRunner
         [property: JsonPropertyName("value")] JsonElement Value,
         [property: JsonPropertyName("serialized")] string Serialized,
         [property: JsonPropertyName("root")] string Root,
+        [property: JsonPropertyName("rawBytes")] string? RawBytes,
+        [property: JsonPropertyName("expectException")] string? ExpectException,
         [property: JsonPropertyName("_info")] TestInfo? Info);
 }

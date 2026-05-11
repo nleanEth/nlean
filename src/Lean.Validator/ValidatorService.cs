@@ -590,11 +590,20 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         var allAttestations = new List<AggregatedAttestation>();
         var allProofs = new List<AggregatedSignatureProof>();
         var currentSource = initialSource;
+        var totalSw = Stopwatch.StartNew();
+        var totalGetMs = 0d;
+        var totalSelectMs = 0d;
+        var totalStfMs = 0d;
+        var actualIterations = 0;
 
         // Fixed-point loop: each iteration may advance justified, unlocking new attestations.
         for (var iteration = 0; iteration < 10; iteration++)
         {
+            actualIterations = iteration + 1;
+            var getSw = Stopwatch.StartNew();
             var (iterAttestations, iterProofs) = _consensusService.GetKnownAggregatedPayloadsForBlock(slot, currentSource);
+            getSw.Stop();
+            totalGetMs += getSw.Elapsed.TotalMilliseconds;
             if (iterAttestations.Count == 0)
                 break;
 
@@ -602,9 +611,12 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             allProofs.AddRange(iterProofs);
 
             // Select best from ALL accumulated candidates, build candidate block, run STF.
+            var selectSw = Stopwatch.StartNew();
             var tempAttestations = new List<AggregatedAttestation>();
             var tempProofs = new List<AggregatedSignatureProof>();
             SelectBestProofs(allAttestations, allProofs, tempAttestations, tempProofs, "consensus");
+            selectSw.Stop();
+            totalSelectMs += selectSw.Elapsed.TotalMilliseconds;
             if (tempAttestations.Count == 0)
                 break;
 
@@ -612,17 +624,35 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 new Slot(slot), validatorId, parentRoot, Bytes32.Zero(),
                 new BlockBody(tempAttestations));
 
-            if (!_consensusService.TryComputeBlockStateRoot(candidateBlock, out _, out var postJustified, out _))
+            var stfSw = Stopwatch.StartNew();
+            var stfOk = _consensusService.TryComputeBlockStateRoot(candidateBlock, out _, out var postJustified, out _);
+            stfSw.Stop();
+            totalStfMs += stfSw.Elapsed.TotalMilliseconds;
+            if (!stfOk)
                 break;
+
+            _logger.LogInformation(
+                "Fixed-point iter {Iter}. GetMs={GetMs:F1}, SelectMs={SelectMs:F1}, StfMs={StfMs:F1}, AttCount={AttCount}, NewJustified={NewJustified}, OldJustified={OldJustified}",
+                iteration,
+                getSw.Elapsed.TotalMilliseconds,
+                selectSw.Elapsed.TotalMilliseconds,
+                stfSw.Elapsed.TotalMilliseconds,
+                tempAttestations.Count,
+                postJustified.Slot.Value,
+                currentSource.Slot.Value);
 
             if (postJustified.Slot.Value <= currentSource.Slot.Value)
                 break; // Fixed point reached — justified did not advance.
 
-            _logger.LogDebug(
-                "Fixed-point iteration {Iteration}: justified advanced {OldSlot} -> {NewSlot}",
-                iteration, currentSource.Slot.Value, postJustified.Slot.Value);
-
             currentSource = postJustified;
+        }
+
+        totalSw.Stop();
+        if (totalSw.Elapsed.TotalMilliseconds > 200)
+        {
+            _logger.LogWarning(
+                "BuildAggregatedAttestations slow. Slot={Slot}, TotalMs={TotalMs:F1}, Iterations={Iterations}, GetMs={GetMs:F1}, SelectMs={SelectMs:F1}, StfMs={StfMs:F1}",
+                slot, totalSw.Elapsed.TotalMilliseconds, actualIterations, totalGetMs, totalSelectMs, totalStfMs);
         }
 
         // Final selection from all accumulated candidates.

@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using Lean.Consensus.ForkChoice;
+using Lean.Consensus.TestDriver.Drivers;
+using Lean.Consensus.TestDriver.Fixtures;
 using Lean.Consensus.Types;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -17,16 +19,19 @@ public sealed class LeanApiServer
     private readonly Func<ApiSnapshot> _getSnapshot;
     private readonly Func<byte[]?> _getFinalizedStateSsz;
     private readonly AggregatorController? _aggregatorController;
+    private readonly Func<string?>? _getMetricsText;
     private WebApplication? _app;
 
     public LeanApiServer(int port, Func<ApiSnapshot> getSnapshot,
         Func<byte[]?> getFinalizedStateSsz,
-        AggregatorController? aggregatorController = null)
+        AggregatorController? aggregatorController = null,
+        Func<string?>? getMetricsText = null)
     {
         _port = port;
         _getSnapshot = getSnapshot;
         _getFinalizedStateSsz = getFinalizedStateSsz;
         _aggregatorController = aggregatorController;
+        _getMetricsText = getMetricsText;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -39,6 +44,70 @@ public sealed class LeanApiServer
 
         _app.MapGet("/lean/v0/health",
             () => Results.Content("{\"status\":\"healthy\",\"service\":\"lean-rpc-api\"}", "application/json"));
+
+        // Hive test-driver endpoints: gated on HIVE_LEAN_TEST_DRIVER=1 so production
+        // builds don't expose the in-process spec-test surface.
+        var testDriverEnabled = string.Equals(
+            Environment.GetEnvironmentVariable("HIVE_LEAN_TEST_DRIVER"),
+            "1",
+            StringComparison.Ordinal);
+        if (testDriverEnabled)
+        {
+            var forkChoiceDriver = new ForkChoiceDriver();
+            var testDriverJsonOpts = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            };
+
+            _app.MapPost("/lean/v0/test_driver/fork_choice/init", async (HttpContext ctx) =>
+            {
+                var req = await JsonSerializer.DeserializeAsync<ForkChoiceDriver.InitRequest>(ctx.Request.Body);
+                if (forkChoiceDriver.TryInit(req, out var err))
+                {
+                    return Results.NoContent();
+                }
+                return Results.Json(new { error = err }, statusCode: 400);
+            });
+
+            _app.MapPost("/lean/v0/test_driver/fork_choice/step", async (HttpContext ctx) =>
+            {
+                var step = await JsonSerializer.DeserializeAsync<ForkChoiceStep>(ctx.Request.Body)
+                    ?? throw new InvalidOperationException("missing step body");
+                var result = forkChoiceDriver.ApplyStep(step);
+                return Results.Json(result, testDriverJsonOpts);
+            });
+
+            _app.MapPost("/lean/v0/test_driver/state_transition/run", async (HttpContext ctx) =>
+            {
+                var test = await JsonSerializer.DeserializeAsync<StateTransitionTest>(ctx.Request.Body)
+                    ?? throw new InvalidOperationException("missing state_transition body");
+                var result = StateTransitionDriver.Run(test);
+                return Results.Json(result, testDriverJsonOpts);
+            });
+
+            _app.MapPost("/lean/v0/test_driver/verify_signatures/run", async (HttpContext ctx) =>
+            {
+                var test = await JsonSerializer.DeserializeAsync<VerifySignaturesTest>(ctx.Request.Body)
+                    ?? throw new InvalidOperationException("missing verify_signatures body");
+                var result = VerifySignaturesDriver.Run(test);
+                return Results.Json(result, testDriverJsonOpts);
+            });
+        }
+
+        if (_getMetricsText is not null)
+        {
+            // Prometheus scrape endpoint exposed on the consensus API port. Production
+            // routes /metrics through Lean.Metrics on a dedicated port; this getter is
+            // populated only in test/spec contexts where the suite expects a single
+            // shared port. Set Content-Type directly to preserve the `version=0.0.4`
+            // parameter required by the Prometheus scrape contract — `Results.Content`
+            // round-trips through MediaTypeHeaderValue which drops unrecognized params.
+            _app.MapGet("/metrics", async (HttpContext ctx) =>
+            {
+                ctx.Response.ContentType = "text/plain; version=0.0.4; charset=utf-8";
+                await ctx.Response.WriteAsync(_getMetricsText() ?? string.Empty);
+            });
+        }
 
         _app.MapGet("/lean/v0/checkpoints/justified", () =>
         {
