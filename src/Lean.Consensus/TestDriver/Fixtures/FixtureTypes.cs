@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Lean.SpecTests.Types;
+namespace Lean.Consensus.TestDriver.Fixtures;
 
 // Top-level fixture: each JSON file is Dictionary<string, ForkChoiceTest>
 public sealed record ForkChoiceTest(
@@ -45,7 +45,7 @@ public sealed record TestState(
     [property: JsonPropertyName("latestJustified")] TestCheckpoint LatestJustified,
     [property: JsonPropertyName("latestFinalized")] TestCheckpoint LatestFinalized,
     [property: JsonPropertyName("historicalBlockHashes")] TestDataArray<string> HistoricalBlockHashes,
-    [property: JsonPropertyName("justifiedSlots")] TestDataArray<ulong> JustifiedSlots,
+    [property: JsonPropertyName("justifiedSlots")] TestDataArray<bool> JustifiedSlots,
     [property: JsonPropertyName("validators")] TestDataArray<TestValidator> Validators,
     [property: JsonPropertyName("justificationsRoots")] TestDataArray<string> JustificationsRoots,
     [property: JsonPropertyName("justificationsValidators")] TestDataArray<bool> JustificationsValidators);

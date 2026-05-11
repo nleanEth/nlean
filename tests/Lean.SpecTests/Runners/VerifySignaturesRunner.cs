@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Lean.Consensus.Types;
 using Lean.Crypto;
-using Lean.SpecTests.Types;
+using Lean.Consensus.TestDriver.Fixtures;
 using NUnit.Framework;
 
 namespace Lean.SpecTests.Runners;

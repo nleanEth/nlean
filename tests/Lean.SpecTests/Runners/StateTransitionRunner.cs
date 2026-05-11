@@ -1,27 +1,14 @@
 using System.Text.Json;
 using Lean.Consensus;
 using Lean.Consensus.Types;
-using Lean.SpecTests.Types;
+using Lean.Consensus.TestDriver.Fixtures;
 using NUnit.Framework;
 
 namespace Lean.SpecTests.Runners;
 
 public sealed class StateTransitionRunner : ISpecTestRunner
 {
-    // Known fixture-format gap (upstream leanSpec, not an nlean bug):
-    //
-    // This test exercises leanSpec's internal `BlockSpec.skip_slot_processing=True`
-    // path, which bypasses process_slots so that state.slot (1) and block.slot (2)
-    // stay out of sync and process_block_header's `block.slot == self.slot` assert
-    // fires. The flag isn't serialized into the fixture JSON, so a spec-compliant
-    // replayer calling state_transition normally advances state.slot via
-    // process_slots, matches block.slot, and accepts the block — no rejection.
-    // The scenario is observable only inside leanSpec; it doesn't constrain
-    // third-party implementations.
-    private static readonly HashSet<string> KnownGaps = new(StringComparer.Ordinal)
-    {
-        "test_block_with_wrong_slot",
-    };
+    private static readonly HashSet<string> KnownGaps = new(StringComparer.Ordinal);
 
     public void Run(string testId, string testJson)
     {
@@ -60,6 +47,30 @@ public sealed class StateTransitionRunner : ISpecTestRunner
 
         var sawFailure = false;
         string? failureReason = null;
+
+        // Some fixtures (e.g. test_process_slots_target_equal_to_state_slot_rejected)
+        // describe a slot-monotonicity invariant by leaving `blocks: []` and only
+        // setting `expectException`. The Python spec test internally synthesizes
+        // a BlockSpec at pre.slot to trigger process_slots(state, target=state.slot)
+        // — that block isn't serialized to the JSON fixture. Mirror that by
+        // synthesizing an empty block at the current state.slot so nlean's
+        // TryComputeStateRoot exercises the same "target slot must be in the
+        // future" rejection path.
+        if (test.Blocks.Count == 0 && test.ExpectException is not null && state.Slot.Value > 0)
+        {
+            var emptyBlock = new Block(
+                state.Slot,
+                0UL,
+                new Bytes32(state.LatestBlockHeader.HashTreeRoot()),
+                Bytes32.Zero(),
+                new BlockBody(Array.Empty<AggregatedAttestation>()));
+            if (!chainTransition.TryComputeStateRoot(state, emptyBlock, out _, out _, out var reason))
+            {
+                sawFailure = true;
+                failureReason = $"synthesized same-slot block (slot {state.Slot.Value}): {reason}";
+            }
+        }
+
         for (var i = 0; i < test.Blocks.Count; i++)
         {
             var block = ConvertBlock(test.Blocks[i]);
@@ -70,12 +81,10 @@ public sealed class StateTransitionRunner : ISpecTestRunner
                 continue;
             }
 
-            // Fixture also validates that block.stateRoot == hash_tree_root(post-state)
-            // and rejects the block on mismatch. nlean's TryComputeStateRoot doesn't
-            // enforce this (the caller does), so the runner must mirror that check.
-            // Skip the check if the fixture leaves stateRoot zero, which is the common
-            // convention for "compute it, don't enforce".
-            if (!block.StateRoot.Equals(Bytes32.Zero()) && !block.StateRoot.Equals(computedRoot))
+            // Spec contract: block.state_root MUST equal hash_tree_root(post-state).
+            // Enforce unconditionally so fixtures with a deliberately-wrong
+            // (or placeholder zero) state_root reject as expected.
+            if (!block.StateRoot.Equals(computedRoot))
             {
                 sawFailure = true;
                 failureReason ??= $"block {i} (slot {block.Slot.Value}): state root mismatch";

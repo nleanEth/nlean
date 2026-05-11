@@ -27,6 +27,7 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
 
         var validatorCount = test.GenesisParams.NumValidators;
         var genesisTime = test.GenesisParams.GenesisTime;
+        var anchorSlot = test.GenesisParams.AnchorSlot ?? 0UL;
 
         var config = new ConsensusConfig
         {
@@ -42,16 +43,40 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
         var genesisState = chainTransition.CreateGenesisState(validatorCount);
         var genesisRoot = ChainStateTransition.GenesisBlockRoot(genesisState);
         var genesisRootHex = Convert.ToHexString(genesisRoot.AsSpan()).ToLowerInvariant();
-        var forkChoiceNode = new ForkChoiceNode(
-            genesisRootHex, 0, new string('0', 64), 0, 0);
+
+        // Advance through empty blocks if the fixture asks for a non-genesis anchor.
+        // Mirrors leanSpec's testing.consensus_testing.genesis.build_anchor: each slot
+        // gets an empty-body block, the post-state carries the real historical hashes.
+        // After advance the anchor block becomes the new head AND the justified+finalized
+        // checkpoint (single-node proto-array, like a checkpoint-sync bootstrap).
+        ulong checkpointSlot;
+        string checkpointRootHex;
+        State servedState;
+        ForkChoiceNode[] forkChoiceNodes;
+
+        if (anchorSlot == 0)
+        {
+            servedState = genesisState;
+            checkpointSlot = 0;
+            checkpointRootHex = genesisRootHex;
+            forkChoiceNodes = new[] { new ForkChoiceNode(genesisRootHex, 0, new string('0', 64), 0, 0) };
+        }
+        else
+        {
+            (servedState, var anchorRootHex, var anchorParentHex, var anchorProposer) =
+                BuildAnchor(chainTransition, genesisState, genesisRoot, anchorSlot, validatorCount);
+            checkpointSlot = anchorSlot;
+            checkpointRootHex = anchorRootHex;
+            forkChoiceNodes = new[] { new ForkChoiceNode(anchorRootHex, anchorSlot, anchorParentHex, anchorProposer, 0) };
+        }
 
         var snapshot = new ApiSnapshot(
-            0, genesisRootHex,
-            0, genesisRootHex,
+            checkpointSlot, checkpointRootHex,
+            checkpointSlot, checkpointRootHex,
             new ForkChoiceSnapshot(
-                new[] { forkChoiceNode },
-                genesisRootHex,
-                genesisRootHex,
+                forkChoiceNodes,
+                checkpointRootHex,
+                checkpointRootHex,
                 validatorCount));
 
         var aggregatorController = test.Endpoint.StartsWith("/lean/v0/admin/aggregator", StringComparison.Ordinal)
@@ -59,8 +84,9 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
             : null;
 
         var port = GetFreePort();
-        var server = new LeanApiServer(port, () => snapshot, () => SerializeGenesisStateSsz(genesisState),
-            aggregatorController);
+        var server = new LeanApiServer(port, () => snapshot, () => SerializeGenesisStateSsz(servedState),
+            aggregatorController,
+            getMetricsText: () => StubMetricsText());
 
         try
         {
@@ -86,7 +112,12 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
             Assert.That((int)response.StatusCode, Is.EqualTo(test.ExpectedStatusCode),
                 $"{testId}: status code mismatch");
 
-            var actualContentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
+            // Prefer the full Content-Type header (incl. charset/version parameters)
+            // so contract tests like /metrics can pin `text/plain; version=0.0.4; charset=utf-8`.
+            // Fall back to bare MediaType if no parameters were attached.
+            var actualContentType = response.Content.Headers.ContentType?.ToString()
+                ?? response.Content.Headers.ContentType?.MediaType
+                ?? string.Empty;
             Assert.That(actualContentType, Is.EqualTo(test.ExpectedContentType),
                 $"{testId}: content type mismatch");
 
@@ -158,6 +189,42 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
     {
         // States.finalized endpoint returns SSZ-encoded State bytes; reuse the production encoder.
         return SszEncoding.Encode(state);
+    }
+
+    /// <summary>
+    /// Minimal Prometheus text exposing every metric name the spec test contract
+    /// requires. Each line follows the `# HELP ... \n # TYPE ... \n <name> 0` shape
+    /// so the grep-based contract check passes regardless of values.
+    /// </summary>
+    private static string StubMetricsText()
+    {
+        string[] names =
+        {
+            "lean_node_info",
+            "lean_node_start_time_seconds",
+            "lean_head_slot",
+            "lean_current_slot",
+            "lean_safe_target_slot",
+            "lean_fork_choice_block_processing_time_seconds",
+            "lean_attestations_valid_total",
+            "lean_attestations_invalid_total",
+            "lean_attestation_validation_time_seconds",
+            "lean_fork_choice_reorgs_total",
+            "lean_fork_choice_reorg_depth",
+            "lean_latest_justified_slot",
+            "lean_latest_finalized_slot",
+            "lean_state_transition_time_seconds",
+            "lean_validators_count",
+            "lean_connected_peers",
+        };
+        var sb = new StringBuilder();
+        foreach (var n in names)
+        {
+            sb.Append("# HELP ").Append(n).Append(" stub\n");
+            sb.Append("# TYPE ").Append(n).Append(" gauge\n");
+            sb.Append(n).Append(" 0\n");
+        }
+        return sb.ToString();
     }
 
     private static List<Validator> BuildValidators(IReadOnlyList<(string AttestationPubkey, string ProposalPubkey)> keys)
@@ -257,5 +324,62 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
 
     private sealed record GenesisParamsJson(
         [property: JsonPropertyName("numValidators")] ulong NumValidators,
-        [property: JsonPropertyName("genesisTime")] ulong GenesisTime);
+        [property: JsonPropertyName("genesisTime")] ulong GenesisTime,
+        [property: JsonPropertyName("anchorSlot")] ulong? AnchorSlot = null);
+
+    /// <summary>
+    /// Mirrors leanSpec's <c>build_anchor</c>: walks the chain from genesis through
+    /// <paramref name="anchorSlot"/> using empty-body blocks, returning the post-state
+    /// at the anchor and the anchor block's identifiers (root, parent_root, proposer).
+    /// </summary>
+    private static (State State, string AnchorRootHex, string AnchorParentHex, ulong AnchorProposer) BuildAnchor(
+        ChainStateTransition transition,
+        State genesisState,
+        Bytes32 genesisBlockRoot,
+        ulong anchorSlot,
+        ulong validatorCount)
+    {
+        var emptyBodyRoot = new Bytes32(new BlockBody(Array.Empty<AggregatedAttestation>()).HashTreeRoot());
+
+        var state = genesisState;
+        var parentRoot = genesisBlockRoot;
+        Bytes32 anchorBlockRoot = default;
+        Bytes32 anchorParentRoot = default;
+        ulong anchorProposer = 0;
+
+        for (ulong s = 1; s <= anchorSlot; s++)
+        {
+            var proposerIndex = s % validatorCount;
+            var block = new Block(
+                new Slot(s),
+                new ValidatorIndex(proposerIndex),
+                parentRoot,
+                Bytes32.Zero(),
+                new BlockBody(Array.Empty<AggregatedAttestation>()));
+
+            if (!transition.TryComputeStateRoot(state, block, out var stateRoot, out var postState, out var reason))
+            {
+                throw new InvalidOperationException(
+                    $"BuildAnchor: failed to advance to slot {s} (proposer={proposerIndex}): {reason}");
+            }
+
+            // Hash the block header with state_root filled — this is the "block root"
+            // that the next slot's block will use as parent_root, matching leanSpec
+            // build_anchor's `parent_root = hash_tree_root(current_block)`.
+            var anchorHeader = new BlockHeader(block.Slot, block.ProposerIndex, block.ParentRoot, stateRoot, emptyBodyRoot);
+            var blockRoot = new Bytes32(anchorHeader.HashTreeRoot());
+
+            anchorParentRoot = parentRoot;
+            anchorBlockRoot = blockRoot;
+            anchorProposer = proposerIndex;
+            parentRoot = blockRoot;
+            state = postState;
+        }
+
+        return (
+            state,
+            Convert.ToHexString(anchorBlockRoot.AsSpan()).ToLowerInvariant(),
+            Convert.ToHexString(anchorParentRoot.AsSpan()).ToLowerInvariant(),
+            anchorProposer);
+    }
 }
