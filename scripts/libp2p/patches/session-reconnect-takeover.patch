@@ -1,0 +1,36 @@
+diff --git a/src/libp2p/Libp2p.Core/Peer.cs b/src/libp2p/Libp2p.Core/Peer.cs
+index 6af4fd1..bc32e35 100644
+--- a/src/libp2p/Libp2p.Core/Peer.cs
++++ b/src/libp2p/Libp2p.Core/Peer.cs
+@@ -165,10 +165,28 @@ public partial class LocalPeer(Identity identity, PeerStore peerStore, IProtocol
+ 
+         lock (Sessions)
+         {
+-            if (Sessions.Any(s => s.State.RemoteAddress.GetPeerId() == remotePeerId))
++            // Reconnect-takeover: when a peer reconnects (process restart,
++            // transport drop, or new dial racing inbound accept), the old
++            // session's underlying transport is typically already dead on the
++            // remote side. Rejecting the new session strands both peers — the
++            // local Sessions list holds a stale entry forever and gossipsub
++            // mesh cannot re-form. Evict pre-existing session(s) for this peer
++            // ID and accept the new one instead.
++            List<Session>? stale = null;
++            foreach (Session s in Sessions)
+             {
+-                _ = session.DisconnectAsync();
+-                throw new SessionExistsException(remotePeerId);
++                if (s.State.RemoteAddress?.GetPeerId() == remotePeerId)
++                {
++                    (stale ??= []).Add(s);
++                }
++            }
++            if (stale is not null)
++            {
++                _logger?.LogDebug($"Evicting {stale.Count} stale session(s) for {remotePeerId} to make room for reconnect");
++                foreach (Session s in stale)
++                {
++                    _ = s.DisconnectAsync();
++                }
+             }
+             _logger?.LogDebug($"New session with {remotePeerId} ({session.RemoteAddress})");
+             Sessions.Add(session);
