@@ -65,22 +65,14 @@ public sealed class NodeService : BackgroundService
         {
             _logger.LogWarning(ex, "Metrics service failed to start; continuing without metrics.");
         }
-        _logger.LogInformation("NodeService startup: starting network service.");
-        await _networkService.StartAsync(stoppingToken);
-        _logger.LogInformation("NodeService startup: starting consensus service.");
-        await _consensusService.StartAsync(stoppingToken);
 
-        if (_options.Validator.Enabled)
-        {
-            if (_consensusService is ConsensusServiceV2 csv2)
-                csv2.SetDutyTarget(_validatorService);
-            _logger.LogInformation("NodeService startup: starting validator service.");
-            await _validatorService.StartAsync(stoppingToken);
-        }
-
-        // Start API before bootstrap dial: an unreachable bootnode can stall
-        // the dial up to BootstrapDialTimeout, during which /lean/v0/health
-        // would 404 and external probes treat the node as dead.
+        // Start the API server BEFORE network/consensus/validator boot. Hive's
+        // spec_assets simulator POSTs to /lean/v0/test_driver/* the instant
+        // the container is up — if we wait for validator XMSS warmup
+        // (10-15 min on a cold cache) the sim sees HTTP 404 and treats the
+        // test as a failure. ConsensusServiceV2 seeds a zero ConsensusSnapshot
+        // in its ctor so GetApiSnapshot is safe before RefreshSnapshot runs;
+        // the test_driver endpoints have their own internal state.
         try
         {
             var csv2ForApi = _consensusService as ConsensusServiceV2;
@@ -109,6 +101,19 @@ public sealed class NodeService : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "LeanApiServer failed to start; continuing without API.");
+        }
+
+        _logger.LogInformation("NodeService startup: starting network service.");
+        await _networkService.StartAsync(stoppingToken);
+        _logger.LogInformation("NodeService startup: starting consensus service.");
+        await _consensusService.StartAsync(stoppingToken);
+
+        if (_options.Validator.Enabled)
+        {
+            if (_consensusService is ConsensusServiceV2 csv2)
+                csv2.SetDutyTarget(_validatorService);
+            _logger.LogInformation("NodeService startup: starting validator service.");
+            await _validatorService.StartAsync(stoppingToken);
         }
 
         // Fire-and-forget; ConnectToPeersAsync owns the reconnect loop.
