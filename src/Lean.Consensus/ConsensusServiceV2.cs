@@ -50,12 +50,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             FullMode = BoundedChannelFullMode.DropOldest,
         });
 
-    // Seeded with zeros so /lean/v0/fork_choice and friends return a degraded
-    // (but non-throwing) snapshot when the API server is started before
-    // RefreshSnapshot has run — hive's spec_assets sim POSTs to test_driver
-    // endpoints the moment the container is up.
-    private volatile ConsensusSnapshot _snapshot = new(
-        Bytes32.Zero(), 0, Bytes32.Zero(), 0, Bytes32.Zero(), 0);
+    private volatile ConsensusSnapshot _snapshot = null!;
 
     private CancellationTokenSource? _cts;
     private Task? _runTask;
