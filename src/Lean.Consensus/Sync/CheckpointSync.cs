@@ -26,7 +26,53 @@ public sealed class CheckpointSync
         if (validationError is not null)
             return CheckpointSyncResult.Failure(validationError);
 
-        return CheckpointSyncResult.Success(normalizedState);
+        // leanSpec PR #713: also fetch the SignedBlock at latest_finalized.root
+        // so we can seed BlockStore for downstream BlocksByRoot listeners.
+        // Best-effort against pre-#713 servers: a 404 / network error drops
+        // the block but lets sync succeed — the syncing node simply won't be
+        // able to serve the anchor root via BlocksByRoot until a peer pushes
+        // a fresh block referencing it as parent.
+        SignedBlock? anchorBlock = null;
+        var blockUrl = DeriveAnchorBlockUrl(url);
+        if (blockUrl is not null)
+        {
+            anchorBlock = await _provider.FetchFinalizedSignedBlockAsync(blockUrl, ct);
+            if (anchorBlock is not null)
+            {
+                // Spec contract: anchor_block.state_root == hash_tree_root(state).
+                // A mismatch means finalization advanced between the two
+                // requests, so we bail and let the caller retry instead of
+                // seeding the store with an inconsistent pair.
+                var stateRoot = new Bytes32(normalizedState.HashTreeRoot());
+                if (!anchorBlock.Block.StateRoot.Equals(stateRoot))
+                {
+                    return CheckpointSyncResult.Failure(
+                        $"Anchor block / state mismatch: signed_block.block.state_root={anchorBlock.Block.StateRoot} hash_tree_root(state)={stateRoot}. " +
+                        "Server may have advanced finalization between requests; retry.");
+                }
+            }
+        }
+
+        return CheckpointSyncResult.Success(normalizedState, anchorBlock);
+    }
+
+    /// <summary>
+    /// Hive and lean-quickstart hand us the full state-endpoint URL
+    /// (`http://host:port/lean/v0/states/finalized`). Strip the suffix to
+    /// rebuild the sibling block endpoint without forcing every caller to
+    /// pass a base URL. Returns null when the URL doesn't look like the
+    /// state endpoint we expected.
+    /// </summary>
+    internal static string? DeriveAnchorBlockUrl(string stateUrl)
+    {
+        const string StateSuffix = "/lean/v0/states/finalized";
+        const string BlockSuffix = "/lean/v0/blocks/finalized";
+        if (string.IsNullOrWhiteSpace(stateUrl))
+            return null;
+        var trimmed = stateUrl.TrimEnd('/');
+        if (trimmed.EndsWith(StateSuffix, StringComparison.OrdinalIgnoreCase))
+            return trimmed[..^StateSuffix.Length] + BlockSuffix;
+        return null;
     }
 
     public static string? ValidateState(State state, ConsensusConfig config)
@@ -119,17 +165,25 @@ public sealed class CheckpointSync
 
 public sealed class CheckpointSyncResult
 {
-    private CheckpointSyncResult(bool succeeded, State? state, string? error)
+    private CheckpointSyncResult(bool succeeded, State? state, SignedBlock? anchorBlock, string? error)
     {
         Succeeded = succeeded;
         State = state;
+        AnchorBlock = anchorBlock;
         Error = error;
     }
 
     public bool Succeeded { get; }
     public State? State { get; }
+
+    // Populated when the source server speaks /lean/v0/blocks/finalized
+    // (leanSpec PR #713). Null is acceptable — checkpoint sync still
+    // succeeds, BlockStore just won't have the anchor entry until a peer
+    // forwards a block that references the anchor root.
+    public SignedBlock? AnchorBlock { get; }
     public string? Error { get; }
 
-    public static CheckpointSyncResult Success(State state) => new(true, state, null);
-    public static CheckpointSyncResult Failure(string error) => new(false, null, error);
+    public static CheckpointSyncResult Success(State state, SignedBlock? anchorBlock = null) =>
+        new(true, state, anchorBlock, null);
+    public static CheckpointSyncResult Failure(string error) => new(false, null, null, error);
 }

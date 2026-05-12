@@ -218,6 +218,21 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         return SszEncoding.Encode(state);
     }
 
+    /// <summary>
+    /// Returns the SSZ-encoded SignedBlock at the current finalized root, or
+    /// null when the block is not in the local store. Backs
+    /// <c>/lean/v0/blocks/finalized</c> (leanSpec PR #713) — clients fetch
+    /// this so Store.create_store can seed blocks[anchor_root] and downstream
+    /// BlocksByRoot listeners can answer for the anchor.
+    /// </summary>
+    public byte[]? GetFinalizedSignedBlockSsz()
+    {
+        var snap = _snapshot;
+        if (snap.FinalizedRoot.Equals(Bytes32.Zero()))
+            return null;
+        return _blockStore.TryLoad(snap.FinalizedRoot, out var payload) ? payload : null;
+    }
+
     public ulong CurrentSlot => _clock.CurrentSlot;
     public ulong HeadSlot => _snapshot.HeadSlot;
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;

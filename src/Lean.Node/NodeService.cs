@@ -102,7 +102,8 @@ public sealed class NodeService : BackgroundService
                 _options.ApiPort,
                 () => csv2ForApi?.GetApiSnapshot() ?? new ApiSnapshot(0, "", 0, ""),
                 () => csv2ForApi?.GetFinalizedStateSsz(),
-                aggregatorController);
+                aggregatorController,
+                getFinalizedSignedBlockSsz: () => csv2ForApi?.GetFinalizedSignedBlockSsz());
             await _apiServer.StartAsync(stoppingToken);
             _logger.LogInformation("LeanApiServer listening on port {Port}.", _options.ApiPort);
         }

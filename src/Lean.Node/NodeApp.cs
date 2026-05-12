@@ -3,6 +3,7 @@ using Lean.Consensus;
 using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
+using Lean.Consensus.Types;
 using Lean.Crypto;
 using Lean.Metrics;
 using Lean.Network;
@@ -187,6 +188,28 @@ public static class NodeApp
         var state = NormalizeCheckpointState(result.State!);
         var headState = CreateCheckpointHeadState(state);
         stateStore.Save(headState, state);
+
+        // leanSpec PR #713: if the source served the anchor SignedBlock as
+        // well, persist it in BlockStore so we can answer BlocksByRoot
+        // requests for the finalized root (hive's reqresp/blocks_by_root/
+        // single_known_block + downstream peers' sync). Without this, peers
+        // requesting our anchor root see "miss on listener" until a fresh
+        // block referencing it as parent arrives.
+        if (result.AnchorBlock is not null)
+        {
+            using var blockKvStore = new RocksDbKeyValueStore(options.Storage, "blocks");
+            var blockStore = new BlockByRootStore(blockKvStore);
+            var anchorRoot = new Bytes32(result.AnchorBlock.Block.HashTreeRoot());
+            var encoded = SszEncoding.Encode(result.AnchorBlock);
+            blockStore.Save(anchorRoot, encoded);
+            Console.WriteLine(
+                $"Persisted anchor SignedBlock to BlockStore. Root={anchorRoot}, Size={encoded.Length} bytes.");
+        }
+        else
+        {
+            Console.WriteLine(
+                "Anchor SignedBlock not available from source — BlocksByRoot for the anchor root will miss until peers forward a block referencing it.");
+        }
 
         Console.WriteLine(
             $"Checkpoint sync complete. HeadSlot={headState.HeadSlot}, " +

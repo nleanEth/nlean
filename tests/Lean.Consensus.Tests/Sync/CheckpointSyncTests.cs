@@ -233,9 +233,17 @@ public sealed class CheckpointSyncTests
     private sealed class FakeCheckpointProvider : ICheckpointProvider
     {
         private readonly State? _state;
-        public FakeCheckpointProvider(State? state) => _state = state;
+        private readonly SignedBlock? _signedBlock;
+        public FakeCheckpointProvider(State? state, SignedBlock? signedBlock = null)
+        {
+            _state = state;
+            _signedBlock = signedBlock;
+        }
 
         public Task<State?> FetchFinalizedStateAsync(string url, CancellationToken ct) =>
             Task.FromResult(_state);
+
+        public Task<SignedBlock?> FetchFinalizedSignedBlockAsync(string url, CancellationToken ct) =>
+            Task.FromResult(_signedBlock);
     }
 }
