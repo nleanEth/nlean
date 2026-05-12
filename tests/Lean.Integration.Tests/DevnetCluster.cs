@@ -152,6 +152,17 @@ public sealed class DevnetCluster : IDisposable
         {
             node?.Dispose();
         }
+
+        // NodeProcess.Dispose waits for child exit, but macOS doesn't release
+        // TCP TIME_WAIT sockets, RocksDB lock files, or mDNS registrations
+        // synchronously when the owning process dies. NUnit fires the next
+        // test immediately after Dispose returns; without this cooldown the
+        // next cluster's nodes occasionally fight the previous cluster's
+        // stale OS state and stall on libp2p handshake (observed locally
+        // as AggregatorRestart + TwoNode timing out in the full suite but
+        // passing in isolation).
+        Thread.Sleep(2000);
+
         _http.Dispose();
         _fixture.Dispose();
     }
