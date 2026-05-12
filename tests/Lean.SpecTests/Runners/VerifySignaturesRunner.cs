@@ -21,17 +21,20 @@ public sealed class VerifySignaturesRunner : ISpecTestRunner
         var test = JsonSerializer.Deserialize<VerifySignaturesTest>(testJson, SerializerOptions)
             ?? throw new InvalidOperationException($"{testId}: failed to deserialize VerifySignaturesTest");
 
-        // Only the TEST scheme is wired through the FFI for verify_signatures fixtures.
-        // leanEnv=prod would need real XMSS key fixtures, which the current suite doesn't publish.
-        if (!string.Equals(test.LeanEnv, "test", StringComparison.OrdinalIgnoreCase))
+        bool useProd;
+        if (string.Equals(test.LeanEnv, "prod", StringComparison.OrdinalIgnoreCase))
+            useProd = true;
+        else if (string.Equals(test.LeanEnv, "test", StringComparison.OrdinalIgnoreCase))
+            useProd = false;
+        else
         {
-            Assert.Inconclusive($"Unsupported leanEnv={test.LeanEnv}. Only 'test' is wired through VerifyTest FFI.");
+            Assert.Inconclusive($"Unsupported leanEnv={test.LeanEnv}");
             return;
         }
 
         var expectFailure = !string.IsNullOrEmpty(test.ExpectException);
-        var proposerPassed = TryVerifyProposer(test, out var proposerReason);
-        var aggregatesPassed = TryVerifyAggregateAttestations(test, out var aggregateReason);
+        var proposerPassed = TryVerifyProposer(test, useProd, out var proposerReason);
+        var aggregatesPassed = TryVerifyAggregateAttestations(test, useProd, out var aggregateReason);
         var allValid = proposerPassed && aggregatesPassed;
 
         if (expectFailure)
@@ -46,7 +49,7 @@ public sealed class VerifySignaturesRunner : ISpecTestRunner
         }
     }
 
-    private static bool TryVerifyAggregateAttestations(VerifySignaturesTest test, out string reason)
+    private static bool TryVerifyAggregateAttestations(VerifySignaturesTest test, bool useProd, out string reason)
     {
         reason = string.Empty;
 
@@ -95,11 +98,17 @@ public sealed class VerifySignaturesRunner : ISpecTestRunner
             bool valid;
             try
             {
-                valid = MultiSigner.VerifyAggregateTest(
-                    participantPubkeys,
-                    attestationRoot,
-                    proofData,
-                    checked((uint)data.Slot.Value));
+                valid = useProd
+                    ? MultiSigner.VerifyAggregate(
+                        participantPubkeys,
+                        attestationRoot,
+                        proofData,
+                        checked((uint)data.Slot.Value))
+                    : MultiSigner.VerifyAggregateTest(
+                        participantPubkeys,
+                        attestationRoot,
+                        proofData,
+                        checked((uint)data.Slot.Value));
             }
             catch (Exception ex)
             {
@@ -117,7 +126,7 @@ public sealed class VerifySignaturesRunner : ISpecTestRunner
         return true;
     }
 
-    private static bool TryVerifyProposer(VerifySignaturesTest test, out string reason)
+    private static bool TryVerifyProposer(VerifySignaturesTest test, bool useProd, out string reason)
     {
         reason = string.Empty;
 
@@ -142,7 +151,9 @@ public sealed class VerifySignaturesRunner : ISpecTestRunner
         var signatureBytes = ParseHex(test.SignedBlock.Signature.ProposerSignature);
 
         var epoch = checked((uint)block.Slot.Value);
-        return Signer.VerifyTest(pubkey, epoch, blockRoot, signatureBytes);
+        return useProd
+            ? Signer.Verify(pubkey, epoch, blockRoot, signatureBytes)
+            : Signer.VerifyTest(pubkey, epoch, blockRoot, signatureBytes);
     }
 
     private static Block ConvertBlock(TestBlock tb) => new(

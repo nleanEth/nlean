@@ -54,14 +54,18 @@ public sealed class LeanApiServer
         if (testDriverEnabled)
         {
             var forkChoiceDriver = new ForkChoiceDriver();
+            // Hive POSTs camelCase JSON; record-struct properties like InitRequest
+            // lack JsonPropertyName so case-insensitive matching is required to
+            // bind anchorState/anchorBlock/genesisTime without per-field attrs.
             var testDriverJsonOpts = new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                PropertyNameCaseInsensitive = true,
             };
 
             _app.MapPost("/lean/v0/test_driver/fork_choice/init", async (HttpContext ctx) =>
             {
-                var req = await JsonSerializer.DeserializeAsync<ForkChoiceDriver.InitRequest>(ctx.Request.Body);
+                var req = await JsonSerializer.DeserializeAsync<ForkChoiceDriver.InitRequest>(ctx.Request.Body, testDriverJsonOpts);
                 if (forkChoiceDriver.TryInit(req, out var err))
                 {
                     return Results.NoContent();
@@ -71,7 +75,7 @@ public sealed class LeanApiServer
 
             _app.MapPost("/lean/v0/test_driver/fork_choice/step", async (HttpContext ctx) =>
             {
-                var step = await JsonSerializer.DeserializeAsync<ForkChoiceStep>(ctx.Request.Body)
+                var step = await JsonSerializer.DeserializeAsync<ForkChoiceStep>(ctx.Request.Body, testDriverJsonOpts)
                     ?? throw new InvalidOperationException("missing step body");
                 var result = forkChoiceDriver.ApplyStep(step);
                 return Results.Json(result, testDriverJsonOpts);
@@ -79,7 +83,7 @@ public sealed class LeanApiServer
 
             _app.MapPost("/lean/v0/test_driver/state_transition/run", async (HttpContext ctx) =>
             {
-                var test = await JsonSerializer.DeserializeAsync<StateTransitionTest>(ctx.Request.Body)
+                var test = await JsonSerializer.DeserializeAsync<StateTransitionTest>(ctx.Request.Body, testDriverJsonOpts)
                     ?? throw new InvalidOperationException("missing state_transition body");
                 var result = StateTransitionDriver.Run(test);
                 return Results.Json(result, testDriverJsonOpts);
@@ -87,7 +91,7 @@ public sealed class LeanApiServer
 
             _app.MapPost("/lean/v0/test_driver/verify_signatures/run", async (HttpContext ctx) =>
             {
-                var test = await JsonSerializer.DeserializeAsync<VerifySignaturesTest>(ctx.Request.Body)
+                var test = await JsonSerializer.DeserializeAsync<VerifySignaturesTest>(ctx.Request.Body, testDriverJsonOpts)
                     ?? throw new InvalidOperationException("missing verify_signatures body");
                 var result = VerifySignaturesDriver.Run(test);
                 return Results.Json(result, testDriverJsonOpts);
