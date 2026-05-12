@@ -19,15 +19,16 @@ public static class VerifySignaturesDriver
 
     public static Result Run(VerifySignaturesTest test)
     {
-        // Only the TEST scheme is wired through the FFI for verify_signatures fixtures.
-        // leanEnv=prod would need real XMSS key fixtures, which the current suite doesn't publish.
-        if (!string.Equals(test.LeanEnv, "test", StringComparison.OrdinalIgnoreCase))
-        {
+        bool useProd;
+        if (string.Equals(test.LeanEnv, "prod", StringComparison.OrdinalIgnoreCase))
+            useProd = true;
+        else if (string.Equals(test.LeanEnv, "test", StringComparison.OrdinalIgnoreCase))
+            useProd = false;
+        else
             return new Result(false, $"unsupported leanEnv={test.LeanEnv}");
-        }
 
-        var proposerPassed = TryVerifyProposer(test, out var proposerReason);
-        var aggregatesPassed = TryVerifyAggregateAttestations(test, out var aggregateReason);
+        var proposerPassed = TryVerifyProposer(test, useProd, out var proposerReason);
+        var aggregatesPassed = TryVerifyAggregateAttestations(test, useProd, out var aggregateReason);
         var allValid = proposerPassed && aggregatesPassed;
 
         if (allValid)
@@ -41,7 +42,7 @@ public static class VerifySignaturesDriver
         return new Result(false, reason);
     }
 
-    private static bool TryVerifyAggregateAttestations(VerifySignaturesTest test, out string reason)
+    private static bool TryVerifyAggregateAttestations(VerifySignaturesTest test, bool useProd, out string reason)
     {
         reason = string.Empty;
 
@@ -87,11 +88,17 @@ public static class VerifySignaturesDriver
             bool valid;
             try
             {
-                valid = MultiSigner.VerifyAggregateTest(
-                    participantPubkeys,
-                    attestationRoot,
-                    proofData,
-                    checked((uint)data.Slot.Value));
+                valid = useProd
+                    ? MultiSigner.VerifyAggregate(
+                        participantPubkeys,
+                        attestationRoot,
+                        proofData,
+                        checked((uint)data.Slot.Value))
+                    : MultiSigner.VerifyAggregateTest(
+                        participantPubkeys,
+                        attestationRoot,
+                        proofData,
+                        checked((uint)data.Slot.Value));
             }
             catch (Exception ex)
             {
@@ -109,7 +116,7 @@ public static class VerifySignaturesDriver
         return true;
     }
 
-    private static bool TryVerifyProposer(VerifySignaturesTest test, out string reason)
+    private static bool TryVerifyProposer(VerifySignaturesTest test, bool useProd, out string reason)
     {
         reason = string.Empty;
 
@@ -132,7 +139,10 @@ public static class VerifySignaturesDriver
 
         try
         {
-            if (!Signer.VerifyTest(pubkey, epoch, blockRoot, signatureBytes))
+            var ok = useProd
+                ? Signer.Verify(pubkey, epoch, blockRoot, signatureBytes)
+                : Signer.VerifyTest(pubkey, epoch, blockRoot, signatureBytes);
+            if (!ok)
             {
                 reason = "proposer XMSS signature rejected";
                 return false;
