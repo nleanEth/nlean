@@ -5,6 +5,17 @@ namespace Lean.Consensus.Sync;
 public interface ISyncService
 {
     SyncState State { get; }
+
+    /// <summary>
+    /// True once the node has observed at least one peer since startup.
+    /// Stays true even after every peer disconnects — distinguishes the
+    /// "isolated bootstrap" case (truly alone, safe to propose against
+    /// our own local chain) from the "rejoining after restart" case
+    /// (peer count is briefly 0 but we know a network is out there and
+    /// proposing now would build a fork).
+    /// </summary>
+    bool HasEverHadPeer { get; }
+
     ulong GetNetworkHeadSlot();
     Task OnGossipBlockAsync(SignedBlock block, Bytes32 blockRoot, string? peerId);
     Task OnGossipAttestationAsync(SignedAttestation attestation);

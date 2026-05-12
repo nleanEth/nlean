@@ -137,9 +137,22 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
 
         var cancellationToken = _shutdownToken;
 
-        if (_syncService is not null && _syncService.State != SyncState.Synced)
+        // Block duties when we're actively catching up from peers (`Syncing`)
+        // or when the peer set briefly dropped to zero after a restart and we
+        // know the network is still out there (`Idle && HasEverHadPeer`). In
+        // both cases proposing now would build on a stale parent and create
+        // a fork. Truly isolated single-validator bootstrap (`Idle` and no
+        // peer ever seen) should still propose — otherwise the local chain
+        // never advances and hive's `blocks_by_root/multiple_known_blocks`
+        // test (single nlean alone, mesh disabled) sits at slot 0 forever.
+        if (_syncService is not null)
         {
-            return;
+            var syncState = _syncService.State;
+            if (syncState == SyncState.Syncing ||
+                (syncState == SyncState.Idle && _syncService.HasEverHadPeer))
+            {
+                return;
+            }
         }
 
         if (ShouldSkipStaleDuty(slot, intervalInSlot))
