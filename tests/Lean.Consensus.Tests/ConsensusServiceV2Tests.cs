@@ -365,6 +365,7 @@ public sealed class ConsensusServiceV2Tests
         }
 
         public SyncState State { get; }
+        public bool HasEverHadPeer { get; set; }
         public ulong NetworkHeadSlot { get; set; }
         public ulong GetNetworkHeadSlot() => NetworkHeadSlot;
         public Task OnGossipBlockAsync(SignedBlock block, Bytes32 blockRoot, string? peerId) => Task.CompletedTask;

@@ -22,6 +22,7 @@ public sealed class SyncService : ISyncService
     private int _pendingAttestationCount;
 
     private volatile SyncState _state = SyncState.Idle;
+    private int _hasEverHadPeer; // 0/1 — sticky once flipped on first peer
 
     public SyncService(
         IBlockProcessor processor,
@@ -126,6 +127,8 @@ public sealed class SyncService : ISyncService
         return Task.CompletedTask;
     }
 
+    public bool HasEverHadPeer => Volatile.Read(ref _hasEverHadPeer) == 1;
+
     public void RecomputeState()
     {
         var oldState = _state;
@@ -138,6 +141,7 @@ public sealed class SyncService : ISyncService
         }
         else
         {
+            Interlocked.Exchange(ref _hasEverHadPeer, 1);
             var networkHead = _peerManager.GetNetworkHeadSlot();
             var localHead = _processor.HeadSlot;
 
