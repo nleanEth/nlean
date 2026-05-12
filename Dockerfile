@@ -23,7 +23,6 @@ RUN set -eux; \
       arm64) rid=linux-arm64 ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    RUSTFLAGS="-C target-cpu=native" \
     cargo build --release --manifest-path /src/native/lean-crypto-ffi/Cargo.toml; \
     mkdir -p "/src/src/Lean.Client/runtimes/${rid}/native"; \
     cp /src/native/lean-crypto-ffi/target/release/liblean_crypto_ffi.so "/src/src/Lean.Client/runtimes/${rid}/native/"; \
