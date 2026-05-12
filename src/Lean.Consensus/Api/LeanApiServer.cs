@@ -18,6 +18,7 @@ public sealed class LeanApiServer
     private readonly int _port;
     private readonly Func<ApiSnapshot> _getSnapshot;
     private readonly Func<byte[]?> _getFinalizedStateSsz;
+    private readonly Func<byte[]?>? _getFinalizedSignedBlockSsz;
     private readonly AggregatorController? _aggregatorController;
     private readonly Func<string?>? _getMetricsText;
     private WebApplication? _app;
@@ -25,11 +26,13 @@ public sealed class LeanApiServer
     public LeanApiServer(int port, Func<ApiSnapshot> getSnapshot,
         Func<byte[]?> getFinalizedStateSsz,
         AggregatorController? aggregatorController = null,
-        Func<string?>? getMetricsText = null)
+        Func<string?>? getMetricsText = null,
+        Func<byte[]?>? getFinalizedSignedBlockSsz = null)
     {
         _port = port;
         _getSnapshot = getSnapshot;
         _getFinalizedStateSsz = getFinalizedStateSsz;
+        _getFinalizedSignedBlockSsz = getFinalizedSignedBlockSsz;
         _aggregatorController = aggregatorController;
         _getMetricsText = getMetricsText;
     }
@@ -130,6 +133,19 @@ public sealed class LeanApiServer
             var ssz = _getFinalizedStateSsz();
             return ssz is null
                 ? Results.Json(new { error = "finalized state not available" }, statusCode: 404)
+                : Results.Bytes(ssz, "application/octet-stream");
+        });
+
+        // leanSpec PR #713: pairs with /lean/v0/states/finalized so a
+        // checkpoint-syncing node can fetch the (state, signed_block) pair
+        // required by Store.create_store. 404 when the local store doesn't
+        // hold the block (e.g. we ourselves came up via checkpoint sync
+        // against a pre-#713 server and the anchor block was never seeded).
+        _app.MapGet("/lean/v0/blocks/finalized", () =>
+        {
+            var ssz = _getFinalizedSignedBlockSsz?.Invoke();
+            return ssz is null
+                ? Results.Json(new { error = "finalized signed block not available" }, statusCode: 404)
                 : Results.Bytes(ssz, "application/octet-stream");
         });
 
