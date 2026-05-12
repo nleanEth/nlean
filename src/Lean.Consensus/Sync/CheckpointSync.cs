@@ -39,15 +39,21 @@ public sealed class CheckpointSync
             anchorBlock = await _provider.FetchFinalizedSignedBlockAsync(blockUrl, ct);
             if (anchorBlock is not null)
             {
-                // Spec contract: anchor_block.state_root == hash_tree_root(state).
-                // A mismatch means finalization advanced between the two
-                // requests, so we bail and let the caller retry instead of
-                // seeding the store with an inconsistent pair.
-                var stateRoot = new Bytes32(normalizedState.HashTreeRoot());
-                if (!anchorBlock.Block.StateRoot.Equals(stateRoot))
+                // Spec contract (leanSpec lstar/spec.py:906):
+                //   assert anchor_block.state_root == hash_tree_root(anchor_state)
+                // The proposer computed block.state_root over a state where
+                // `latest_block_header.state_root` was still ZERO (process_slot
+                // only fills it when the NEXT slot is processed). The state
+                // store served at /lean/v0/states/finalized retains that zero
+                // — we must NOT pre-normalize before hashing, or we'd hash a
+                // state shape the proposer never saw. Use the raw fetched
+                // state for the pairing assertion; reserve NormalizeState for
+                // downstream consumers that need a non-zero header root.
+                var rawStateRoot = new Bytes32(state.HashTreeRoot());
+                if (!anchorBlock.Block.StateRoot.Equals(rawStateRoot))
                 {
                     return CheckpointSyncResult.Failure(
-                        $"Anchor block / state mismatch: signed_block.block.state_root={anchorBlock.Block.StateRoot} hash_tree_root(state)={stateRoot}. " +
+                        $"Anchor block / state mismatch: signed_block.block.state_root=0x{Convert.ToHexString(anchorBlock.Block.StateRoot.AsSpan())} hash_tree_root(state)=0x{Convert.ToHexString(rawStateRoot.AsSpan())}. " +
                         "Server may have advanced finalization between requests; retry.");
                 }
             }
