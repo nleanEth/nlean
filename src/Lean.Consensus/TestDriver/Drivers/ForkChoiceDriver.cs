@@ -1,6 +1,7 @@
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.TestDriver.Fixtures;
 using Lean.Consensus.Types;
+using Lean.Crypto;
 
 namespace Lean.Consensus.TestDriver.Drivers;
 
@@ -12,6 +13,11 @@ namespace Lean.Consensus.TestDriver.Drivers;
 /// </summary>
 public sealed class ForkChoiceDriver
 {
+    // Hive (ReamLabs/lean-spec-tests) only ships leanEnv=prod fixtures, and the
+    // init request body is fixed by the upstream simulator with no leanEnv field,
+    // so the HTTP driver hardcodes the prod-scheme verifier.
+    private static readonly ILeanSig Signer = new RustLeanSig();
+
     private ProtoArrayForkChoiceStore? _store;
     private ChainStateTransition? _chainTransition;
     private ConsensusConfig? _config;
@@ -49,6 +55,17 @@ public sealed class ForkChoiceDriver
             {
                 var anchorState = FixtureConverter.ReconstructState(request.AnchorState);
                 var anchorBlock = FixtureConverter.ConvertBlock(request.AnchorBlock);
+
+                // leanSpec Store.from_anchor precondition: anchor block's stateRoot
+                // must equal hash_tree_root(anchorState). A mismatched pair would
+                // poison every future block→state lookup, so reject at init time.
+                var expectedStateRoot = new Bytes32(anchorState.HashTreeRoot());
+                if (!anchorBlock.StateRoot.Equals(expectedStateRoot))
+                {
+                    error = $"anchor block stateRoot {Convert.ToHexString(anchorBlock.StateRoot.AsSpan())} disagrees with anchor state root {Convert.ToHexString(expectedStateRoot.AsSpan())}";
+                    return false;
+                }
+
                 _anchorRoot = new Bytes32(anchorBlock.HashTreeRoot());
 
                 // leanSpec create_store_from_anchor: anchor block doubles as head + justified + finalized.
@@ -93,7 +110,7 @@ public sealed class ForkChoiceDriver
                     ApplyAttestationStep(step);
                     break;
                 case "gossipAggregatedAttestation":
-                    // Not yet plumbed — pass through accepted so hive doesn't fail-flag the step.
+                    ApplyGossipAggregatedAttestationStep(step);
                     break;
                 default:
                     return new StepResult(false, $"unsupported stepType '{step.StepType}'", CaptureSnapshot());
@@ -175,6 +192,17 @@ public sealed class ForkChoiceDriver
 
     private void ApplyTickStep(ForkChoiceStep step)
     {
+        var (targetInterval, hasProposal) = ResolveTickTarget(step);
+        WalkTicksTo(targetInterval, hasProposal);
+    }
+
+    private (ulong TargetInterval, bool HasProposal) ResolveTickTarget(ForkChoiceStep step)
+    {
+        // New-style fixtures: {interval: <slot*5+intra>, hasProposal}.
+        if (step.Interval.HasValue)
+        {
+            return (step.Interval.Value, step.HasProposal ?? false);
+        }
         if (!step.Time.HasValue)
         {
             throw new InvalidOperationException("tick step missing time");
@@ -183,17 +211,34 @@ public sealed class ForkChoiceDriver
         var secondsPerSlot = (ulong)_config!.SecondsPerSlot;
         if (secondsPerSlot == 0)
         {
-            return;
+            return (_store!.CurrentTimeIntervals, step.HasProposal ?? false);
         }
-        var slot = time / secondsPerSlot;
-        var intraSlotSeconds = time - slot * secondsPerSlot;
+        var intervalsPerSlot = (ulong)ProtoArrayForkChoiceStore.IntervalsPerSlot;
+        var slotFromTime = time / secondsPerSlot;
+        var intraSlotSeconds = time - slotFromTime * secondsPerSlot;
         var intervalDuration = (double)secondsPerSlot / ProtoArrayForkChoiceStore.IntervalsPerSlot;
-        var interval = intervalDuration > 0 ? (int)(intraSlotSeconds / intervalDuration) : 0;
-        if (interval > ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
+        var intervalFromTime = intervalDuration > 0 ? (ulong)(intraSlotSeconds / intervalDuration) : 0UL;
+        if (intervalFromTime > intervalsPerSlot - 1)
         {
-            interval = ProtoArrayForkChoiceStore.IntervalsPerSlot - 1;
+            intervalFromTime = intervalsPerSlot - 1;
         }
-        _store!.TickInterval(slot, interval);
+        return (slotFromTime * intervalsPerSlot + intervalFromTime, step.HasProposal ?? false);
+    }
+
+    // leanSpec on_tick walks store.time forward one interval at a time so each
+    // intermediate interval gets the appropriate action (e.g. interval-4 accept).
+    // Only the final tick carries the fixture's hasProposal flag.
+    private void WalkTicksTo(ulong targetInterval, bool hasProposalAtTarget)
+    {
+        var intervalsPerSlot = (ulong)ProtoArrayForkChoiceStore.IntervalsPerSlot;
+        while (_store!.CurrentTimeIntervals < targetInterval)
+        {
+            var next = _store.CurrentTimeIntervals + 1;
+            var slot = next / intervalsPerSlot;
+            var intra = (int)(next % intervalsPerSlot);
+            var hasProposal = next == targetInterval && hasProposalAtTarget;
+            _store.TickInterval(slot, intra, hasProposal: hasProposal);
+        }
     }
 
     private void ApplyAttestationStep(ForkChoiceStep step)
@@ -204,9 +249,66 @@ public sealed class ForkChoiceDriver
         {
             throw new InvalidOperationException("attestation step missing validatorId");
         }
+        // Validator index is rejected at gossip time when the validator is not in
+        // the active set. ProtoArrayForkChoiceStore.TryOnAttestation doesn't see
+        // the validator set, so guard here using the anchor state's validator count.
+        if (!_stateByRoot.TryGetValue(_anchorRoot, out var anchorState))
+        {
+            throw new InvalidOperationException("anchor state missing for attestation validation");
+        }
+        if (att.ValidatorId.Value >= (ulong)anchorState.Validators.Count)
+        {
+            throw new InvalidOperationException($"validator {att.ValidatorId.Value} not found in state");
+        }
         var data = FixtureConverter.ConvertAttestationData(att.Data);
+
+        // Gossip-time XMSS signature check. The fixture publishes the validator's
+        // signature over hash_tree_root(data) at slot epoch. Reject if it doesn't
+        // verify under the validator's attestation pubkey.
+        if (!string.IsNullOrEmpty(att.Signature))
+        {
+            var pubkeyBytes = anchorState.Validators[(int)att.ValidatorId.Value].AttestationPubkey.AsSpan();
+            var sigBytes = FixtureConverter.ParseHex(att.Signature);
+            var dataRoot = data.HashTreeRoot();
+            var epoch = checked((uint)data.Slot.Value);
+            if (!Signer.Verify(pubkeyBytes, epoch, dataRoot, sigBytes))
+            {
+                throw new InvalidOperationException("attestation signature rejected");
+            }
+        }
+
         var signed = new SignedAttestation(new ValidatorIndex(att.ValidatorId.Value), data, XmssSignature.Empty());
-        _store!.TryOnAttestation(signed, storeSignature: false, out _);
+        if (!_store!.TryOnAttestation(signed, storeSignature: false, out var reason))
+        {
+            throw new InvalidOperationException($"attestation rejected: {reason}");
+        }
+    }
+
+    private void ApplyGossipAggregatedAttestationStep(ForkChoiceStep step)
+    {
+        var att = step.Attestation
+            ?? throw new InvalidOperationException("gossipAggregatedAttestation step missing attestation");
+        var proof = att.Proof
+            ?? throw new InvalidOperationException("gossipAggregatedAttestation step missing proof");
+
+        var data = FixtureConverter.ConvertAttestationData(att.Data);
+        var signed = new SignedAggregatedAttestation(
+            data,
+            new AggregatedSignatureProof(
+                new AggregationBits(proof.Participants.Data),
+                FixtureConverter.ParseHex(proof.ProofData.Data)));
+
+        // Spec leanSpec gossip-validation rejects payloads whose data is structurally
+        // invalid (slot disparity, source>target, unknown blocks). Production gossip
+        // stores speculatively, so the driver applies the spec rule explicitly.
+        if (!_store!.TryValidateAttestationData(data, out var reason))
+        {
+            throw new InvalidOperationException($"gossipAggregatedAttestation rejected: {reason}");
+        }
+        if (!_store!.TryOnGossipAggregatedAttestation(signed, out reason))
+        {
+            throw new InvalidOperationException($"gossipAggregatedAttestation rejected: {reason}");
+        }
     }
 
     private Snapshot CaptureSnapshot()
