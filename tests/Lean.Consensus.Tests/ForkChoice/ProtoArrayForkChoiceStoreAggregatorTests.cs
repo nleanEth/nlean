@@ -40,6 +40,11 @@ public sealed class ProtoArrayForkChoiceStoreAggregatorTests
     [Test]
     public void OnGossipAggregatedAttestation_StoresPayloadEvenWhenHeadUnknown()
     {
+        // Production gossip path is permissive: payloads whose head/source/target
+        // blocks aren't yet in proto-array are stored speculatively and filtered
+        // later in AcceptNewAttestations. This is the behaviour aggregator-restart
+        // recovery relies on. Spec-test gossip-validation fixtures enforce strict
+        // rejection through the test driver, not here.
         var store = CreateStore();
         var data = MakeAttestationData(store) with
         {

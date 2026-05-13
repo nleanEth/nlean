@@ -3,24 +3,19 @@ using Lean.Consensus;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Types;
 using Lean.Consensus.TestDriver.Fixtures;
+using Lean.Crypto;
 using NUnit.Framework;
 
 namespace Lean.SpecTests.Runners;
 
 public sealed class ForkChoiceRunner : ISpecTestRunner
 {
-    private static readonly HashSet<string> KnownGaps = new(StringComparer.Ordinal);
+    // leanEnv selects the XMSS scheme — leanEthereum/leanSpec ships test,
+    // ReamLabs/lean-spec-tests ships prod.
+    private static readonly ILeanSig Signer = new RustLeanSig();
 
     public void Run(string testId, string testJson)
     {
-        foreach (var gap in KnownGaps)
-        {
-            if (testId.Contains(gap, StringComparison.Ordinal))
-            {
-                Assert.Ignore($"Known consensus-layer gap: {gap}. Tracked separately.");
-                return;
-            }
-        }
         var test = JsonSerializer.Deserialize<ForkChoiceTest>(testJson)
             ?? throw new InvalidOperationException($"Failed to deserialize fork choice test: {testId}");
 
@@ -45,6 +40,30 @@ public sealed class ForkChoiceRunner : ISpecTestRunner
             // populates head/justified/finalized to match the fixture's view.
             anchorState = ReconstructState(test.AnchorState);
             var anchorBlock = ConvertBlock(test.AnchorBlock);
+
+            // leanSpec Store.from_anchor precondition: anchor block's stateRoot
+            // must equal hash_tree_root(anchorState). Hive's sim uses the same
+            // {steps empty + description contains "anchor_valid=False"} marker.
+            var expectedStateRoot = new Bytes32(anchorState.HashTreeRoot());
+            var anchorRootMatches = anchorBlock.StateRoot.Equals(expectedStateRoot);
+            var expectsInitFailure =
+                test.Steps.Count == 0 &&
+                (test.Info?.Description ?? string.Empty).Contains("anchor_valid=False", StringComparison.Ordinal);
+
+            if (!anchorRootMatches)
+            {
+                if (expectsInitFailure)
+                    return;
+                Assert.Fail(
+                    $"anchor block stateRoot {Convert.ToHexString(anchorBlock.StateRoot.AsSpan())} disagrees with anchor state root {Convert.ToHexString(expectedStateRoot.AsSpan())}");
+                return;
+            }
+            if (expectsInitFailure)
+            {
+                Assert.Fail("fixture expected init failure but anchor stateRoot matched");
+                return;
+            }
+
             anchorRoot = new Bytes32(anchorBlock.HashTreeRoot());
 
             // Per leanSpec create_store_from_anchor: the anchor block becomes BOTH
@@ -88,11 +107,11 @@ public sealed class ForkChoiceRunner : ISpecTestRunner
                     break;
 
                 case "attestation":
-                    ProcessAttestationStep(store, step);
+                    ProcessAttestationStep(store, step, stepIdx, anchorState, test.LeanEnv);
                     break;
 
                 case "gossipAggregatedAttestation":
-                    // TODO: map fixture aggregated payloads through TryOnGossipAggregatedAttestation.
+                    ProcessGossipAggregatedAttestationStep(store, step, stepIdx);
                     break;
 
                 default:
@@ -223,37 +242,126 @@ public sealed class ForkChoiceRunner : ISpecTestRunner
 
     private static void ProcessTickStep(ProtoArrayForkChoiceStore store, ForkChoiceStep step, ConsensusConfig config)
     {
-        if (!step.Time.HasValue) return;
+        if (!TryResolveTickTarget(step, config, out var targetInterval))
+            return;
 
-        var secondsPerSlot = (ulong)config.SecondsPerSlot;
-        if (secondsPerSlot == 0) return;
-
-        var time = step.Time.Value;
-        var slot = time / secondsPerSlot;
-        var intraSlotSeconds = time - slot * secondsPerSlot;
-        // IntervalsPerSlot=5: intervals fire at 0, 1/5, 2/5, 3/5, 4/5 of the slot.
-        var intervalDuration = (double)secondsPerSlot / ProtoArrayForkChoiceStore.IntervalsPerSlot;
-        var interval = intervalDuration > 0
-            ? (int)(intraSlotSeconds / intervalDuration)
-            : 0;
-        if (interval > ProtoArrayForkChoiceStore.IntervalsPerSlot - 1)
-            interval = ProtoArrayForkChoiceStore.IntervalsPerSlot - 1;
-
-        store.TickInterval(slot, interval);
+        WalkTicksTo(store, targetInterval, step.HasProposal ?? false);
     }
 
-    private static void ProcessAttestationStep(ProtoArrayForkChoiceStore store, ForkChoiceStep step)
+    private static bool TryResolveTickTarget(ForkChoiceStep step, ConsensusConfig config, out ulong targetInterval)
+    {
+        var intervalsPerSlot = (ulong)ProtoArrayForkChoiceStore.IntervalsPerSlot;
+
+        // New-style fixtures: {interval: <slot*5+intra>}.
+        if (step.Interval.HasValue)
+        {
+            targetInterval = step.Interval.Value;
+            return true;
+        }
+
+        targetInterval = 0;
+        if (!step.Time.HasValue) return false;
+
+        var secondsPerSlot = (ulong)config.SecondsPerSlot;
+        if (secondsPerSlot == 0) return false;
+
+        var time = step.Time.Value;
+        var slotFromTime = time / secondsPerSlot;
+        var intraSlotSeconds = time - slotFromTime * secondsPerSlot;
+        var intervalDuration = (double)secondsPerSlot / ProtoArrayForkChoiceStore.IntervalsPerSlot;
+        var intervalFromTime = intervalDuration > 0 ? (ulong)(intraSlotSeconds / intervalDuration) : 0UL;
+        if (intervalFromTime > intervalsPerSlot - 1)
+            intervalFromTime = intervalsPerSlot - 1;
+
+        targetInterval = slotFromTime * intervalsPerSlot + intervalFromTime;
+        return true;
+    }
+
+    // leanSpec on_tick walks store.time forward one interval at a time so each
+    // intermediate interval triggers the right action (e.g. interval 4 accept).
+    private static void WalkTicksTo(ProtoArrayForkChoiceStore store, ulong targetInterval, bool hasProposalAtTarget)
+    {
+        var intervalsPerSlot = (ulong)ProtoArrayForkChoiceStore.IntervalsPerSlot;
+        while (store.CurrentTimeIntervals < targetInterval)
+        {
+            var next = store.CurrentTimeIntervals + 1;
+            var slot = next / intervalsPerSlot;
+            var intra = (int)(next % intervalsPerSlot);
+            var hasProposal = next == targetInterval && hasProposalAtTarget;
+            store.TickInterval(slot, intra, hasProposal: hasProposal);
+        }
+    }
+
+    private static void ProcessAttestationStep(ProtoArrayForkChoiceStore store, ForkChoiceStep step, int stepIdx, State anchorState, string leanEnv)
     {
         var attData = step.Attestation
             ?? throw new InvalidOperationException("Attestation step missing attestation data");
 
+        var validatorId = attData.ValidatorId ?? 0;
         var attestationData = ConvertAttestationData(attData.Data);
-        var attestation = new SignedAttestation(
-            attData.ValidatorId ?? 0,
-            attestationData,
-            XmssSignature.Empty());
 
-        store.TryOnAttestation(attestation, out _);
+        // Gossip-time guards that ProtoArrayForkChoiceStore.TryOnAttestation doesn't
+        // own: (1) validator index must be in the anchor's set; (2) the fixture's
+        // XMSS signature must verify under the validator's attestation pubkey.
+        bool accepted;
+        string reason;
+        if (validatorId >= (ulong)anchorState.Validators.Count)
+        {
+            accepted = false;
+            reason = $"validator {validatorId} not found in state";
+        }
+        else if (!string.IsNullOrEmpty(attData.Signature)
+            && !VerifyAttestationSignature(
+                anchorState.Validators[(int)validatorId].AttestationPubkey.AsSpan(),
+                checked((uint)attestationData.Slot.Value),
+                attestationData.HashTreeRoot(),
+                ParseHex(attData.Signature),
+                leanEnv))
+        {
+            accepted = false;
+            reason = "attestation signature rejected";
+        }
+        else
+        {
+            var attestation = new SignedAttestation(validatorId, attestationData, XmssSignature.Empty());
+            accepted = store.TryOnAttestation(attestation, storeSignature: false, out reason);
+        }
+
+        if (step.Valid && !accepted)
+            Assert.Fail($"step {stepIdx}: attestation expected success but rejected: {reason}");
+        if (!step.Valid && accepted)
+            Assert.Fail($"step {stepIdx}: attestation expected failure but was accepted");
+    }
+
+    private static bool VerifyAttestationSignature(
+        ReadOnlySpan<byte> pubkey, uint epoch, ReadOnlySpan<byte> dataRoot, ReadOnlySpan<byte> sig, string leanEnv)
+        => string.Equals(leanEnv, "prod", StringComparison.OrdinalIgnoreCase)
+            ? Signer.Verify(pubkey, epoch, dataRoot, sig)
+            : Signer.VerifyTest(pubkey, epoch, dataRoot, sig);
+
+    private static void ProcessGossipAggregatedAttestationStep(ProtoArrayForkChoiceStore store, ForkChoiceStep step, int stepIdx)
+    {
+        var attData = step.Attestation
+            ?? throw new InvalidOperationException("gossipAggregatedAttestation step missing attestation data");
+        var proof = attData.Proof
+            ?? throw new InvalidOperationException("gossipAggregatedAttestation step missing proof");
+
+        var data = ConvertAttestationData(attData.Data);
+        var signed = new SignedAggregatedAttestation(
+            data,
+            new AggregatedSignatureProof(
+                new AggregationBits(proof.Participants.Data),
+                ParseHex(proof.ProofData.Data)));
+
+        // Spec rejection happens at the runner/driver layer; production gossip path
+        // is intentionally permissive (see ProtoArrayForkChoiceStore comments).
+        string reason;
+        var accepted = store.TryValidateAttestationData(data, out reason)
+            && store.TryOnGossipAggregatedAttestation(signed, out reason);
+        if (step.Valid && !accepted)
+            Assert.Fail($"step {stepIdx}: gossipAggregatedAttestation expected success but rejected: {reason}");
+        if (!step.Valid && accepted)
+            Assert.Fail($"step {stepIdx}: gossipAggregatedAttestation expected failure but was accepted");
     }
 
     private static void ValidateChecks(

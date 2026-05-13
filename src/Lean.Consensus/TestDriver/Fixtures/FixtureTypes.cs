@@ -104,8 +104,9 @@ public sealed record ForkChoiceStep(
     [property: JsonPropertyName("stepType")] string StepType,
     [property: JsonPropertyName("block")] TestBlockStepData? Block,
     [property: JsonPropertyName("attestation")] TestAttestationStepData? Attestation,
-    [property: JsonPropertyName("gossipAggregatedAttestation")] TestGossipAggregatedAttestationStepData? GossipAggregatedAttestation,
-    [property: JsonPropertyName("time")] ulong? Time);
+    [property: JsonPropertyName("time")] ulong? Time,
+    [property: JsonPropertyName("interval")] ulong? Interval,
+    [property: JsonPropertyName("hasProposal")] bool? HasProposal);
 
 // Current leanSpec fixtures put block fields flat inside the step. Older lantern
 // fixtures nested them under `block` with a `proposerAttestation` sibling.
@@ -130,11 +131,16 @@ public sealed record TestBlockStepData(
 
 public sealed record TestAttestationStepData(
     [property: JsonPropertyName("data")] TestAttestationData Data,
-    [property: JsonPropertyName("validatorId")] ulong? ValidatorId);
+    [property: JsonPropertyName("validatorId")] ulong? ValidatorId,
+    [property: JsonPropertyName("proof")] TestAggregatedProof? Proof = null,
+    [property: JsonPropertyName("signature")] string? Signature = null);
 
-public sealed record TestGossipAggregatedAttestationStepData(
-    [property: JsonPropertyName("data")] TestAttestationData Data,
-    [property: JsonPropertyName("aggregationBits")] TestDataArray<bool>? AggregationBits);
+public sealed record TestAggregatedProof(
+    [property: JsonPropertyName("participants")] TestDataArray<bool> Participants,
+    [property: JsonPropertyName("proofData")] TestProofData ProofData);
+
+public sealed record TestProofData(
+    [property: JsonPropertyName("data")] string Data);
 
 public sealed record StoreChecks(
     [property: JsonPropertyName("headSlot")] ulong? HeadSlot,

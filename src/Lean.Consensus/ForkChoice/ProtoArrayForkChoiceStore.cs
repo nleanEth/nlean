@@ -287,6 +287,13 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             return false;
         }
 
+        // Note: data-shape validation (slot disparity, source<=target, known block roots)
+        // is intentionally NOT applied here. Production aggregator restart relies on
+        // storing payloads whose head/source/target may not yet be in proto-array;
+        // they're filtered later in AcceptNewAttestations via headIndex. Spec-test
+        // gossip-validation fixtures call TryValidateAttestationData explicitly
+        // through the test driver instead.
+
         if (TraceJustification)
         {
             _logger.LogInformation(
@@ -1185,7 +1192,7 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
         return Convert.ToHexString(data.HashTreeRoot());
     }
 
-    private bool TryValidateAttestationData(AttestationData data, out string reason)
+    public bool TryValidateAttestationData(AttestationData data, out string reason)
     {
         if (data.Source.Slot.Value > data.Target.Slot.Value)
         {
