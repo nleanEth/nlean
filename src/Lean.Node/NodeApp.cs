@@ -69,6 +69,7 @@ public static class NodeApp
                 services.AddSingleton<IStateRootIndexStore, StateRootIndexStore>();
                 services.AddSingleton<IStateByRootStore, StateByRootStore>();
                 services.AddSingleton<IBlocksByRootRpcRouter, BlocksByRootRpcRouter>();
+                services.AddSingleton<IBlocksByRangeRpcRouter, BlocksByRangeRpcRouter>();
                 services.AddSingleton<IStatusRpcRouter, StatusRpcRouter>();
                 services.AddSingleton<SignedBlockGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
@@ -108,14 +109,17 @@ public static class NodeApp
                 services.AddSingleton<INetworkRequester, Libp2pNetworkRequester>();
                 services.AddSingleton<ISyncService, SyncService>();
                 services.AddSingleton<LeanBlocksByRootProtocol>();
+                services.AddSingleton<LeanBlocksByRangeProtocol>();
                 services.AddSingleton<LeanStatusProtocol>();
 
                 services.AddLibp2p(libp2pBuilder =>
                 {
                     var blocksByRootProtocol = libp2pBuilder.ServiceProvider.GetRequiredService<LeanBlocksByRootProtocol>();
+                    var blocksByRangeProtocol = libp2pBuilder.ServiceProvider.GetRequiredService<LeanBlocksByRangeProtocol>();
                     var statusProtocol = libp2pBuilder.ServiceProvider.GetRequiredService<LeanStatusProtocol>();
 
                     libp2pBuilder.AddProtocol(blocksByRootProtocol, isExposed: true);
+                    libp2pBuilder.AddProtocol(blocksByRangeProtocol, isExposed: true);
                     libp2pBuilder.AddProtocol(statusProtocol, isExposed: true);
 
                     if (options.Libp2p.EnablePubsub)

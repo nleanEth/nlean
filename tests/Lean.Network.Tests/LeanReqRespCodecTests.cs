@@ -53,6 +53,44 @@ public class LeanReqRespCodecTests
     }
 
     [Test]
+    public void EncodeDecodeBlocksByRangeRequest_RoundTrips()
+    {
+        var encoded = LeanReqRespCodec.EncodeBlocksByRangeRequest(startSlot: 7, count: 32);
+        var (startSlot, count) = LeanReqRespCodec.DecodeBlocksByRangeRequest(encoded);
+
+        Assert.That(encoded, Has.Length.EqualTo(LeanReqRespCodec.BlocksByRangeRequestLength));
+        Assert.That(startSlot, Is.EqualTo(7UL));
+        Assert.That(count, Is.EqualTo(32UL));
+    }
+
+    [Test]
+    public void EncodeBlocksByRangeRequest_LittleEndianLayout()
+    {
+        // hive's mock sender expects two little-endian uint64s back-to-back —
+        // verifying the byte layout here keeps us pinned to the on-wire format.
+        var encoded = LeanReqRespCodec.EncodeBlocksByRangeRequest(startSlot: 0x0102030405060708UL, count: 0xAABBCCDDEEFF0011UL);
+        Assert.That(encoded, Is.EqualTo(new byte[]
+        {
+            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+            0x11, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA
+        }));
+    }
+
+    [Test]
+    public void DecodeBlocksByRangeRequest_WithWrongLength_Throws()
+    {
+        var tooShort = new byte[LeanReqRespCodec.BlocksByRangeRequestLength - 1];
+        Assert.That(
+            () => LeanReqRespCodec.DecodeBlocksByRangeRequest(tooShort),
+            Throws.InvalidOperationException);
+
+        var tooLong = new byte[LeanReqRespCodec.BlocksByRangeRequestLength + 1];
+        Assert.That(
+            () => LeanReqRespCodec.DecodeBlocksByRangeRequest(tooLong),
+            Throws.InvalidOperationException);
+    }
+
+    [Test]
     public void EncodeBlocksByRootRequest_MatchesGoldenPayload()
     {
         var roots = new[]

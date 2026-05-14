@@ -31,6 +31,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly SignedAggregatedAttestationGossipDecoder _aggregatedAttestationDecoder;
     private readonly IStatusRpcRouter? _statusRpcRouter;
     private readonly IBlocksByRootRpcRouter? _blocksByRootRpcRouter;
+    private readonly IBlocksByRangeRpcRouter? _blocksByRangeRpcRouter;
     private readonly IBlockByRootStore _blockStore;
     private readonly IConsensusStateStore? _stateStore;
     private readonly ISlotIndexStore? _slotIndexStore;
@@ -73,6 +74,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         SignedAggregatedAttestationGossipDecoder? aggregatedAttestationDecoder = null,
         IStatusRpcRouter? statusRpcRouter = null,
         IBlocksByRootRpcRouter? blocksByRootRpcRouter = null,
+        IBlocksByRangeRpcRouter? blocksByRangeRpcRouter = null,
         IBlockByRootStore? blockStore = null,
         IGossipTopicProvider? gossipTopics = null,
         ChainStateCache? chainStateCache = null,
@@ -96,6 +98,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _aggregatedAttestationDecoder = aggregatedAttestationDecoder ?? new SignedAggregatedAttestationGossipDecoder();
         _statusRpcRouter = statusRpcRouter;
         _blocksByRootRpcRouter = blocksByRootRpcRouter;
+        _blocksByRangeRpcRouter = blocksByRangeRpcRouter;
         _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
         _stateStore = stateStore;
         _slotIndexStore = slotIndexStore;
@@ -689,6 +692,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
             _blocksByRootRpcRouter?.SetHandler(ResolveBlockByRootAsync);
+            _blocksByRangeRpcRouter?.SetHandler(ResolveBlockBySlotAsync);
             if (_statusRpcRouter is not null)
             {
                 _statusRpcRouter.SetHandler(ResolveStatusAsync);
@@ -1202,6 +1206,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         return ValueTask.FromResult(_blockStore.TryLoad(root, out var payload) ? payload : null);
     }
 
+    private ValueTask<byte[]?> ResolveBlockBySlotAsync(ulong slot, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_slotIndexStore is null || !_slotIndexStore.TryLoad(slot, out var root))
+            return ValueTask.FromResult<byte[]?>(null);
+
+        return ValueTask.FromResult(_blockStore.TryLoad(root, out var payload) ? payload : null);
+    }
+
     private ValueTask<LeanStatusMessage> ResolveStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1241,6 +1254,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private void ClearRpcHandlers()
     {
         _blocksByRootRpcRouter?.SetHandler(null);
+        _blocksByRangeRpcRouter?.SetHandler(null);
         _statusRpcRouter?.SetHandler(null);
         _statusRpcRouter?.SetPeerStatusHandler(null);
         _statusRpcRouter?.SetPeerConnectedHandler(null);
