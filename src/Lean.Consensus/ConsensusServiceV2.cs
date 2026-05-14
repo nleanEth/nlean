@@ -138,9 +138,13 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 Bytes32.Zero(),
                 new Bytes32(initialState.HashTreeRoot()),
                 new BlockBody(Array.Empty<AggregatedAttestation>()));
+            // Use ZeroCanonical (not Empty) so the SSZ-encoded signature is the
+            // canonical 2536-byte wire form leanSig produces for real blocks —
+            // hive's mock decoder reads SignedBlock.signature as a fixed-size
+            // byte array (LEAN_SIGNATURE_SIZE=2536) and rejects shorter inputs.
             var genesisSignedBlock = new SignedBlock(
                 genesisBlock,
-                new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
+                new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.ZeroCanonical()));
             _blockStore.Save(_store.FinalizedRoot, SszEncoding.Encode(genesisSignedBlock));
         }
 

@@ -151,11 +151,40 @@ public sealed class XmssSignature
 
     /// <summary>
     /// Returns an empty XMSS signature with empty siblings, zero rho, and empty hashes.
+    /// SSZ-encodes to a *short* container — only useful where the consumer does
+    /// its own structural decode. For wire-format compatibility (anywhere a peer
+    /// or hive's mock reads SignedBlock as a fixed 2536-byte signature blob),
+    /// use <see cref="ZeroCanonical"/> instead.
     /// </summary>
     public static XmssSignature Empty() => new(
         new HashTreeOpening(HashDigestList.Empty()),
         Randomness.Zero(),
         HashDigestList.Empty());
+
+    /// <summary>
+    /// XMSS path-sibling count baked into leanSig's TARGET_CONFIG (devnet4).
+    /// The constants here mirror hive's LEAN_SIGNATURE_SIZE derivation in
+    /// simulators/lean/src/utils/libp2p_mock.rs: 32 path siblings + 46 hashes
+    /// makes the SSZ container land at exactly 2536 bytes.
+    /// </summary>
+    private const int CanonicalPathSiblingCount = 32;
+    private const int CanonicalHashCount = 46;
+
+    /// <summary>
+    /// Returns a structurally-canonical zero-filled XMSS signature whose SSZ
+    /// encoding is exactly <see cref="Length"/> bytes — matching the wire-format
+    /// real leanSig signatures take. Use this when persisting placeholder
+    /// signatures (e.g. the synthesized genesis SignedBlock) that peers may
+    /// re-decode against a fixed-size signature schema.
+    /// </summary>
+    public static XmssSignature ZeroCanonical()
+    {
+        var pathSiblings = new HashDigestList(
+            Enumerable.Repeat(0, CanonicalPathSiblingCount).Select(_ => HashDigestVector.Zero()));
+        var hashes = new HashDigestList(
+            Enumerable.Repeat(0, CanonicalHashCount).Select(_ => HashDigestVector.Zero()));
+        return new XmssSignature(new HashTreeOpening(pathSiblings), Randomness.Zero(), hashes);
+    }
 
     /// <summary>
     /// SSZ-encode this signature as a container.
