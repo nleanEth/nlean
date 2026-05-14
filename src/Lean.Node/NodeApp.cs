@@ -199,15 +199,19 @@ public static class NodeApp
         // single_known_block + downstream peers' sync). Without this, peers
         // requesting our anchor root see "miss on listener" until a fresh
         // block referencing it as parent arrives.
+        //
+        // Reuse the "consensus" kvStore here — the runtime singleton
+        // BlockByRootStore is wired to the same DB path via DI, so writing
+        // anywhere else (e.g. a separate "blocks" subdir) silently strands
+        // the anchor.
         if (result.AnchorBlock is not null)
         {
-            using var blockKvStore = new RocksDbKeyValueStore(options.Storage, "blocks");
-            var blockStore = new BlockByRootStore(blockKvStore);
+            var blockStore = new BlockByRootStore(kvStore);
             var anchorRoot = new Bytes32(result.AnchorBlock.Block.HashTreeRoot());
             var encoded = SszEncoding.Encode(result.AnchorBlock);
             blockStore.Save(anchorRoot, encoded);
             Console.WriteLine(
-                $"Persisted anchor SignedBlock to BlockStore. Root={anchorRoot}, Size={encoded.Length} bytes.");
+                $"Persisted anchor SignedBlock to BlockStore. Root=0x{Convert.ToHexString(anchorRoot.AsSpan())}, Size={encoded.Length} bytes.");
         }
         else
         {
