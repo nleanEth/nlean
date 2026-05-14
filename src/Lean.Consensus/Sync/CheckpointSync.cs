@@ -59,7 +59,12 @@ public sealed class CheckpointSync
             }
         }
 
-        return CheckpointSyncResult.Success(normalizedState, anchorBlock);
+        // Return the *raw* fetched state. The pairing check above hashed `state`
+        // (not normalizedState), so callers that persist it for downstream
+        // `/lean/v0/states/finalized` reads will hash to the same value the
+        // anchor block's state_root field carries. Callers that need a
+        // back-filled header (proto-array seeding) call NormalizeState explicitly.
+        return CheckpointSyncResult.Success(state, anchorBlock);
     }
 
     /// <summary>
