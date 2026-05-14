@@ -123,6 +123,22 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (initialState is null)
         {
             initialState = _chainStateTransition.CreateGenesisState(Math.Max(1UL, _config.InitialValidatorCount));
+
+            // Seed the genesis SignedBlock into _blockStore so /lean/v0/blocks/finalized
+            // can pair with /states/finalized while we're still at the genesis checkpoint
+            // (e.g. a solo nlean run against hive sims where quorum is unreachable).
+            // Non-genesis bootstrap paths either fetch the anchor block via checkpoint
+            // sync or save blocks via OnBlock as they arrive.
+            var genesisBlock = new Block(
+                new Slot(0),
+                new ValidatorIndex(0),
+                Bytes32.Zero(),
+                new Bytes32(initialState.HashTreeRoot()),
+                new BlockBody(Array.Empty<AggregatedAttestation>()));
+            var genesisSignedBlock = new SignedBlock(
+                genesisBlock,
+                new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.Empty()));
+            _blockStore.Save(_store.FinalizedRoot, SszEncoding.Encode(genesisSignedBlock));
         }
 
         _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), initialState);
