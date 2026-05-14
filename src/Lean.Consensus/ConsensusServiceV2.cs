@@ -191,16 +191,21 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         foreach (var (root, slot, parentRoot, proposerIndex, weight) in rawNodes)
         {
             // The proto-array root (typically a checkpoint-sync anchor) carries
-            // parentRoot=0 internally because its parent block isn't in the tree.
-            // hive PR #1479 asserts `block.parent_root == fork_choice.parent_root`,
-            // so when we hold the SignedBlock locally, surface its real parent_root.
+            // parentRoot=0 and a slot%validators proposer_index fallback —
+            // neither is what the actual SignedBlock advertises. hive PR #1479
+            // asserts both `block.parent_root == fork_choice.parent_root` and
+            // `block.proposer_index == fork_choice.proposer_index`, so when
+            // we hold the SignedBlock locally surface its real fields.
             var reportedParentRoot = parentRoot;
-            if (parentRoot.Equals(Bytes32.Zero()) && _blockStore.TryLoad(root, out var signedBlockSsz))
+            var reportedProposerIndex = proposerIndex;
+            if (_blockStore.TryLoad(root, out var signedBlockSsz))
             {
                 var decoded = _blockDecoder.DecodeAndValidate(signedBlockSsz);
                 if (decoded.IsSuccess && decoded.SignedBlock is not null)
                 {
-                    reportedParentRoot = decoded.SignedBlock.Block.ParentRoot;
+                    if (parentRoot.Equals(Bytes32.Zero()))
+                        reportedParentRoot = decoded.SignedBlock.Block.ParentRoot;
+                    reportedProposerIndex = decoded.SignedBlock.Block.ProposerIndex.Value;
                 }
             }
 
@@ -208,7 +213,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
                 Convert.ToHexString(root.AsSpan()),
                 slot,
                 Convert.ToHexString(reportedParentRoot.AsSpan()),
-                proposerIndex,
+                reportedProposerIndex,
                 weight));
         }
 
