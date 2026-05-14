@@ -3,6 +3,7 @@ using Lean.Consensus.Chain;
 using Lean.Consensus.ForkChoice;
 using Lean.Consensus.Sync;
 using Lean.Consensus.Types;
+using Lean.Storage;
 using NUnit.Framework;
 
 namespace Lean.Consensus.Tests;
@@ -41,6 +42,24 @@ public sealed class ConsensusServiceV2Tests
         var (svc, _, _, _) = CreateService();
         Assert.That(svc.JustifiedSlot, Is.EqualTo(0UL));
         Assert.That(svc.FinalizedSlot, Is.EqualTo(0UL));
+    }
+
+    [Test]
+    public void GetFinalizedSignedBlockSsz_AtGenesis_SeedsBlockStore()
+    {
+        // Regression: hive's rpc_compat "finalized block pairs with finalized state"
+        // test queries /lean/v0/blocks/finalized before nlean can finalize a real
+        // block. The genesis SignedBlock must be in _blockStore at startup.
+        var blockStore = new BlockByRootStore(new InMemoryKeyValueStore());
+        var (svc, _, store, _) = CreateService(blockStore: blockStore);
+
+        var ssz = svc.GetFinalizedSignedBlockSsz();
+
+        Assert.That(ssz, Is.Not.Null, "Genesis SignedBlock should be seeded into blockStore");
+        var decoded = new SignedBlockGossipDecoder().DecodeAndValidate(ssz!);
+        Assert.That(decoded.IsSuccess, Is.True, $"Decoded SignedBlock should be valid SSZ: {decoded.Reason}");
+        Assert.That(decoded.BlockMessageRoot, Is.EqualTo(store.FinalizedRoot),
+            "Decoded SignedBlock.Block must hash to the finalized root");
     }
 
     [Test]
@@ -285,7 +304,8 @@ public sealed class ConsensusServiceV2Tests
         ProtoArrayForkChoiceStore store, SlotClock clock) CreateService(
         ISyncService? syncService = null,
         IConsensusStateStore? stateStore = null,
-        ChainStateCache? chainStateCache = null)
+        ChainStateCache? chainStateCache = null,
+        IBlockByRootStore? blockStore = null)
     {
         var config = new ConsensusConfig
         {
@@ -297,7 +317,8 @@ public sealed class ConsensusServiceV2Tests
         var time = new FakeTimeSource(GenesisTime);
         var clock = new SlotClock(config.GenesisTimeUnix, config.SecondsPerSlot,
             ProtoArrayForkChoiceStore.IntervalsPerSlot, time);
-        var svc = new ConsensusServiceV2(store, clock, config, syncService, chainStateCache: chainStateCache, stateStore: stateStore);
+        var svc = new ConsensusServiceV2(store, clock, config, syncService,
+            chainStateCache: chainStateCache, stateStore: stateStore, blockStore: blockStore);
         return (svc, time, store, clock);
     }
 

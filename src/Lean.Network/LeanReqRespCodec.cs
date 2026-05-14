@@ -10,6 +10,8 @@ public static class LeanReqRespCodec
 {
     public const int RootLength = 32;
     public const int MaxBlocksByRootRequestRoots = 1024;
+    public const int MaxBlocksByRangeRequestCount = 1024;
+    public const int BlocksByRangeRequestLength = sizeof(ulong) * 2;
 
     /// <summary>Maximum uncompressed payload size (10 MiB), per consensus spec.</summary>
     public const int MaxPayloadSize = 10 * 1024 * 1024;
@@ -38,6 +40,36 @@ public static class LeanReqRespCodec
     [
         0xFF, 0x06, 0x00, 0x00, 0x73, 0x4E, 0x61, 0x50, 0x70, 0x59
     ];
+
+    /// <summary>
+    /// Encode a BlocksByRangeV1 request: SSZ fixed-size container of two uint64s
+    /// (start_slot, count). Matches ethereum/hive#1489 (`BlocksByRangeV1Request`).
+    /// </summary>
+    public static byte[] EncodeBlocksByRangeRequest(ulong startSlot, ulong count)
+    {
+        var payload = new byte[BlocksByRangeRequestLength];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0, sizeof(ulong)), startSlot);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(sizeof(ulong), sizeof(ulong)), count);
+        return payload;
+    }
+
+    /// <summary>
+    /// Decode a BlocksByRangeV1 request. Throws on wrong length so the protocol
+    /// handler can surface InvalidRequest. count==0 / count>max are NOT enforced
+    /// here — the caller decides how to respond (typically INVALID_REQUEST).
+    /// </summary>
+    public static (ulong StartSlot, ulong Count) DecodeBlocksByRangeRequest(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length != BlocksByRangeRequestLength)
+        {
+            throw new InvalidOperationException(
+                $"blocks_by_range payload must be {BlocksByRangeRequestLength} bytes (got {payload.Length}).");
+        }
+
+        var startSlot = BinaryPrimitives.ReadUInt64LittleEndian(payload[..sizeof(ulong)]);
+        var count = BinaryPrimitives.ReadUInt64LittleEndian(payload[sizeof(ulong)..]);
+        return (startSlot, count);
+    }
 
     public static byte[] EncodeBlocksByRootRequest(IReadOnlyList<byte[]> roots)
     {

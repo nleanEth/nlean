@@ -31,6 +31,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private readonly SignedAggregatedAttestationGossipDecoder _aggregatedAttestationDecoder;
     private readonly IStatusRpcRouter? _statusRpcRouter;
     private readonly IBlocksByRootRpcRouter? _blocksByRootRpcRouter;
+    private readonly IBlocksByRangeRpcRouter? _blocksByRangeRpcRouter;
     private readonly IBlockByRootStore _blockStore;
     private readonly IConsensusStateStore? _stateStore;
     private readonly ISlotIndexStore? _slotIndexStore;
@@ -73,6 +74,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         SignedAggregatedAttestationGossipDecoder? aggregatedAttestationDecoder = null,
         IStatusRpcRouter? statusRpcRouter = null,
         IBlocksByRootRpcRouter? blocksByRootRpcRouter = null,
+        IBlocksByRangeRpcRouter? blocksByRangeRpcRouter = null,
         IBlockByRootStore? blockStore = null,
         IGossipTopicProvider? gossipTopics = null,
         ChainStateCache? chainStateCache = null,
@@ -96,6 +98,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         _aggregatedAttestationDecoder = aggregatedAttestationDecoder ?? new SignedAggregatedAttestationGossipDecoder();
         _statusRpcRouter = statusRpcRouter;
         _blocksByRootRpcRouter = blocksByRootRpcRouter;
+        _blocksByRangeRpcRouter = blocksByRangeRpcRouter;
         _blockStore = blockStore ?? NoOpBlockByRootStore.Instance;
         _stateStore = stateStore;
         _slotIndexStore = slotIndexStore;
@@ -123,6 +126,26 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         if (initialState is null)
         {
             initialState = _chainStateTransition.CreateGenesisState(Math.Max(1UL, _config.InitialValidatorCount));
+
+            // Seed the genesis SignedBlock into _blockStore so /lean/v0/blocks/finalized
+            // can pair with /states/finalized while we're still at the genesis checkpoint
+            // (e.g. a solo nlean run against hive sims where quorum is unreachable).
+            // Non-genesis bootstrap paths either fetch the anchor block via checkpoint
+            // sync or save blocks via OnBlock as they arrive.
+            var genesisBlock = new Block(
+                new Slot(0),
+                new ValidatorIndex(0),
+                Bytes32.Zero(),
+                new Bytes32(initialState.HashTreeRoot()),
+                new BlockBody(Array.Empty<AggregatedAttestation>()));
+            // Use ZeroCanonical (not Empty) so the SSZ-encoded signature is the
+            // canonical 2536-byte wire form leanSig produces for real blocks —
+            // hive's mock decoder reads SignedBlock.signature as a fixed-size
+            // byte array (LEAN_SIGNATURE_SIZE=2536) and rejects shorter inputs.
+            var genesisSignedBlock = new SignedBlock(
+                genesisBlock,
+                new BlockSignatures(Array.Empty<AggregatedSignatureProof>(), XmssSignature.ZeroCanonical()));
+            _blockStore.Save(_store.FinalizedRoot, SszEncoding.Encode(genesisSignedBlock));
         }
 
         _chainStateCache.Set(ChainStateCache.RootKey(_store.HeadRoot), initialState);
@@ -171,11 +194,30 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var fcNodes = new List<ForkChoiceNode>(rawNodes.Count);
         foreach (var (root, slot, parentRoot, proposerIndex, weight) in rawNodes)
         {
+            // The proto-array root (typically a checkpoint-sync anchor) carries
+            // parentRoot=0 and a slot%validators proposer_index fallback —
+            // neither is what the actual SignedBlock advertises. hive PR #1479
+            // asserts both `block.parent_root == fork_choice.parent_root` and
+            // `block.proposer_index == fork_choice.proposer_index`, so when
+            // we hold the SignedBlock locally surface its real fields.
+            var reportedParentRoot = parentRoot;
+            var reportedProposerIndex = proposerIndex;
+            if (_blockStore.TryLoad(root, out var signedBlockSsz))
+            {
+                var decoded = _blockDecoder.DecodeAndValidate(signedBlockSsz);
+                if (decoded.IsSuccess && decoded.SignedBlock is not null)
+                {
+                    if (parentRoot.Equals(Bytes32.Zero()))
+                        reportedParentRoot = decoded.SignedBlock.Block.ParentRoot;
+                    reportedProposerIndex = decoded.SignedBlock.Block.ProposerIndex.Value;
+                }
+            }
+
             fcNodes.Add(new ForkChoiceNode(
                 Convert.ToHexString(root.AsSpan()),
                 slot,
-                Convert.ToHexString(parentRoot.AsSpan()),
-                proposerIndex,
+                Convert.ToHexString(reportedParentRoot.AsSpan()),
+                reportedProposerIndex,
                 weight));
         }
 
@@ -673,6 +715,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
             _blocksByRootRpcRouter?.SetHandler(ResolveBlockByRootAsync);
+            _blocksByRangeRpcRouter?.SetHandler(ResolveBlockBySlotAsync);
             if (_statusRpcRouter is not null)
             {
                 _statusRpcRouter.SetHandler(ResolveStatusAsync);
@@ -1186,6 +1229,15 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         return ValueTask.FromResult(_blockStore.TryLoad(root, out var payload) ? payload : null);
     }
 
+    private ValueTask<byte[]?> ResolveBlockBySlotAsync(ulong slot, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_slotIndexStore is null || !_slotIndexStore.TryLoad(slot, out var root))
+            return ValueTask.FromResult<byte[]?>(null);
+
+        return ValueTask.FromResult(_blockStore.TryLoad(root, out var payload) ? payload : null);
+    }
+
     private ValueTask<LeanStatusMessage> ResolveStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1225,6 +1277,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     private void ClearRpcHandlers()
     {
         _blocksByRootRpcRouter?.SetHandler(null);
+        _blocksByRangeRpcRouter?.SetHandler(null);
         _statusRpcRouter?.SetHandler(null);
         _statusRpcRouter?.SetPeerStatusHandler(null);
         _statusRpcRouter?.SetPeerConnectedHandler(null);

@@ -52,7 +52,7 @@ public sealed class CheckpointSyncTests
     }
 
     [Test]
-    public async Task SyncFromCheckpoint_ZeroedStateRoot_IsNormalizedAndSucceeds()
+    public async Task SyncFromCheckpoint_ZeroedStateRoot_ReturnsRawAndSucceeds()
     {
         var state = MakeStateWithZeroedRoot(validatorCount: 4);
         var config = MakeMatchingConfig(state);
@@ -63,14 +63,20 @@ public sealed class CheckpointSyncTests
 
         Assert.That(result.Succeeded, Is.True);
         Assert.That(result.State, Is.Not.Null);
-        Assert.That(result.State!.LatestBlockHeader.StateRoot, Is.Not.EqualTo(Bytes32.Zero()));
+        // CheckpointSyncResult.State now carries the raw fetched state — its
+        // latest_block_header.state_root stays zero so callers' hashing matches
+        // anchor_block.state_root (leanSpec lstar/spec.py:906 pairing assertion).
+        // NormalizeState is the caller's job when constructing the head header.
+        Assert.That(result.State!.LatestBlockHeader.StateRoot, Is.EqualTo(Bytes32.Zero()));
 
-        var withZeroedRoot = result.State with
+        // The normalisation helper still computes the back-filled value correctly.
+        var normalized = CheckpointSync.NormalizeState(result.State);
+        var withZeroedRoot = normalized with
         {
-            LatestBlockHeader = result.State.LatestBlockHeader with { StateRoot = Bytes32.Zero() }
+            LatestBlockHeader = normalized.LatestBlockHeader with { StateRoot = Bytes32.Zero() }
         };
         var expectedRoot = new Bytes32(withZeroedRoot.HashTreeRoot());
-        Assert.That(result.State.LatestBlockHeader.StateRoot, Is.EqualTo(expectedRoot));
+        Assert.That(normalized.LatestBlockHeader.StateRoot, Is.EqualTo(expectedRoot));
     }
 
     [Test]

@@ -69,6 +69,7 @@ public static class NodeApp
                 services.AddSingleton<IStateRootIndexStore, StateRootIndexStore>();
                 services.AddSingleton<IStateByRootStore, StateByRootStore>();
                 services.AddSingleton<IBlocksByRootRpcRouter, BlocksByRootRpcRouter>();
+                services.AddSingleton<IBlocksByRangeRpcRouter, BlocksByRangeRpcRouter>();
                 services.AddSingleton<IStatusRpcRouter, StatusRpcRouter>();
                 services.AddSingleton<SignedBlockGossipDecoder>();
                 services.AddSingleton<SignedAttestationGossipDecoder>();
@@ -108,14 +109,17 @@ public static class NodeApp
                 services.AddSingleton<INetworkRequester, Libp2pNetworkRequester>();
                 services.AddSingleton<ISyncService, SyncService>();
                 services.AddSingleton<LeanBlocksByRootProtocol>();
+                services.AddSingleton<LeanBlocksByRangeProtocol>();
                 services.AddSingleton<LeanStatusProtocol>();
 
                 services.AddLibp2p(libp2pBuilder =>
                 {
                     var blocksByRootProtocol = libp2pBuilder.ServiceProvider.GetRequiredService<LeanBlocksByRootProtocol>();
+                    var blocksByRangeProtocol = libp2pBuilder.ServiceProvider.GetRequiredService<LeanBlocksByRangeProtocol>();
                     var statusProtocol = libp2pBuilder.ServiceProvider.GetRequiredService<LeanStatusProtocol>();
 
                     libp2pBuilder.AddProtocol(blocksByRootProtocol, isExposed: true);
+                    libp2pBuilder.AddProtocol(blocksByRangeProtocol, isExposed: true);
                     libp2pBuilder.AddProtocol(statusProtocol, isExposed: true);
 
                     if (options.Libp2p.EnablePubsub)
@@ -185,9 +189,20 @@ public static class NodeApp
                 $"Checkpoint sync failed: {result.Error}");
         }
 
-        var state = NormalizeCheckpointState(result.State!);
-        var headState = CreateCheckpointHeadState(state);
-        stateStore.Save(headState, state);
+        // Use the normalized state (header.state_root back-filled) to derive
+        // headState's HeadRoot — the proto-array root needs to match the anchor
+        // block's hash, which uses the normalized header.
+        //
+        // Persist the RAW state to the state store, however. leanSpec's pairing
+        // check (PR #713, hive rpc_compat "finalized block pairs with finalized
+        // state") asserts `block.state_root == hash_tree_root(state)` with both
+        // sides in raw form: a state whose latest_block_header.state_root is
+        // still zero, exactly as the proposer saw it before process_slot
+        // back-fills on the next slot. Persisting the normalized form here was
+        // the silent half-fix that broke the hive assert after 5a14be5.
+        var normalizedState = NormalizeCheckpointState(result.State!);
+        var headState = CreateCheckpointHeadState(normalizedState);
+        stateStore.Save(headState, result.State!);
 
         // leanSpec PR #713: if the source served the anchor SignedBlock as
         // well, persist it in BlockStore so we can answer BlocksByRoot
@@ -195,15 +210,19 @@ public static class NodeApp
         // single_known_block + downstream peers' sync). Without this, peers
         // requesting our anchor root see "miss on listener" until a fresh
         // block referencing it as parent arrives.
+        //
+        // Reuse the "consensus" kvStore here — the runtime singleton
+        // BlockByRootStore is wired to the same DB path via DI, so writing
+        // anywhere else (e.g. a separate "blocks" subdir) silently strands
+        // the anchor.
         if (result.AnchorBlock is not null)
         {
-            using var blockKvStore = new RocksDbKeyValueStore(options.Storage, "blocks");
-            var blockStore = new BlockByRootStore(blockKvStore);
+            var blockStore = new BlockByRootStore(kvStore);
             var anchorRoot = new Bytes32(result.AnchorBlock.Block.HashTreeRoot());
             var encoded = SszEncoding.Encode(result.AnchorBlock);
             blockStore.Save(anchorRoot, encoded);
             Console.WriteLine(
-                $"Persisted anchor SignedBlock to BlockStore. Root={anchorRoot}, Size={encoded.Length} bytes.");
+                $"Persisted anchor SignedBlock to BlockStore. Root=0x{Convert.ToHexString(anchorRoot.AsSpan())}, Size={encoded.Length} bytes.");
         }
         else
         {
@@ -213,8 +232,8 @@ public static class NodeApp
 
         Console.WriteLine(
             $"Checkpoint sync complete. HeadSlot={headState.HeadSlot}, " +
-            $"JustifiedSlot={state.LatestJustified.Slot.Value}, " +
-            $"FinalizedSlot={state.LatestFinalized.Slot.Value}");
+            $"JustifiedSlot={normalizedState.LatestJustified.Slot.Value}, " +
+            $"FinalizedSlot={normalizedState.LatestFinalized.Slot.Value}");
     }
 
     internal static ConsensusHeadState CreateCheckpointHeadState(Lean.Consensus.Types.State state)

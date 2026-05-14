@@ -30,6 +30,19 @@ public class XmssSignatureSszEncodingTests
     }
 
     [Test]
+    public void Encode_ZeroCanonical_MatchesLeanSigLength()
+    {
+        // ZeroCanonical produces the canonical 2536-byte wire form leanSig
+        // outputs for real signatures (hive's LEAN_SIGNATURE_SIZE). Anchor /
+        // genesis SignedBlocks persisted into the block store must encode to
+        // this length or fixed-array SSZ decoders (hive sim, peers) reject
+        // them with InvalidByteLength.
+        var sig = XmssSignature.ZeroCanonical();
+        var encoded = SszEncoding.Encode(sig);
+        Assert.That(encoded, Has.Length.EqualTo(XmssSignature.Length));
+    }
+
+    [Test]
     public void Encode_SignatureWithData_HasCorrectLength()
     {
         // 1 sibling (HashDigestVector = 8 Fp values = 32 bytes), 1 hash (32 bytes)
