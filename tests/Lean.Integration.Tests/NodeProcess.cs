@@ -11,6 +11,13 @@ public sealed class NodeProcess : IDisposable
     private Process? _process;
     private readonly StringBuilder _stdout = new();
     private readonly StringBuilder _stderr = new();
+    private StreamWriter? _stdoutLog;
+    private StreamWriter? _stderrLog;
+    private string? _stdoutLogPath;
+    private string? _stderrLogPath;
+
+    public string? StdoutLogPath => _stdoutLogPath;
+    public string? StderrLogPath => _stderrLogPath;
 
     private readonly string _binaryPath;
     private readonly string _customNetworkConfigDir;
@@ -122,14 +129,32 @@ public sealed class NodeProcess : IDisposable
         _stdout.Clear();
         _stderr.Clear();
 
+        // When NLEAN_INTEG_LOG_DIR is set, tee each node's stdout/stderr to its
+        // own file. The in-memory StringBuilder only keeps the tail used for
+        // inline diagnostics; the full log is the durable source — critical when
+        // createdump output drowns the tail buffer on SIGSEGV.
+        var logDir = Environment.GetEnvironmentVariable("NLEAN_INTEG_LOG_DIR");
+        if (!string.IsNullOrWhiteSpace(logDir))
+        {
+            Directory.CreateDirectory(logDir);
+            _stdoutLogPath = Path.Combine(logDir, $"{_nodeName}.stdout.log");
+            _stderrLogPath = Path.Combine(logDir, $"{_nodeName}.stderr.log");
+            _stdoutLog = new StreamWriter(_stdoutLogPath, append: false) { AutoFlush = true };
+            _stderrLog = new StreamWriter(_stderrLogPath, append: false) { AutoFlush = true };
+        }
+
         _process = new Process { StartInfo = psi };
         _process.OutputDataReceived += (_, e) =>
         {
-            if (e.Data is not null) _stdout.AppendLine(e.Data);
+            if (e.Data is null) return;
+            _stdout.AppendLine(e.Data);
+            _stdoutLog?.WriteLine(e.Data);
         };
         _process.ErrorDataReceived += (_, e) =>
         {
-            if (e.Data is not null) _stderr.AppendLine(e.Data);
+            if (e.Data is null) return;
+            _stderr.AppendLine(e.Data);
+            _stderrLog?.WriteLine(e.Data);
         };
 
         _process.Start();
@@ -190,6 +215,10 @@ public sealed class NodeProcess : IDisposable
     {
         Kill();
         _process?.Dispose();
+        try { _stdoutLog?.Dispose(); } catch { /* best-effort */ }
+        try { _stderrLog?.Dispose(); } catch { /* best-effort */ }
+        _stdoutLog = null;
+        _stderrLog = null;
     }
 
     private static void ConfigureMacOsDyld(ProcessStartInfo psi)

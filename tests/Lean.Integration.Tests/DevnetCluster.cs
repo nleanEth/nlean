@@ -137,11 +137,25 @@ public sealed class DevnetCluster : IDisposable
                 : $"api={ApiPort(i)} finalized_slot={checkpoint.Value.slot} finalized_root={checkpoint.Value.root}";
             var stdout = node?.GetStdout() ?? "";
             var stderr = node?.GetStderr() ?? "";
-            var lastStdout = string.Join('\n',
-                stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(50));
+            // Strip `[createdump]` noise (50+ lines per SIGSEGV) before slicing
+            // so we keep nlean's own tail. The dump path itself stays useful so
+            // surface that one line separately.
+            var stdoutLines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var nleanLines = stdoutLines.Where(l => !l.StartsWith("[createdump]"));
+            var lastStdout = string.Join('\n', nleanLines.TakeLast(50));
+            var dumpLine = stdoutLines.FirstOrDefault(l =>
+                l.StartsWith("[createdump]") && l.Contains("Writing full dump to file"));
             var lastStderr = string.Join('\n',
                 stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(20));
-            lines.Add($"--- Node {i} ({status}) ---\n{checkpointText}\nSTDOUT (last 50):\n{lastStdout}\nSTDERR (last 20):\n{lastStderr}");
+            var logRef = (node?.StdoutLogPath, node?.StderrLogPath) switch
+            {
+                (null, null) => "",
+                ({ } so, { } se) => $"\nFull logs: stdout={so} stderr={se}",
+                ({ } so, null) => $"\nFull stdout log: {so}",
+                (null, { } se) => $"\nFull stderr log: {se}",
+            };
+            var dumpRef = dumpLine is null ? "" : $"\n{dumpLine}";
+            lines.Add($"--- Node {i} ({status}) ---\n{checkpointText}{logRef}{dumpRef}\nSTDOUT (last 50, [createdump] filtered):\n{lastStdout}\nSTDERR (last 20):\n{lastStderr}");
         }
         return string.Join('\n', lines);
     }
