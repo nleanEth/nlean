@@ -8,6 +8,11 @@ CRATE_DIR="$ROOT_DIR/native/lean-crypto-ffi"
 # spec-test aggregate-verify fixtures (leanEnv=test).
 TEST_CRATE_DIR="$ROOT_DIR/native/lean-crypto-ffi-test"
 
+# Resolve cargo via rustup's bin dir first so a system-PATH `cargo` shim that
+# actually points at `rustup-init` (seen on macos-15-arm64 image 20260511.0048+)
+# can't shadow the toolchain-installed cargo proxy.
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+
 cargo build --release --manifest-path "$CRATE_DIR/Cargo.toml"
 cargo build --release --manifest-path "$TEST_CRATE_DIR/Cargo.toml"
 
