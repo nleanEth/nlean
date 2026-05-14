@@ -276,6 +276,12 @@ jobs:
       - name: Run integration tests
         run: |
           mkdir -p artifacts/testlogs
+          # Persist per-node stdout/stderr and minidumps under artifacts/ so the
+          # existing upload step ships them with the failing run — vital when
+          # createdump output drowns NodeProcess's in-memory tail buffer.
+          export NLEAN_INTEG_LOG_DIR="$GITHUB_WORKSPACE/artifacts/testlogs/nodes"
+          export NLEAN_INTEG_DUMP_DIR="$GITHUB_WORKSPACE/artifacts/testlogs/dumps"
+          mkdir -p "$NLEAN_INTEG_LOG_DIR" "$NLEAN_INTEG_DUMP_DIR"
           set -o pipefail
           dotnet test tests/Lean.Integration.Tests/Lean.Integration.Tests.csproj \
             -c Release \
