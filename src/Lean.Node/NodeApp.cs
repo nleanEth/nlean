@@ -189,9 +189,20 @@ public static class NodeApp
                 $"Checkpoint sync failed: {result.Error}");
         }
 
-        var state = NormalizeCheckpointState(result.State!);
-        var headState = CreateCheckpointHeadState(state);
-        stateStore.Save(headState, state);
+        // Use the normalized state (header.state_root back-filled) to derive
+        // headState's HeadRoot — the proto-array root needs to match the anchor
+        // block's hash, which uses the normalized header.
+        //
+        // Persist the RAW state to the state store, however. leanSpec's pairing
+        // check (PR #713, hive rpc_compat "finalized block pairs with finalized
+        // state") asserts `block.state_root == hash_tree_root(state)` with both
+        // sides in raw form: a state whose latest_block_header.state_root is
+        // still zero, exactly as the proposer saw it before process_slot
+        // back-fills on the next slot. Persisting the normalized form here was
+        // the silent half-fix that broke the hive assert after 5a14be5.
+        var normalizedState = NormalizeCheckpointState(result.State!);
+        var headState = CreateCheckpointHeadState(normalizedState);
+        stateStore.Save(headState, result.State!);
 
         // leanSpec PR #713: if the source served the anchor SignedBlock as
         // well, persist it in BlockStore so we can answer BlocksByRoot
@@ -221,8 +232,8 @@ public static class NodeApp
 
         Console.WriteLine(
             $"Checkpoint sync complete. HeadSlot={headState.HeadSlot}, " +
-            $"JustifiedSlot={state.LatestJustified.Slot.Value}, " +
-            $"FinalizedSlot={state.LatestFinalized.Slot.Value}");
+            $"JustifiedSlot={normalizedState.LatestJustified.Slot.Value}, " +
+            $"FinalizedSlot={normalizedState.LatestFinalized.Slot.Value}");
     }
 
     internal static ConsensusHeadState CreateCheckpointHeadState(Lean.Consensus.Types.State state)

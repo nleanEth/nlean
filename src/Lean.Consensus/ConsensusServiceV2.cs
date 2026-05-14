@@ -190,10 +190,24 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         var fcNodes = new List<ForkChoiceNode>(rawNodes.Count);
         foreach (var (root, slot, parentRoot, proposerIndex, weight) in rawNodes)
         {
+            // The proto-array root (typically a checkpoint-sync anchor) carries
+            // parentRoot=0 internally because its parent block isn't in the tree.
+            // hive PR #1479 asserts `block.parent_root == fork_choice.parent_root`,
+            // so when we hold the SignedBlock locally, surface its real parent_root.
+            var reportedParentRoot = parentRoot;
+            if (parentRoot.Equals(Bytes32.Zero()) && _blockStore.TryLoad(root, out var signedBlockSsz))
+            {
+                var decoded = _blockDecoder.DecodeAndValidate(signedBlockSsz);
+                if (decoded.IsSuccess && decoded.SignedBlock is not null)
+                {
+                    reportedParentRoot = decoded.SignedBlock.Block.ParentRoot;
+                }
+            }
+
             fcNodes.Add(new ForkChoiceNode(
                 Convert.ToHexString(root.AsSpan()),
                 slot,
-                Convert.ToHexString(parentRoot.AsSpan()),
+                Convert.ToHexString(reportedParentRoot.AsSpan()),
                 proposerIndex,
                 weight));
         }

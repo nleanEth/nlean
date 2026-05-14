@@ -13,9 +13,14 @@ public sealed class ProtoArray
     }
 
     public ProtoArray(Bytes32 genesisRoot, ulong slot, ulong justifiedSlot, ulong finalizedSlot,
-        ulong proposerIndex = 0)
+        ulong proposerIndex = 0, Bytes32? parentRoot = null)
     {
-        var genesis = new ProtoNode(genesisRoot, Bytes32.Zero(), slot, null, justifiedSlot, finalizedSlot, proposerIndex);
+        // parentRoot is metadata only — the root node has parentIndex=null because the
+        // parent block (if any) is not in proto-array. For checkpoint-sync anchors we
+        // record the real parent_root from the SignedBlock so /lean/v0/fork_choice
+        // reports values consistent with /lean/v0/blocks/finalized (hive PR #1479
+        // asserts `block.parent_root == fork_choice.parent_root`).
+        var genesis = new ProtoNode(genesisRoot, parentRoot ?? Bytes32.Zero(), slot, null, justifiedSlot, finalizedSlot, proposerIndex);
         _nodes.Add(genesis);
         _indices[RootKey(genesisRoot)] = 0;
     }
