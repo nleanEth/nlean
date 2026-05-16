@@ -74,8 +74,19 @@ public sealed class LeanBlocksByRootProtocol : ISessionProtocol<byte[][], byte[]
                 return;
             }
 
+            // De-duplicate roots before serving. A peer requesting the same
+            // root N times (hive's max_request_limit fires 1024 copies of one
+            // root) would otherwise pull N full block bodies — ~178 KB each,
+            // ~182 MB total — and blow the request deadline on slow links.
+            // The spec only requires at most one chunk per requested root, so
+            // collapsing duplicates to a single response is conformant.
+            var seenRoots = new HashSet<string>(requestedRoots.Length, StringComparer.Ordinal);
+
             foreach (var root in requestedRoots)
             {
+                if (!seenRoots.Add(Convert.ToHexString(root)))
+                    continue;
+
                 var payload = await _router.ResolveAsync(root, channel.CancellationToken);
                 if (payload is null || payload.Length == 0)
                 {
