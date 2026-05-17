@@ -8,6 +8,13 @@ public interface IConsensusService
     ulong HeadSlot { get; }
     ulong JustifiedSlot { get; }
     ulong FinalizedSlot { get; }
+
+    /// <summary>
+    /// False while the store's justified checkpoint is still the un-earned boot
+    /// seed (genesis or a checkpoint-sync anchor). The proposer divergence guard
+    /// is bypassed while this is false.
+    /// </summary>
+    bool JustifiedAdvancedSinceBoot { get; }
     bool HasUnknownBlockRootsInFlight { get; }
     byte[] HeadRoot { get; }
     (byte[] ParentRoot, AttestationData BaseAttestationData) GetProposalContext(ulong slot);

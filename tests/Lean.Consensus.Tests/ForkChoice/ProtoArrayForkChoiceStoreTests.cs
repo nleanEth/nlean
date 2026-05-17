@@ -209,6 +209,61 @@ public sealed class ProtoArrayForkChoiceStoreTests
     }
 
     [Test]
+    public void JustifiedAdvancedSinceBoot_FalseForFreshGenesisStore()
+    {
+        // A genesis-bootstrapped store has not earned any justification yet —
+        // its justified checkpoint is still the boot value.
+        var store = CreateStore(validatorCount: 4);
+
+        Assert.That(store.JustifiedAdvancedSinceBoot, Is.False);
+    }
+
+    [Test]
+    public void JustifiedAdvancedSinceBoot_FalseForFreshCheckpointSyncStore()
+    {
+        // A checkpoint-synced store seeds latest_justified to the anchor slot.
+        // That seed is NOT an earned justification, so the proposer divergence
+        // guard must treat it as "not advanced" until real consensus moves it —
+        // otherwise a solo checkpoint-synced validator deadlocks (it can never
+        // produce a block whose post-state justified reaches the seeded slot).
+        var anchorRoot = new Bytes32(Enumerable.Repeat((byte)0x11, 32).ToArray());
+        var persisted = new ConsensusHeadState(
+            headSlot: 225,
+            headRoot: anchorRoot.AsSpan(),
+            latestJustifiedSlot: 225,
+            latestJustifiedRoot: anchorRoot.AsSpan(),
+            latestFinalizedSlot: 225,
+            latestFinalizedRoot: anchorRoot.AsSpan(),
+            safeTargetSlot: 225,
+            safeTargetRoot: anchorRoot.AsSpan());
+        var stateStore = new FakeConsensusStateStore(persisted);
+        var config = new ConsensusConfig { InitialValidatorCount = 4 };
+
+        var store = new ProtoArrayForkChoiceStore(config, stateStore);
+
+        Assert.That(store.JustifiedAdvancedSinceBoot, Is.False);
+    }
+
+    [Test]
+    public void JustifiedAdvancedSinceBoot_TrueAfterJustifiedCheckpointChanges()
+    {
+        // Once real consensus advances latest_justified off its boot value, the
+        // divergence guard must re-engage.
+        var store = CreateStore(validatorCount: 4);
+        Assume.That(store.JustifiedAdvancedSinceBoot, Is.False);
+
+        typeof(ProtoArrayForkChoiceStore)
+            .GetField("_latestJustified", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(
+                store,
+                new Checkpoint(
+                    new Bytes32(Enumerable.Repeat((byte)0xCD, 32).ToArray()),
+                    new Slot(7)));
+
+        Assert.That(store.JustifiedAdvancedSinceBoot, Is.True);
+    }
+
+    [Test]
     public void TickInterval_GracefulFallback_WhenJustifiedRootIsAbsentFromProtoArray()
     {
         var store = CreateStore(validatorCount: 4);

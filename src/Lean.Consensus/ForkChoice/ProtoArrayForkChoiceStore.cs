@@ -59,6 +59,16 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
     private ulong _currentTimeIntervals;
     private Checkpoint _latestJustified;
     private Checkpoint _latestFinalized;
+
+    // The justified checkpoint captured at construction (genesis bootstrap or
+    // checkpoint-sync seed). leanSpec's create_store seeds latest_justified to
+    // the anchor slot regardless of the anchor state's real embedded value, so
+    // a freshly checkpoint-synced store claims a justified slot no local block
+    // can prove. The proposer divergence guard (leanSpec PR #595) must not fire
+    // while justification is still this un-earned boot value, or a solo
+    // checkpoint-synced validator can never produce a block. Once real
+    // consensus advances latest_justified off this value the guard re-engages.
+    private readonly Checkpoint _initialJustified;
     private Bytes32 _safeTarget;
     private ulong _maxPeerHeadSlot;
     private ulong _validatorCount;
@@ -183,7 +193,18 @@ public sealed class ProtoArrayForkChoiceStore : IAttestationSink
             _protoArray = new ProtoArray(genesisRoot, 0, 0);
             _safeTarget = genesisRoot;
         }
+
+        _initialJustified = _latestJustified;
     }
+
+    /// <summary>
+    /// True once <see cref="JustifiedRoot"/>/<see cref="JustifiedSlot"/> have
+    /// moved off the value the store was constructed with. While false, the
+    /// justified checkpoint is still the un-earned boot seed (genesis or a
+    /// checkpoint-sync anchor) and the proposer divergence guard must be
+    /// bypassed.
+    /// </summary>
+    public bool JustifiedAdvancedSinceBoot => !_latestJustified.Equals(_initialJustified);
 
     public Bytes32 HeadRoot => _headRoot;
     public ulong HeadSlot => _headSlot;
