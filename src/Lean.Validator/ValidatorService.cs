@@ -525,8 +525,17 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
             // from a minority fork that advanced store.latest_justified), publishing
             // this block would leave peers unable to see the justify advance —
             // degrading liveness. Skip the slot rather than broadcast a stale block.
+            //
+            // Exception: while justification is still the un-earned boot seed
+            // (genesis or, critically, a checkpoint-sync anchor whose slot
+            // leanSpec's create_store sets without proof), the divergence is not
+            // a real minority-fork gap and NO pool attestation can ever close it.
+            // Enforcing the guard there deadlocks a solo checkpoint-synced
+            // validator forever. Skip the guard until real consensus advances
+            // justification off the seed.
             var storeJustifiedSlot = _consensusService.JustifiedSlot;
-            if (postJustified.Slot.Value < storeJustifiedSlot)
+            if (_consensusService.JustifiedAdvancedSinceBoot
+                && postJustified.Slot.Value < storeJustifiedSlot)
             {
                 _logger.LogWarning(
                     "Skipping proposer block for slot {Slot}: produced block justified={ProducedJustified} < store justified={StoreJustified}. Fixed-point attestation loop did not converge.",

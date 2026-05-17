@@ -279,6 +279,7 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
     public ulong HeadSlot => _snapshot.HeadSlot;
     public ulong JustifiedSlot => _snapshot.JustifiedSlot;
     public ulong FinalizedSlot => _snapshot.FinalizedSlot;
+    public bool JustifiedAdvancedSinceBoot => _store.JustifiedAdvancedSinceBoot;
 
     // Validator duties stay deferred while forkchoice detects the node
     // is far behind the network (slot-distance + peer-head heuristic).

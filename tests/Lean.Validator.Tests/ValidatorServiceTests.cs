@@ -342,6 +342,54 @@ public sealed class ValidatorServiceTests
     }
 
     [Test]
+    public async Task DutyLoop_ProposerSlot_PublishesBlockWhenJustifiedIsUnEarnedBootSeed()
+    {
+        // Checkpoint-sync seed case: leanSpec's create_store sets store.latest_justified
+        // to the anchor slot (12 here) without proof; the anchor state's real justified
+        // is lower (5). No pool attestation can ever close that gap, so the PR-595
+        // divergence guard must NOT fire — otherwise a solo checkpoint-synced validator
+        // can never produce a block. JustifiedAdvancedSinceBoot=false marks the seed.
+        var consensus = new FakeConsensusService
+        {
+            CurrentSlotValue = 1,
+            JustifiedSlotValue = 12,
+            JustifiedAdvancedSinceBootValue = false,
+            TryComputeBlockStateRootPostJustified = new Checkpoint(Bytes32.Zero(), new Slot(5)),
+        };
+        var network = new FakeNetworkService();
+        var service = new ValidatorService(
+            NullLogger<ValidatorService>.Instance,
+            consensus,
+            network,
+            new ConsensusConfig { SecondsPerSlot = 1, EnableGossipProcessing = false, InitialValidatorCount = 3 },
+            new ValidatorDutyConfig
+            {
+                ValidatorIndex = 1,
+                GenesisValidatorKeys = new (string, string)[]
+                {
+                    (HexRepeat(0x11, 52), HexRepeat(0x11, 52)),
+                    (HexRepeat(0x22, 52), HexRepeat(0x22, 52)),
+                    (HexRepeat(0x33, 52), HexRepeat(0x33, 52))
+                }
+            },
+            new FakeLeanSig(),
+            new FakeLeanMultiSig());
+
+        await service.StartAsync(CancellationToken.None);
+        await service.OnIntervalAsync(1, 0);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.That(
+            network.PublishedMessages.Any(message => message.Topic == GossipTopics.Blocks),
+            Is.True,
+            "Proposer must still produce a block when the justified divergence is an un-earned checkpoint-sync seed");
+        Assert.That(
+            consensus.TryApplyLocalBlockCalls,
+            Is.EqualTo(1),
+            "Proposer should apply the block locally despite the seed-only divergence");
+    }
+
+    [Test]
     public async Task DutyLoop_ProposerSlot_PublishesBlockAndSkipsStandaloneAttestation()
     {
         var consensus = new FakeConsensusService { CurrentSlotValue = 1 };
@@ -1026,6 +1074,13 @@ public sealed class ValidatorServiceTests
         public ulong JustifiedSlot => JustifiedSlotValue;
 
         public ulong FinalizedSlot => 0;
+
+        // Defaults true so existing proposer-guard tests (which model a real
+        // minority-fork divergence) keep exercising the guard. The
+        // checkpoint-sync-seed case sets this false explicitly.
+        public bool JustifiedAdvancedSinceBootValue { get; set; } = true;
+
+        public bool JustifiedAdvancedSinceBoot => JustifiedAdvancedSinceBootValue;
 
         public Checkpoint? TryComputeBlockStateRootPostJustified { get; set; }
 
