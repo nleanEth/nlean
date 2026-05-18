@@ -258,10 +258,20 @@ public sealed class ApiEndpointRunner : ISpecTestRunner
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var root = doc.RootElement;
             keys.Add((
-                root.GetProperty("attestation_public").GetString()!,
-                root.GetProperty("proposal_public").GetString()!));
+                ReadPublicKey(root, "attestation_keypair", "attestation_public"),
+                ReadPublicKey(root, "proposal_keypair", "proposal_public")));
         }
         return keys;
+    }
+
+    private static string ReadPublicKey(JsonElement root, string keypairProperty, string legacyProperty)
+    {
+        // leanSpec PR #725 nested the keys under {attestation,proposal}_keypair
+        // objects exposing public_key/secret_key; older fixtures stored a flat
+        // attestation_public / proposal_public string.
+        if (root.TryGetProperty(keypairProperty, out var keypair))
+            return keypair.GetProperty("public_key").GetString()!;
+        return root.GetProperty(legacyProperty).GetString()!;
     }
 
     private static string? FindTestKeysDirectory()
