@@ -472,6 +472,17 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
     public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason)
     {
+        return TryComputeBlockStateRoot(candidateBlock, out stateRoot, out postJustified, out _, out _, out reason);
+    }
+
+    public bool TryComputeBlockStateRoot(
+        Block candidateBlock,
+        out Bytes32 stateRoot,
+        out Checkpoint postJustified,
+        out IReadOnlyList<bool> postJustifiedSlots,
+        out ulong postFinalizedSlot,
+        out string reason)
+    {
         ArgumentNullException.ThrowIfNull(candidateBlock);
 
         // Read parent state under lock (fast).
@@ -482,6 +493,8 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             {
                 stateRoot = Bytes32.Zero();
                 postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
+                postJustifiedSlots = Array.Empty<bool>();
+                postFinalizedSlot = 0;
                 reason = $"Missing chain state snapshot for parent root {candidateBlock.ParentRoot}.";
                 return false;
             }
@@ -495,7 +508,19 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
             out var postState,
             out reason);
 
-        postJustified = success ? postState.LatestJustified : new Checkpoint(Bytes32.Zero(), new Slot(0));
+        if (success)
+        {
+            postJustified = postState.LatestJustified;
+            postJustifiedSlots = postState.JustifiedSlots;
+            postFinalizedSlot = postState.LatestFinalized.Slot.Value;
+        }
+        else
+        {
+            postJustified = new Checkpoint(Bytes32.Zero(), new Slot(0));
+            postJustifiedSlots = Array.Empty<bool>();
+            postFinalizedSlot = 0;
+        }
+
         return success;
     }
 
@@ -542,19 +567,75 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
         lock (_storeLock) { return _store.GetAllBlockRoots(); }
     }
 
-    public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
+    public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(
+        ulong slot,
+        Bytes32 parentRoot,
+        IReadOnlyList<bool>? currentJustifiedSlots,
+        ulong? currentFinalizedSlot)
     {
+        var attestations = new List<AggregatedAttestation>();
+        var proofs = new List<AggregatedSignatureProof>();
+
         lock (_storeLock)
         {
-            var attestations = new List<AggregatedAttestation>();
-            var proofs = new List<AggregatedSignatureProof>();
+            if (!_chainStateCache.TryGet(ChainStateCache.RootKey(parentRoot), out var parentState))
+            {
+                return (attestations, proofs);
+            }
+
+            // Build the chain view as it will appear on the candidate block:
+            // recorded history up to the parent, then the parent root at the
+            // parent's slot, then zero-hash entries for any skipped slots up to
+            // the new block. The chain-match helper validates source/target
+            // roots against this view (leanSpec build_block, PR #716).
+            var parentSlot = parentState.LatestBlockHeader.Slot.Value;
+            var chainView = new List<Bytes32>(parentState.HistoricalBlockHashes);
+            while ((ulong)chainView.Count <= parentSlot)
+            {
+                chainView.Add(Bytes32.Zero());
+            }
+            chainView[(int)parentSlot] = parentRoot;
+            while ((ulong)chainView.Count < slot)
+            {
+                chainView.Add(Bytes32.Zero());
+            }
+
+            // The justified-slot view evolves across the fixed-point loop. The
+            // first iteration derives it from the parent state; later iterations
+            // pass the post-state bitfield once justification has advanced.
+            var justifiedSlots = currentJustifiedSlots ?? parentState.JustifiedSlots;
+            var finalizedSlot = currentFinalizedSlot ?? parentState.LatestFinalized.Slot.Value;
+
+            var knownRoots = _store.GetAllBlockRoots();
             var pool = _store.GetKnownPayloadPool();
             foreach (var (dataRootKey, (data, poolProofs)) in pool)
             {
                 if (data.Slot.Value >= slot)
                     continue;
-                if (!data.Source.Equals(requiredSource))
+
+                // The voted head must be a block we know.
+                if (!knownRoots.Contains(data.Head.Root))
                     continue;
+
+                // Source and target roots must lie on the candidate's chain.
+                if (!AttestationDataMatchesChain(data, chainView))
+                    continue;
+
+                // The source slot must already be justified on this chain. This
+                // is the PR #716 change: an older-but-justified source is valid,
+                // it need not equal the chain's latest justified checkpoint.
+                if (!IsSlotJustifiedForSelection(data.Source.Slot.Value, finalizedSlot, justifiedSlots))
+                    continue;
+
+                // Genesis-anchored votes (source.slot == target.slot == 0) cannot
+                // advance justification, but still carry head-vote weight; keep
+                // them past the target-already-justified check below.
+                var isGenesisSelfVote = data.Source.Slot.Value == 0 && data.Target.Slot.Value == 0;
+                if (!isGenesisSelfVote &&
+                    IsSlotJustifiedForSelection(data.Target.Slot.Value, finalizedSlot, justifiedSlots))
+                {
+                    continue;
+                }
 
                 foreach (var proof in poolProofs)
                 {
@@ -575,6 +656,40 @@ public sealed class ConsensusServiceV2 : IConsensusService, ITickTarget, IBlockP
 
             return (attestations, proofs);
         }
+    }
+
+    private static bool AttestationDataMatchesChain(AttestationData data, IReadOnlyList<Bytes32> chainView)
+    {
+        // Reject zero-hash checkpoints: empty slots carry the zero hash, so a
+        // vote whose recorded root is the zero hash is meaningless.
+        if (data.Source.Root.Equals(Bytes32.Zero()) || data.Target.Root.Equals(Bytes32.Zero()))
+            return false;
+
+        var sourceSlot = data.Source.Slot.Value;
+        var targetSlot = data.Target.Slot.Value;
+        if (sourceSlot >= (ulong)chainView.Count || targetSlot >= (ulong)chainView.Count)
+            return false;
+
+        return data.Source.Root.Equals(chainView[(int)sourceSlot])
+            && data.Target.Root.Equals(chainView[(int)targetSlot]);
+    }
+
+    private static bool IsSlotJustifiedForSelection(ulong slot, ulong finalizedSlot, IReadOnlyList<bool> justifiedSlots)
+    {
+        // Slots at or before the finalized boundary are implicitly justified.
+        if (slot <= finalizedSlot)
+            return true;
+
+        var index = new Slot(slot).JustifiedIndexAfter(new Slot(finalizedSlot));
+        if (!index.HasValue)
+            return true;
+
+        // Out-of-range queries are treated as not-justified; this mirrors
+        // leanSpec extending the bitfield with False up to slot - 1.
+        if (index.Value >= justifiedSlots.Count)
+            return false;
+
+        return justifiedSlots[index.Value];
     }
 
     public List<(AttestationData Data, List<ulong> ValidatorIds, List<XmssSignature> Signatures)> CollectAttestationsForAggregation()
