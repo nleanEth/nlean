@@ -611,7 +611,13 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
     {
         var allAttestations = new List<AggregatedAttestation>();
         var allProofs = new List<AggregatedSignatureProof>();
-        var currentSource = initialSource;
+
+        // The justified view evolves as the fixed-point loop advances. The first
+        // iteration derives it from the parent state (null overrides); later
+        // iterations carry the post-state bitfield once justification advanced.
+        IReadOnlyList<bool>? currentJustifiedSlots = null;
+        ulong? currentFinalizedSlot = null;
+        var currentJustifiedSlot = initialSource.Slot.Value;
         var totalSw = Stopwatch.StartNew();
         var totalGetMs = 0d;
         var totalSelectMs = 0d;
@@ -623,7 +629,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
         {
             actualIterations = iteration + 1;
             var getSw = Stopwatch.StartNew();
-            var (iterAttestations, iterProofs) = _consensusService.GetKnownAggregatedPayloadsForBlock(slot, currentSource);
+            var (iterAttestations, iterProofs) = _consensusService.GetKnownAggregatedPayloadsForBlock(
+                slot, parentRoot, currentJustifiedSlots, currentFinalizedSlot);
             getSw.Stop();
             totalGetMs += getSw.Elapsed.TotalMilliseconds;
             if (iterAttestations.Count == 0)
@@ -647,7 +654,8 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 new BlockBody(tempAttestations));
 
             var stfSw = Stopwatch.StartNew();
-            var stfOk = _consensusService.TryComputeBlockStateRoot(candidateBlock, out _, out var postJustified, out _);
+            var stfOk = _consensusService.TryComputeBlockStateRoot(
+                candidateBlock, out _, out var postJustified, out var postJustifiedSlots, out var postFinalizedSlot, out _);
             stfSw.Stop();
             totalStfMs += stfSw.Elapsed.TotalMilliseconds;
             if (!stfOk)
@@ -661,12 +669,14 @@ public sealed class ValidatorService : IValidatorService, IIntervalDutyTarget
                 stfSw.Elapsed.TotalMilliseconds,
                 tempAttestations.Count,
                 postJustified.Slot.Value,
-                currentSource.Slot.Value);
+                currentJustifiedSlot);
 
-            if (postJustified.Slot.Value <= currentSource.Slot.Value)
+            if (postJustified.Slot.Value <= currentJustifiedSlot)
                 break; // Fixed point reached — justified did not advance.
 
-            currentSource = postJustified;
+            currentJustifiedSlot = postJustified.Slot.Value;
+            currentJustifiedSlots = postJustifiedSlots;
+            currentFinalizedSlot = postFinalizedSlot;
         }
 
         totalSw.Stop();

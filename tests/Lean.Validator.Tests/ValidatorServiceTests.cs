@@ -1109,9 +1109,22 @@ public sealed class ValidatorServiceTests
 
         public bool TryComputeBlockStateRoot(Block candidateBlock, out Bytes32 stateRoot, out Checkpoint postJustified, out string reason)
         {
+            return TryComputeBlockStateRoot(candidateBlock, out stateRoot, out postJustified, out _, out _, out reason);
+        }
+
+        public bool TryComputeBlockStateRoot(
+            Block candidateBlock,
+            out Bytes32 stateRoot,
+            out Checkpoint postJustified,
+            out IReadOnlyList<bool> postJustifiedSlots,
+            out ulong postFinalizedSlot,
+            out string reason)
+        {
             TryComputeBlockStateRootCalls++;
             stateRoot = Bytes32.Zero();
             postJustified = TryComputeBlockStateRootPostJustified ?? new Checkpoint(Bytes32.Zero(), new Slot(0));
+            postJustifiedSlots = Array.Empty<bool>();
+            postFinalizedSlot = 0;
             reason = string.Empty;
             return true;
         }
@@ -1142,7 +1155,11 @@ public sealed class ValidatorServiceTests
             return true;
         }
 
-        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(ulong slot, Checkpoint requiredSource)
+        public (IReadOnlyList<AggregatedAttestation> Attestations, IReadOnlyList<AggregatedSignatureProof> Proofs) GetKnownAggregatedPayloadsForBlock(
+            ulong slot,
+            Bytes32 parentRoot,
+            IReadOnlyList<bool>? currentJustifiedSlots,
+            ulong? currentFinalizedSlot)
         {
             GetKnownAggregatedPayloadsCalls++;
             return KnownAggregatedPayloads;

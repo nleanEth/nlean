@@ -210,7 +210,10 @@ public sealed class ConsensusServiceV2Tests
         var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
         Assert.That(svc.TryComputeBlockStateRoot(block1, out var stateRoot, out _), Is.True);
         var validBlock1 = new Block(block1.Slot, block1.ProposerIndex, block1.ParentRoot, stateRoot, block1.Body);
-        Assert.That(store.OnBlock(WrapBlock(validBlock1), genesisCheckpoint, genesisCheckpoint, validatorCount: 2).Accepted, Is.True);
+        // Apply through the service so block1's post-state lands in the chain
+        // state cache; GetKnownAggregatedPayloadsForBlock resolves the chain
+        // view from the parent state.
+        Assert.That(svc.TryApplyLocalBlock(WrapBlock(validBlock1), out var applyReason), Is.True, applyReason);
         var block1Root = new Bytes32(validBlock1.HashTreeRoot());
         var block1Checkpoint = new Checkpoint(block1Root, new Slot(1));
 
@@ -235,7 +238,8 @@ public sealed class ConsensusServiceV2Tests
             aggReason);
         store.TickInterval(1, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
-        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(slot: 2, requiredSource: genesisCheckpoint);
+        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(
+            slot: 2, parentRoot: block1Root, currentJustifiedSlots: null, currentFinalizedSlot: null);
 
         Assert.That(attestations, Has.Count.EqualTo(1));
         Assert.That(proofs, Has.Count.EqualTo(1));
@@ -254,7 +258,7 @@ public sealed class ConsensusServiceV2Tests
         var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
         Assert.That(svc.TryComputeBlockStateRoot(block1, out var stateRoot1, out _), Is.True);
         var validBlock1 = new Block(block1.Slot, block1.ProposerIndex, block1.ParentRoot, stateRoot1, block1.Body);
-        Assert.That(store.OnBlock(WrapBlock(validBlock1), genesisCheckpoint, genesisCheckpoint, validatorCount: 1).Accepted, Is.True);
+        Assert.That(svc.TryApplyLocalBlock(WrapBlock(validBlock1), out var applyReason), Is.True, applyReason);
         var block1Root = new Bytes32(validBlock1.HashTreeRoot());
 
         var payloadBackedData = new AttestationData(
@@ -285,12 +289,83 @@ public sealed class ConsensusServiceV2Tests
         Assert.That(store.TryOnAttestation(new SignedAttestation(0, newerUnprovenData, XmssSignature.Empty()), out var reason1), Is.True, reason1);
         store.TickInterval(2, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
 
-        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(slot: 3, requiredSource: genesisCheckpoint);
+        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(
+            slot: 3, parentRoot: block1Root, currentJustifiedSlots: null, currentFinalizedSlot: null);
 
         Assert.That(attestations, Has.Count.EqualTo(1));
         Assert.That(proofs, Has.Count.EqualTo(1));
         Assert.That(attestations[0].Data, Is.EqualTo(payloadBackedData));
         Assert.That(proofs[0].ProofData, Is.EqualTo(proof.ProofData));
+    }
+
+    [Test]
+    public void GetKnownAggregatedPayloadsForBlock_AcceptsOlderButJustifiedSource()
+    {
+        // leanSpec PR #716: build_block must include a gap-closing attestation
+        // whose source checkpoint is older than the parent chain's latest
+        // justified checkpoint, as long as the source SLOT is justified on
+        // that chain. The pre-#716 filter required exact source-checkpoint
+        // equality and dropped such attestations, stalling justification.
+        var (svc, _, store, _) = CreateService();
+        var genesisRoot = store.HeadRoot;
+        var genesisCheckpoint = new Checkpoint(genesisRoot, new Slot(0));
+
+        // block1 on genesis (empty body).
+        var block1 = CreateBlock(slot: 1, parentRoot: genesisRoot, proposerIndex: 0);
+        Assert.That(svc.TryComputeBlockStateRoot(block1, out var stateRoot1, out _), Is.True);
+        var validBlock1 = new Block(block1.Slot, block1.ProposerIndex, block1.ParentRoot, stateRoot1, block1.Body);
+        Assert.That(svc.TryApplyLocalBlock(WrapBlock(validBlock1), out var r1), Is.True, r1);
+        var block1Root = new Bytes32(validBlock1.HashTreeRoot());
+
+        // block2 on block1, whose body justifies block1 (1 validator => 100%).
+        var justifyBlock1 = new AggregatedAttestation(
+            new AggregationBits(new[] { true }),
+            new AttestationData(
+                new Slot(1),
+                new Checkpoint(block1Root, new Slot(1)),
+                new Checkpoint(block1Root, new Slot(1)),
+                genesisCheckpoint));
+        var block2 = new Block(new Slot(2), 0, block1Root, Bytes32.Zero(),
+            new BlockBody(new[] { justifyBlock1 }));
+        Assert.That(svc.TryComputeBlockStateRoot(block2, out var stateRoot2, out var post2Justified, out _), Is.True);
+        Assert.That(post2Justified.Slot.Value, Is.EqualTo(1UL),
+            "block2's body must justify block1 so the parent chain's justified is slot 1, not genesis");
+        var validBlock2 = new Block(block2.Slot, block2.ProposerIndex, block2.ParentRoot, stateRoot2, block2.Body);
+        var signedBlock2 = new SignedBlock(
+            validBlock2,
+            new BlockSignatures(
+                new[] { new AggregatedSignatureProof(new AggregationBits(new[] { true }), new byte[] { 0xAB }) },
+                XmssSignature.Empty()));
+        Assert.That(svc.TryApplyLocalBlock(signedBlock2, out var r2), Is.True, r2);
+        var block2Root = new Bytes32(validBlock2.HashTreeRoot());
+
+        // Gap-closing attestation in the pool: source = genesis (slot 0),
+        // target = block2 (slot 2). Its source is OLDER than block2's chain
+        // justified checkpoint (block1, slot 1) -- but slot 0 is justified.
+        var gapData = new AttestationData(
+            new Slot(2),
+            new Checkpoint(block2Root, new Slot(2)),
+            new Checkpoint(block2Root, new Slot(2)),
+            genesisCheckpoint);
+        store.TickInterval(2, 0);
+        Assert.That(store.TryOnAttestation(new SignedAttestation(0, gapData, XmssSignature.Empty()), out var ra), Is.True, ra);
+        store.TickInterval(2, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+        var gapProof = new AggregatedSignatureProof(
+            AggregationBits.FromValidatorIndices(new ulong[] { 0 }),
+            new byte[] { 0xEE });
+        Assert.That(
+            store.TryOnGossipAggregatedAttestation(new SignedAggregatedAttestation(gapData, gapProof), out var rg),
+            Is.True,
+            rg);
+        store.TickInterval(2, ProtoArrayForkChoiceStore.IntervalsPerSlot - 1);
+
+        var (attestations, proofs) = svc.GetKnownAggregatedPayloadsForBlock(
+            slot: 3, parentRoot: block2Root, currentJustifiedSlots: null, currentFinalizedSlot: null);
+
+        Assert.That(attestations, Has.Count.EqualTo(1),
+            "gap-closing attestation with older-but-justified source must be selected");
+        Assert.That(attestations[0].Data, Is.EqualTo(gapData));
+        Assert.That(proofs, Has.Count.EqualTo(1));
     }
 
     private static (ConsensusServiceV2 svc, FakeTimeSource time,
